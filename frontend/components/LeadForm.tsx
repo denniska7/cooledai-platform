@@ -68,7 +68,7 @@ export function LeadForm() {
           Request Your 2026 Efficiency Blueprint
         </h2>
         <p className="mb-12 text-sm text-white/70 tracking-wide">
-          Sharp 1px white borders. Wide typography.
+          No sales pitch. Just a data-driven blueprint of your potential savings.
         </p>
 
         {submitted ? (

@@ -9,7 +9,7 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "CooledAI | Energy Autonomy for the AI Era",
+  title: "CooledAI | Energy Freedom for the AI Era",
   description:
     "Predictive energy optimization for high-density data centers. Reduce cooling overhead by up to 12% without sacrificing compute performance.",
 };

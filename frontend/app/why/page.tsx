@@ -14,21 +14,19 @@ export default function WhyPage() {
           {/* Section 1: The Collision Course */}
           <section className="py-32">
             <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl">
-              The Decoupling of Compute and Power.
+              Chips Outpace Cooling.
             </h2>
             <div className="mt-12 space-y-8 text-white/80 leading-relaxed">
               <p>
-                While AI chip performance doubles rapidly—following the curve of
-                Moore&apos;s Law and beyond—data center power infrastructure
-                upgrades take years. Permits, capital allocation, and physical
-                construction move at a pace that silicon does not.
+                AI chip performance doubles every 18–24 months. But data center
+                cooling upgrades take years. Permits, budgets, and construction
+                move at a pace that chips do not.
               </p>
               <p>
                 The result is a &quot;Thermal Wall&quot;: facilities cannot
-                deploy the newest hardware (H100s, B200s, and beyond) due to heat
-                constraints, not space constraints. Racks sit partially empty.
-                Chips throttle. The bottleneck is thermodynamics, not
-                transistor count.
+                deploy the newest hardware (H100s, B200s, and beyond) due to
+                heat limits, not space. Racks sit partially empty. Chips slow
+                down. The bottleneck is heat, not transistor count.
               </p>
             </div>
             <div className="mt-16">
@@ -43,7 +41,7 @@ export default function WhyPage() {
             </h2>
             <div className="mt-12 space-y-8 text-white/80 leading-relaxed">
               <p>
-                Legacy CRAC and CRAH units wait for a temperature sensor to
+                Traditional CRAC and CRAH units wait for a temperature sensor to
                 spike before ramping up cooling. The control loop is simple:
                 sense heat, then react. But AI workloads spike in milliseconds.
                 A single training step can push a GPU from 40°C to 85°C before
@@ -66,20 +64,19 @@ export default function WhyPage() {
           {/* Section 3: The Predictive Paradigm Shift */}
           <section className="py-32 border-t border-white/20">
             <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl">
-              Intelligence Precedes Heat.
+              Predict Before Heat.
             </h2>
             <div className="mt-12 space-y-8 text-white/80 leading-relaxed">
               <p>
-                CooledAI ingests real-time telemetry: workload scheduling, GPU
-                voltage draw, ambient rack temperatures, and historical thermal
-                signatures. We build a predictive thermal model that anticipates
-                energy demand before it manifests as heat.
+                CooledAI uses real-time data: workload, power use, rack temps,
+                and past heat patterns. We build a model that predicts heat
+                demand before it shows up.
               </p>
               <p>
                 We don&apos;t react to heat. We anticipate it. Pre-cooling kicks
                 in before the spike. Fans and chillers ramp in sync with
-                compute, not in response to it. The result is a thermal envelope
-                that stays flat—no spikes, no throttling, no wasted cycles.
+                compute, not in response to it. The result is a flat
+                temperature—no spikes, no slowdown, no wasted cycles.
               </p>
             </div>
           </section>
@@ -87,7 +84,7 @@ export default function WhyPage() {
           {/* Section 4: Three Vectors of Value */}
           <section className="py-32 border-t border-white/20">
             <h2 className="mb-16 text-2xl font-medium tracking-tight text-white md:text-3xl">
-              Three Vectors of Value
+              Three Benefits
             </h2>
             <ValueVectors />
           </section>
@@ -95,8 +92,8 @@ export default function WhyPage() {
           {/* Section 5: The Final Call */}
           <section className="py-32 border-t border-white/20">
             <p className="max-w-2xl text-2xl font-medium tracking-tight text-white md:text-3xl">
-              The AI boom will not be constrained by silicon. It will be
-              constrained by thermodynamics.
+              The AI boom will not be limited by chips. It will be limited by
+              heat.
             </p>
             <div className="mt-12">
               <Link
@@ -112,7 +109,7 @@ export default function WhyPage() {
 
       <footer className="border-t border-white/20 py-8">
         <div className="mx-auto max-w-6xl px-6 text-center text-xs text-white/40 tracking-tight">
-          CooledAI · Energy Autonomy for the AI Era
+          CooledAI · Energy Freedom for the AI Era
         </div>
       </footer>
     </div>

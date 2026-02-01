@@ -42,18 +42,18 @@ function OpExIcon() {
 const vectors = [
   {
     icon: RackIcon,
-    title: "Unlock Maximized Density",
-    text: "Stop leaving rack space empty due to thermal constraints. Safely deploy higher-density clusters in existing footprints by shaving peak thermal loads.",
+    title: "Pack More In",
+    text: "Stop leaving rack space empty due to heat limits. Safely deploy higher-density clusters in existing space by cutting peak heat loads.",
   },
   {
     icon: ChipShieldIcon,
-    title: "Extend Hardware Lifespan",
-    text: "Thermal cycling (rapid heating and cooling) destroys silicon. By smoothing out temperature variance, CooledAI significantly reduces hardware failure rates over 3-5 year cycles.",
+    title: "Hardware Lasts Longer",
+    text: "Rapid heating and cooling damages chips. By smoothing out temperature swings, CooledAI reduces hardware failure rates over 3–5 years.",
   },
   {
     icon: OpExIcon,
-    title: "Decouple OpEx from Spot Prices",
-    text: "Reduce total cooling energy spend by 8-12%. In multi-megawatt facilities, this translates to millions in reclaimed OpEx that goes directly to the bottom line.",
+    title: "Cut Cooling Costs",
+    text: "Reduce total cooling energy spend by 8–12%. In multi-megawatt facilities, this translates to millions in savings that go straight to the bottom line.",
   },
 ];
 

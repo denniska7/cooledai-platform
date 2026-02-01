@@ -13,15 +13,15 @@ export default function OptimizationPage() {
           {/* Section 1: Static vs Fluid */}
           <section className="py-32">
             <h1 className="text-3xl font-medium tracking-tight text-white md:text-4xl">
-              Legacy Cooling is Static. CooledAI is Fluid.
+              Traditional Cooling is Static. CooledAI is Fluid.
             </h1>
             <div className="mt-12 space-y-8 text-white/80 leading-relaxed">
               <p>
-                Competitors use threshold-based logic: if temp &gt; 40°C, turn
-                on fans. If temp &lt; 35°C, turn them off. The result is a
-                jagged, reactive response—oscillation, overshoot, and wasted
-                energy. The system is always chasing the last spike, never
-                anticipating the next one.
+                Traditional systems use simple rules: if temp &gt; 40°C, turn on
+                fans. If temp &lt; 35°C, turn them off. The result is a jagged,
+                reactive response—bouncing, overshooting, and wasted energy. The
+                system is always chasing the last spike, never anticipating the
+                next one.
               </p>
               <p>
                 CooledAI uses inference-based logic. We don&apos;t wait for a
@@ -43,12 +43,10 @@ export default function OptimizationPage() {
             </h2>
             <div className="mt-12 space-y-8 text-white/80 leading-relaxed">
               <p>
-                Our model isn&apos;t a generic LLM. It&apos;s a specialized
-                Reinforcement Learning (RL) model trained specifically on
-                high-density server telemetry. We call it Thermal-Temporal
-                Inference—it understands the thermal inertia of specific chip
-                architectures: NVIDIA H100s, AMD EPYC, and the next generation
-                of AI accelerators.
+                Our model isn&apos;t a generic AI. It&apos;s a specialized model
+                trained on high-density server data. It understands how heat
+                builds up in specific chips: NVIDIA H100s, AMD EPYC, and the
+                next generation of AI accelerators.
               </p>
               <p>
                 The training data includes real failure scenarios—thermal
@@ -65,21 +63,19 @@ export default function OptimizationPage() {
           {/* Section 3: Hardware-Aware Intelligence */}
           <section className="py-32 border-t border-white/20">
             <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl">
-              Hardware-Aware Intelligence
+              Knows Your Hardware
             </h2>
             <div className="mt-12 space-y-8 text-white/80 leading-relaxed">
               <p>
-                CooledAI knows the hardware. It understands the specific
-                heat-signature of different AI workloads—LLM training vs.
-                inference, batch vs. real-time—and adjusts the environment
-                before the workload even hits the silicon.
+                CooledAI knows the hardware. It understands the heat pattern of
+                different AI workloads—training vs. inference, batch vs.
+                real-time—and adjusts cooling before the workload even starts.
               </p>
               <p>
-                An H100 under full training load has a different thermal profile
-                than an H100 running inference. EPYC under mixed workload behaves
-                differently than under sustained compute. Our model has learned
-                these signatures. Pre-cooling kicks in when the scheduler
-                assigns the job, not when the chip starts to heat.
+                An H100 under full training has a different heat pattern than one
+                running inference. Our model has learned these patterns.
+                Pre-cooling kicks in when the job is scheduled, not when the
+                chip starts to heat.
               </p>
             </div>
           </section>
@@ -109,7 +105,7 @@ export default function OptimizationPage() {
           {/* Footer CTA */}
           <section className="py-32 border-t border-white/20">
             <p className="text-2xl font-medium tracking-tight text-white md:text-3xl">
-              Experience the Shift in Thermodynamics.
+              Experience the Shift in Heat Management.
             </p>
             <div className="mt-12">
               <Link
@@ -125,7 +121,7 @@ export default function OptimizationPage() {
 
       <footer className="border-t border-white/20 py-8">
         <div className="mx-auto max-w-6xl px-6 text-center text-xs text-white/40 tracking-tight">
-          CooledAI · Energy Autonomy for the AI Era
+          CooledAI · Energy Freedom for the AI Era
         </div>
       </footer>
     </div>

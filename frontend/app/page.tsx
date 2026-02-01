@@ -22,7 +22,7 @@ export default function HomePage() {
             transition={{ duration: 0.6, ease: "easeOut" }}
             className="text-4xl font-medium tracking-tight text-white md:text-5xl lg:text-6xl"
           >
-            Energy Autonomy for the AI Era.
+            Energy Freedom for the AI Era.
           </motion.h1>
           <motion.p
             initial={{ opacity: 0, y: 20, filter: "blur(10px)" }}
@@ -30,8 +30,8 @@ export default function HomePage() {
             transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
             className="mt-6 max-w-2xl text-lg text-white/80"
           >
-            CooledAI provides predictive thermal intelligence for high-density
-            compute. Stop reacting to heat—predict it.
+            CooledAI predicts heat before it happens for high-density servers.
+            Stop reacting to heat—predict it.
           </motion.p>
           <motion.div
             initial={{ opacity: 0, y: 20, filter: "blur(10px)" }}
@@ -72,9 +72,8 @@ export default function HomePage() {
             transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
             className="mt-6 max-w-2xl text-white/80 leading-relaxed"
           >
-            AI chips are drawing more power than traditional infrastructure can
-            handle. We solve the bottleneck by reducing cooling OpEx by 12% while
-            maintaining peak compute performance.
+            AI chips use more power than traditional cooling can handle. We cut
+            cooling costs by 12% while keeping servers running at full speed.
           </motion.p>
         </section>
 
@@ -89,7 +88,7 @@ export default function HomePage() {
 
       <footer className="border-t border-white/20 py-8">
         <div className="mx-auto max-w-6xl px-6 text-center text-xs text-white/40 tracking-tight">
-          CooledAI · Energy Autonomy for the AI Era
+          CooledAI · Energy Freedom for the AI Era
         </div>
       </footer>
     </div>
