@@ -30,6 +30,18 @@ export function NavBar() {
             Optimization
           </Link>
           <Link
+            href="/implementation"
+            className="text-sm tracking-tight text-white/80 hover:text-white transition-colors"
+          >
+            Implementation
+          </Link>
+          <Link
+            href="/portal"
+            className="text-sm tracking-tight text-white/80 hover:text-white transition-colors"
+          >
+            Portal
+          </Link>
+          <Link
             href="/#request-audit"
             className="rounded border border-white bg-white px-4 py-2 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90"
           >

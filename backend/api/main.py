@@ -49,12 +49,14 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS - allow requests from CooledAI production domains
+# CORS - allow requests from CooledAI production and local dev
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://cooledai.com",
         "https://www.cooledai.com",
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -223,20 +225,51 @@ async def health_check():
 @app.get("/simulated-metrics")
 async def simulated_metrics():
     """
-    Simulated real-time metrics for System Pulse visualization.
+    Simulated real-time metrics for System Pulse and Portal visualization.
     Returns synthetic thermal/optimization data for demo purposes.
     """
     import time
     import math
     t = time.time()
+    eff = 87.0 + 5 * math.sin(t * 0.3)
     return {
-        "efficiency_score": 87.0 + 5 * math.sin(t * 0.3),
+        "efficiency_score": eff,
         "thermal_lag_seconds": 2.1 + 0.5 * math.sin(t * 0.2),
         "state": "OPTIMIZING",
         "nodes_active": 24,
         "cooling_delta": 0.12,
         "timestamp": t,
+        # Extended fields for Enterprise Portal
+        "cpu_temp_avg": round(38 + (100 - eff) * 0.2 + math.sin(t * 0.4) * 2, 1),
+        "delta_t_inlet": round(18 + math.sin(t * 0.2) * 1.5, 1),
+        "delta_t_outlet": round(24 + math.sin(t * 0.25) * 2, 1),
+        "power_draw_kw": round(120 + math.sin(t * 0.15) * 15, 1),
+        "predicted_load_t10": round(85 + math.sin(t * 0.1) * 8, 1),
+        "current_capacity": 100,
+        "carbon_offset_kg": round(1240 + (int(t) % 3600) * 0.3, 0),
+        "opex_reclaimed_usd": round(12400 + (int(t) % 3600) * 1.2, 0),
     }
+
+
+# Simulated AI decision log for portal System Log
+_AI_LOG_ENTRIES = [
+    "Adjusting Fan Array 04 for predicted GPU spike in Rack B12.",
+    "Pre-cooling Rack A07 before scheduled training job.",
+    "Reducing chiller setpoint by 0.5°C—efficiency within bounds.",
+    "Ramping CRAC 02—inlet temp trending above threshold.",
+    "Holding steady—thermal envelope stable for next 15 min.",
+    "Increasing airflow to Zone 3—power draw spike detected.",
+    "Deferring optimization—manual override active.",
+    "Applying guard mode—sensor anomaly in Rack C04.",
+]
+
+
+@app.get("/simulated-metrics/log")
+async def simulated_ai_log():
+    """Returns rotating AI decision log entries for portal System Log."""
+    import time
+    idx = int(time.time() / 3) % len(_AI_LOG_ENTRIES)
+    return {"entry": _AI_LOG_ENTRIES[idx], "timestamp": time.time()}
 
 
 @app.post("/ingest/csv")
