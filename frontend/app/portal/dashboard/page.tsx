@@ -28,7 +28,7 @@ type Metrics = {
   simulation_critical?: boolean;
 } | null;
 
-type LogEntry = { entry: string; timestamp: number } | null;
+type LogEntry = { entry: string; timestamp: number; critical?: boolean } | null;
 
 async function fetchMetrics(): Promise<Metrics> {
   const url = process.env.NEXT_PUBLIC_API_URL;
