@@ -21,7 +21,7 @@ export function NavBar() {
             href="/why"
             className="text-sm tracking-tight text-white/80 hover:text-white transition-colors"
           >
-            Why CooledAI?
+            Why CooledAI
           </Link>
           <Link
             href="/optimization"
@@ -33,7 +33,7 @@ export function NavBar() {
             href="/#request-audit"
             className="rounded border border-white bg-white px-4 py-2 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90"
           >
-            Request Audit
+            Audit
           </Link>
           <div className="flex items-center gap-2">
             <BackendStatusDot />

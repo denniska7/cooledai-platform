@@ -1,7 +1,0 @@
-{
-  "name": "cooledai-platform",
-  "private": true,
-  "scripts": {
-    "vercel-build": "cd frontend && npm run build"
-  }
-}

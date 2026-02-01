@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { motion } from "framer-motion";
 
 const CONSUMER_DOMAINS = [
   "gmail.com",
@@ -24,10 +25,9 @@ function isBusinessEmail(email: string): boolean {
 export function LeadForm() {
   const [form, setForm] = useState({
     fullName: "",
-    workEmail: "",
+    businessEmail: "",
     phone: "",
-    powerUsage: "",
-    hardware: "",
+    dataCenterScale: "",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
@@ -37,12 +37,11 @@ export function LeadForm() {
     const newErrors: Record<string, string> = {};
 
     if (!form.fullName.trim()) newErrors.fullName = "Required";
-    if (!form.workEmail.trim()) newErrors.workEmail = "Required";
-    else if (!isBusinessEmail(form.workEmail))
-      newErrors.workEmail = "Please use a business email address";
+    if (!form.businessEmail.trim()) newErrors.businessEmail = "Required";
+    else if (!isBusinessEmail(form.businessEmail))
+      newErrors.businessEmail = "Please use a business email address";
     if (!form.phone.trim()) newErrors.phone = "Required";
-    if (!form.powerUsage.trim()) newErrors.powerUsage = "Required";
-    if (!form.hardware.trim()) newErrors.hardware = "Required";
+    if (!form.dataCenterScale.trim()) newErrors.dataCenterScale = "Required";
 
     setErrors(newErrors);
     if (Object.keys(newErrors).length > 0) return;
@@ -52,27 +51,29 @@ export function LeadForm() {
   };
 
   const inputClass =
-    "w-full bg-transparent border border-white/20 px-4 py-3 text-white placeholder-white/40 focus:border-white focus:outline-none transition-colors rounded";
+    "w-full bg-transparent border border-white px-4 py-4 text-white placeholder-white/40 focus:border-accent-cyan focus:outline-none transition-colors tracking-wide";
   const errorClass = "mt-1 text-xs text-red-400";
 
   return (
-    <section id="request-audit" className="border-t border-white/20 py-24">
+    <motion.section
+      id="request-audit"
+      initial={{ opacity: 0, y: 30, filter: "blur(10px)" }}
+      whileInView={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+      viewport={{ once: true, margin: "-100px" }}
+      transition={{ duration: 0.6, ease: "easeOut" }}
+      className="border-t border-white py-32"
+    >
       <div className="mx-auto max-w-xl px-6">
-        <h2 className="mb-2 text-2xl font-medium tracking-tight text-white">
-          Request a Custom Efficiency Blueprint
+        <h2 className="mb-4 text-3xl font-medium tracking-tight text-white">
+          Request Your 2026 Efficiency Blueprint
         </h2>
-        <p className="mb-4 text-sm text-white/70">
-          Because no two data centers are identical, we do not offer flat
-          pricing. We provide custom integration plans based on your thermal
-          load.
-        </p>
-        <p className="mb-10 text-xs text-white/50 italic">
-          No sales pitch. Just a data-driven blueprint of your potential savings.
+        <p className="mb-12 text-sm text-white/70 tracking-wide">
+          Sharp 1px white borders. Wide typography.
         </p>
 
         {submitted ? (
-          <div className="rounded border border-white/20 bg-white/5 p-6 text-center">
-            <p className="font-medium text-white">
+          <div className="rounded border border-white bg-white/5 p-8 text-center">
+            <p className="font-medium text-white tracking-wide">
               Thank you. We&apos;ll be in touch within 24 hours.
             </p>
           </div>
@@ -81,7 +82,7 @@ export function LeadForm() {
             <div>
               <input
                 type="text"
-                placeholder="Full Name"
+                placeholder="Name"
                 value={form.fullName}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, fullName: e.target.value }))
@@ -95,21 +96,21 @@ export function LeadForm() {
             <div>
               <input
                 type="email"
-                placeholder="Work Email"
-                value={form.workEmail}
+                placeholder="Business Email"
+                value={form.businessEmail}
                 onChange={(e) =>
-                  setForm((f) => ({ ...f, workEmail: e.target.value }))
+                  setForm((f) => ({ ...f, businessEmail: e.target.value }))
                 }
                 className={inputClass}
               />
-              {errors.workEmail && (
-                <p className={errorClass}>{errors.workEmail}</p>
+              {errors.businessEmail && (
+                <p className={errorClass}>{errors.businessEmail}</p>
               )}
             </div>
             <div>
               <input
                 type="tel"
-                placeholder="Phone Number"
+                placeholder="Phone"
                 value={form.phone}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, phone: e.target.value }))
@@ -121,40 +122,26 @@ export function LeadForm() {
             <div>
               <input
                 type="text"
-                placeholder="Current Annual Power Usage (MW)"
-                value={form.powerUsage}
+                placeholder="Data Center Scale (MW)"
+                value={form.dataCenterScale}
                 onChange={(e) =>
-                  setForm((f) => ({ ...f, powerUsage: e.target.value }))
+                  setForm((f) => ({ ...f, dataCenterScale: e.target.value }))
                 }
                 className={inputClass}
               />
-              {errors.powerUsage && (
-                <p className={errorClass}>{errors.powerUsage}</p>
-              )}
-            </div>
-            <div>
-              <input
-                type="text"
-                placeholder="Primary GPU/CPU Architecture (e.g., NVIDIA H100, AMD EPYC)"
-                value={form.hardware}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, hardware: e.target.value }))
-                }
-                className={inputClass}
-              />
-              {errors.hardware && (
-                <p className={errorClass}>{errors.hardware}</p>
+              {errors.dataCenterScale && (
+                <p className={errorClass}>{errors.dataCenterScale}</p>
               )}
             </div>
             <button
               type="submit"
               className="w-full rounded border border-white bg-white px-6 py-4 font-medium tracking-tight text-black transition-opacity hover:opacity-90"
             >
-              Request Audit
+              Request Blueprint
             </button>
           </form>
         )}
       </div>
-    </section>
+    </motion.section>
   );
 }

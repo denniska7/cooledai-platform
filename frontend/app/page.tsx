@@ -1,33 +1,86 @@
+"use client";
+
+import { motion } from "framer-motion";
+import Link from "next/link";
 import { NavBar } from "../components/NavBar";
-import { SystemPulse } from "../components/SystemPulse";
+import { BackgroundMesh } from "../components/BackgroundMesh";
+import { LiveSystemPulse } from "../components/LiveSystemPulse";
 import { LeadForm } from "../components/LeadForm";
 
 export default function HomePage() {
   return (
-    <div className="min-h-screen bg-black">
+    <div className="relative min-h-screen bg-black text-white overflow-hidden">
+      <BackgroundMesh />
       <NavBar />
 
-      <main className="pt-20">
+      <main className="relative pt-20">
         {/* Hero */}
-        <section className="mx-auto max-w-4xl px-6 py-24">
-          <h1 className="text-4xl font-medium tracking-tight text-white md:text-5xl lg:text-6xl">
+        <section className="mx-auto max-w-4xl px-6 py-32">
+          <motion.h1
+            initial={{ opacity: 0, y: 30, filter: "blur(10px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            transition={{ duration: 0.6, ease: "easeOut" }}
+            className="text-4xl font-medium tracking-tight text-white md:text-5xl lg:text-6xl"
+          >
             Energy Autonomy for the AI Era.
-          </h1>
-          <p className="mt-6 max-w-2xl text-lg text-white/80">
-            CooledAI provides predictive energy optimization for high-density
-            data centers. Reduce cooling overhead by up to 12% without
-            sacrificing a single cycle of compute performance.
-          </p>
-          <div className="mt-12 rounded border border-white/20 p-6 max-w-2xl">
-            <p className="text-sm text-white/70 leading-relaxed">
-              <span className="font-medium text-white">The Thermal Wall:</span>{" "}
-              AI chips (H100s, H200s) are drawing more power than traditional
-              infrastructure can handle. We solve the bottleneck.
-            </p>
-          </div>
-          <div className="mt-16 max-w-sm">
-            <SystemPulse />
-          </div>
+          </motion.h1>
+          <motion.p
+            initial={{ opacity: 0, y: 20, filter: "blur(10px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
+            className="mt-6 max-w-2xl text-lg text-white/80"
+          >
+            CooledAI provides predictive thermal intelligence for high-density
+            compute. Stop reacting to heat—predict it.
+          </motion.p>
+          <motion.div
+            initial={{ opacity: 0, y: 20, filter: "blur(10px)" }}
+            animate={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            transition={{ duration: 0.6, delay: 0.2, ease: "easeOut" }}
+            className="mt-10 flex flex-wrap gap-4"
+          >
+            <Link
+              href="/#request-audit"
+              className="rounded border border-white bg-white px-6 py-4 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90"
+            >
+              Request Custom Audit
+            </Link>
+            <Link
+              href="/optimization"
+              className="rounded border border-white bg-transparent px-6 py-4 text-sm font-medium tracking-tight text-white transition-opacity hover:opacity-90"
+            >
+              See the Science
+            </Link>
+          </motion.div>
+        </section>
+
+        {/* The Problem - The Thermal Wall */}
+        <section className="mx-auto max-w-4xl px-6 py-24 border-t border-white/20">
+          <motion.h2
+            initial={{ opacity: 0, y: 20, filter: "blur(10px)" }}
+            whileInView={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            viewport={{ once: true, margin: "-50px" }}
+            transition={{ duration: 0.6, ease: "easeOut" }}
+            className="text-2xl font-medium tracking-tight text-white md:text-3xl"
+          >
+            The Thermal Wall
+          </motion.h2>
+          <motion.p
+            initial={{ opacity: 0, y: 20, filter: "blur(10px)" }}
+            whileInView={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+            viewport={{ once: true, margin: "-50px" }}
+            transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
+            className="mt-6 max-w-2xl text-white/80 leading-relaxed"
+          >
+            AI chips are drawing more power than traditional infrastructure can
+            handle. We solve the bottleneck by reducing cooling OpEx by 12% while
+            maintaining peak compute performance.
+          </motion.p>
+        </section>
+
+        {/* Live System Pulse */}
+        <section className="mx-auto max-w-4xl px-6 py-24 border-t border-white/20">
+          <LiveSystemPulse />
         </section>
 
         {/* Lead Form */}

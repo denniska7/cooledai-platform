@@ -1,3 +1,0 @@
-# Railway: Use minimal requirements for fast backend build (skip torch, streamlit, etc.)
-[phases.install]
-cmds = ["pip install -r requirements-railway.txt"]
