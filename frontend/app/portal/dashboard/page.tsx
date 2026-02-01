@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { PortalSidebar } from "./components/PortalSidebar";
 import { PredictiveGauge } from "./components/PredictiveGauge";
@@ -9,6 +9,7 @@ import { SafetyShieldToggle } from "./components/SafetyShieldToggle";
 import { SavingsTicker } from "./components/SavingsTicker";
 import { SystemLog } from "./components/SystemLog";
 import { PowerReclaimedChart } from "./components/PowerReclaimedChart";
+import { EfficiencyReportModal } from "./components/EfficiencyReportModal";
 import { useInterval } from "../../../lib/useInterval";
 
 type Metrics = {
@@ -61,6 +62,17 @@ export default function PortalDashboardPage() {
   const [metrics, setMetrics] = useState<Metrics>(null);
   const [aiLog, setAiLog] = useState<LogEntry>(null);
   const [safetyShield, setSafetyShield] = useState(true);
+  const [hasSeenSimulation, setHasSeenSimulation] = useState(false);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
+
+  useEffect(() => {
+    if (aiLog?.critical) setHasSeenSimulation(true);
+  }, [aiLog?.critical]);
+  useEffect(() => {
+    if (metrics && (metrics.efficiency_score ?? metrics.opex_reclaimed_usd ?? metrics.carbon_offset_kg) != null) {
+      setHasSeenSimulation(true);
+    }
+  }, [metrics]);
 
   const poll = useCallback(async () => {
     const [m, log] = await Promise.all([fetchMetrics(), fetchAiLog()]);
@@ -90,7 +102,17 @@ export default function PortalDashboardPage() {
             <h1 className="text-2xl font-medium tracking-tight text-white">
               Mission Control
             </h1>
-            <SafetyShieldToggle enabled={safetyShield} onToggle={setSafetyShield} />
+            <div className="flex items-center gap-4">
+              {hasSeenSimulation && (
+                <button
+                  onClick={() => setReportModalOpen(true)}
+                  className="rounded border border-[#00FFCC] bg-[#00FFCC]/10 px-4 py-2 text-sm font-medium tracking-tight text-[#00FFCC] transition-opacity hover:bg-[#00FFCC]/20"
+                >
+                  Generate Efficiency Report
+                </button>
+              )}
+              <SafetyShieldToggle enabled={safetyShield} onToggle={setSafetyShield} />
+            </div>
           </div>
 
           {/* Predictive Gauge */}
@@ -184,6 +206,12 @@ export default function PortalDashboardPage() {
           </motion.section>
         </div>
       </main>
+
+      <EfficiencyReportModal
+        isOpen={reportModalOpen}
+        onClose={() => setReportModalOpen(false)}
+        metrics={metrics}
+      />
     </div>
   );
 }

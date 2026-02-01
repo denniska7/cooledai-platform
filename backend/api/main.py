@@ -553,7 +553,9 @@ async def create_lead(lead: LeadInput):
     with open(leads_path, "w") as f:
         json.dump(leads, f, indent=2)
 
+    simulation_ready_url = "https://cooledai.com/portal"
     print(f"[CooledAI Lead] Blueprint Request: {lead.fullName} | {lead.businessEmail} | {lead.dataCenterScale} MW")
+    print(f"[CooledAI Lead] Simulation Ready: {simulation_ready_url}")
     return {"status": "success", "message": "Blueprint Request Received."}
 
 

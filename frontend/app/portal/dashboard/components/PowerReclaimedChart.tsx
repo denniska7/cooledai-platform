@@ -81,7 +81,14 @@ export function PowerReclaimedChart() {
               borderRadius: "4px",
             }}
             labelStyle={{ color: "#fff" }}
-            formatter={(value?: number) => [`${value ?? 0} kW`, "Power Reclaimed"]}
+            content={({ active, payload }) =>
+              active && payload?.[0] ? (
+                <div className="px-3 py-2">
+                  <span className="text-white/80">Power Reclaimed</span>
+                  <p className="text-white font-medium">{payload[0].value ?? 0} kW</p>
+                </div>
+              ) : null
+            }
           />
           <Line
             type="monotone"

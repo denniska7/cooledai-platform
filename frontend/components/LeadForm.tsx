@@ -28,6 +28,13 @@ function isBusinessEmail(email: string): boolean {
   return !CONSUMER_DOMAINS.includes(domain);
 }
 
+function companyFromEmail(email: string): string {
+  const domain = email.split("@")[1];
+  if (!domain) return "";
+  const name = domain.split(".")[0];
+  return name ? name.charAt(0).toUpperCase() + name.slice(1) : "";
+}
+
 export function LeadForm() {
   const [form, setForm] = useState({
     fullName: "",
@@ -105,10 +112,14 @@ export function LeadForm() {
         {submitted ? (
           <div className="rounded border border-[rgba(255,255,255,0.1)] bg-white/5 p-8 text-center">
             <p className="font-medium text-white tracking-wide">
-              Blueprint Request Received.
+              Infrastructure Profile Received.
             </p>
             <p className="mt-3 text-sm text-white/60 tracking-wide">
-              Our systems are analyzing your infrastructure profile.
+              A Preliminary Thermal ROI Report is being generated for{" "}
+              <span className="text-white">
+                {companyFromEmail(form.businessEmail) || form.fullName}
+              </span>
+              . Check your dashboard in 4 hours.
             </p>
           </div>
         ) : (
