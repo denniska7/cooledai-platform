@@ -9,9 +9,9 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "CooledAI | Predictive Thermal Intelligence",
+  title: "CooledAI | Energy Autonomy for the AI Era",
   description:
-    "Stop reacting to heat. Start predicting it. CooledAI reduces cooling overhead by up to 12% with industrial-grade fail-safes.",
+    "Predictive energy optimization for high-density data centers. Reduce cooling overhead by up to 12% without sacrificing compute performance.",
 };
 
 export default function RootLayout({

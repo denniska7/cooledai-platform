@@ -26,7 +26,7 @@ export function LeadForm() {
     fullName: "",
     workEmail: "",
     phone: "",
-    rackCount: "",
+    powerUsage: "",
     hardware: "",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
@@ -41,7 +41,7 @@ export function LeadForm() {
     else if (!isBusinessEmail(form.workEmail))
       newErrors.workEmail = "Please use a business email address";
     if (!form.phone.trim()) newErrors.phone = "Required";
-    if (!form.rackCount.trim()) newErrors.rackCount = "Required";
+    if (!form.powerUsage.trim()) newErrors.powerUsage = "Required";
     if (!form.hardware.trim()) newErrors.hardware = "Required";
 
     setErrors(newErrors);
@@ -52,24 +52,27 @@ export function LeadForm() {
   };
 
   const inputClass =
-    "w-full bg-transparent border border-white/20 px-4 py-3 text-white placeholder-white/40 focus:border-white/60 focus:outline-none transition-colors rounded";
+    "w-full bg-transparent border border-white/20 px-4 py-3 text-white placeholder-white/40 focus:border-white focus:outline-none transition-colors rounded";
   const errorClass = "mt-1 text-xs text-red-400";
 
   return (
-    <section className="border-t border-white/10 py-24">
+    <section id="request-audit" className="border-t border-white/20 py-24">
       <div className="mx-auto max-w-xl px-6">
-        <h2 className="mb-2 text-2xl font-medium tracking-tight">
+        <h2 className="mb-2 text-2xl font-medium tracking-tight text-white">
           Request a Custom Efficiency Blueprint
         </h2>
-        <p className="mb-10 text-sm text-white/60">
+        <p className="mb-4 text-sm text-white/70">
           Because no two data centers are identical, we do not offer flat
           pricing. We provide custom integration plans based on your thermal
           load.
         </p>
+        <p className="mb-10 text-xs text-white/50 italic">
+          No sales pitch. Just a data-driven blueprint of your potential savings.
+        </p>
 
         {submitted ? (
-          <div className="rounded border border-accent-lime/30 bg-accent-lime/5 p-6 text-center">
-            <p className="text-accent-lime font-medium">
+          <div className="rounded border border-white/20 bg-white/5 p-6 text-center">
+            <p className="font-medium text-white">
               Thank you. We&apos;ll be in touch within 24 hours.
             </p>
           </div>
@@ -118,21 +121,21 @@ export function LeadForm() {
             <div>
               <input
                 type="text"
-                placeholder="Estimated Rack Count / Annual Power Consumption"
-                value={form.rackCount}
+                placeholder="Current Annual Power Usage (MW)"
+                value={form.powerUsage}
                 onChange={(e) =>
-                  setForm((f) => ({ ...f, rackCount: e.target.value }))
+                  setForm((f) => ({ ...f, powerUsage: e.target.value }))
                 }
                 className={inputClass}
               />
-              {errors.rackCount && (
-                <p className={errorClass}>{errors.rackCount}</p>
+              {errors.powerUsage && (
+                <p className={errorClass}>{errors.powerUsage}</p>
               )}
             </div>
             <div>
               <input
                 type="text"
-                placeholder="Primary Hardware (e.g., AMD EPYC, NVIDIA H100s)"
+                placeholder="Primary GPU/CPU Architecture (e.g., NVIDIA H100, AMD EPYC)"
                 value={form.hardware}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, hardware: e.target.value }))
@@ -145,7 +148,7 @@ export function LeadForm() {
             </div>
             <button
               type="submit"
-              className="w-full rounded border border-white bg-white px-6 py-4 font-medium text-black transition-opacity hover:opacity-90"
+              className="w-full rounded border border-white bg-white px-6 py-4 font-medium tracking-tight text-black transition-opacity hover:opacity-90"
             >
               Request Audit
             </button>
