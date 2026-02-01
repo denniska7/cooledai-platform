@@ -1,0 +1,14 @@
+# Exclude from Docker build (faster builds)
+.git
+.vercel
+node_modules
+frontend
+__pycache__
+*.pyc
+.pytest_cache
+.env*
+checkpoints
+*.pt
+notebooks
+*.ipynb
+.DS_Store
