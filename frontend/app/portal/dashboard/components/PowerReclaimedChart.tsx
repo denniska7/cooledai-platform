@@ -81,7 +81,7 @@ export function PowerReclaimedChart() {
               borderRadius: "4px",
             }}
             labelStyle={{ color: "#fff" }}
-            formatter={(value) => [`${value ?? 0} kW`, "Power Reclaimed"]}
+            formatter={(value?: number) => [`${value ?? 0} kW`, "Power Reclaimed"]}
           />
           <Line
             type="monotone"
