@@ -20,7 +20,9 @@ Endpoints:
 """
 
 import sys
+import json
 from pathlib import Path
+from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Dict, Any, Tuple
 import io
@@ -226,29 +228,84 @@ async def health_check():
 async def simulated_metrics():
     """
     Simulated real-time metrics for System Pulse and Portal visualization.
-    Returns synthetic thermal/optimization data for demo purposes.
+    Returns synthetic thermal/optimization data. Respects simulation mode from Command Center.
     """
     import time
     import math
     t = time.time()
     eff = 87.0 + 5 * math.sin(t * 0.3)
+    sim = _get_simulation_metrics(t, eff)
     return {
-        "efficiency_score": eff,
+        "efficiency_score": sim["efficiency_score"],
         "thermal_lag_seconds": 2.1 + 0.5 * math.sin(t * 0.2),
-        "state": "OPTIMIZING",
+        "state": sim["state"],
         "nodes_active": 24,
         "cooling_delta": 0.12,
         "timestamp": t,
-        # Extended fields for Enterprise Portal
-        "cpu_temp_avg": round(38 + (100 - eff) * 0.2 + math.sin(t * 0.4) * 2, 1),
-        "delta_t_inlet": round(18 + math.sin(t * 0.2) * 1.5, 1),
-        "delta_t_outlet": round(24 + math.sin(t * 0.25) * 2, 1),
-        "power_draw_kw": round(120 + math.sin(t * 0.15) * 15, 1),
-        "predicted_load_t10": round(85 + math.sin(t * 0.1) * 8, 1),
-        "current_capacity": 100,
+        "cpu_temp_avg": sim["cpu_temp_avg"],
+        "delta_t_inlet": sim["delta_t_inlet"],
+        "delta_t_outlet": sim["delta_t_outlet"],
+        "power_draw_kw": sim["power_draw_kw"],
+        "predicted_load_t10": sim["predicted_load_t10"],
+        "current_capacity": sim["current_capacity"],
         "carbon_offset_kg": round(1240 + (int(t) % 3600) * 0.3, 0),
         "opex_reclaimed_usd": round(12400 + (int(t) % 3600) * 1.2, 0),
+        "simulation_critical": sim["simulation_critical"],
     }
+
+
+# --- Simulation Control (Command Center) ---
+class SimulationMode(str, Enum):
+    STEADY = "STEADY"
+    GPU_SPIKE = "GPU_SPIKE"
+    CHILLER_FAILURE = "CHILLER_FAILURE"
+
+_simulation_mode: SimulationMode = SimulationMode.STEADY
+_simulation_start_time: float = 0.0
+
+
+def _get_simulation_metrics(t: float, eff: float) -> dict:
+    """Apply simulation mode to metrics."""
+    global _simulation_mode, _simulation_start_time
+    elapsed = t - _simulation_start_time if _simulation_start_time else 0
+
+    if _simulation_mode == SimulationMode.STEADY:
+        return {
+            "cpu_temp_avg": round(38 + (100 - eff) * 0.2 + (t % 10) * 0.1, 1),
+            "delta_t_inlet": round(18 + (t % 5) * 0.2, 1),
+            "delta_t_outlet": round(24 + (t % 5) * 0.3, 1),
+            "power_draw_kw": round(120 + (t % 8) * 2, 1),
+            "predicted_load_t10": round(75 + (t % 6) * 1, 1),
+            "current_capacity": 100,
+            "efficiency_score": min(95, eff + 5),
+            "state": "OPTIMIZING",
+            "simulation_critical": False,
+        }
+    elif _simulation_mode == SimulationMode.GPU_SPIKE:
+        return {
+            "cpu_temp_avg": 82.0,
+            "delta_t_inlet": round(22 + elapsed * 0.5, 1),
+            "delta_t_outlet": round(32 + elapsed * 0.8, 1),
+            "power_draw_kw": round(180 + elapsed * 2, 1),
+            "predicted_load_t10": round(95 + min(elapsed * 2, 5), 1),
+            "current_capacity": 100,
+            "efficiency_score": max(30, 85 - elapsed * 5),
+            "state": "GUARD_MODE",
+            "simulation_critical": True,
+        }
+    else:  # CHILLER_FAILURE
+        ambient_climb = min(15, elapsed * 1.2)
+        return {
+            "cpu_temp_avg": round(45 + ambient_climb + (t % 3) * 0.5, 1),
+            "delta_t_inlet": round(20 + ambient_climb * 0.8, 1),
+            "delta_t_outlet": round(28 + ambient_climb * 1.2, 1),
+            "power_draw_kw": 120.0,
+            "predicted_load_t10": round(85 + ambient_climb, 1),
+            "current_capacity": 100,
+            "efficiency_score": max(40, 90 - ambient_climb * 3),
+            "state": "GUARD_MODE",
+            "simulation_critical": True,
+        }
 
 
 # Simulated AI decision log for portal System Log
@@ -264,12 +321,51 @@ _AI_LOG_ENTRIES = [
 ]
 
 
+class SimulationTrigger(BaseModel):
+    mode: str  # gpu_spike | chiller_failure | reset
+
+
+@app.post("/admin/simulation-control/trigger")
+async def trigger_simulation(body: SimulationTrigger):
+    """Command Center: Trigger GPU spike, chiller failure, or reset."""
+    global _simulation_mode, _simulation_start_time
+    import time
+    t = time.time()
+    mode = body.mode.lower()
+    if mode == "gpu_spike":
+        _simulation_mode = SimulationMode.GPU_SPIKE
+        _simulation_start_time = t
+        return {"status": "ok", "mode": "GPU_SPIKE", "message": "GPU spike simulated. Temp 45°C → 82°C."}
+    elif mode == "chiller_failure":
+        _simulation_mode = SimulationMode.CHILLER_FAILURE
+        _simulation_start_time = t
+        return {"status": "ok", "mode": "CHILLER_FAILURE", "message": "Chiller failure simulated. Ambient climbing."}
+    elif mode == "reset":
+        _simulation_mode = SimulationMode.STEADY
+        _simulation_start_time = 0.0
+        return {"status": "ok", "mode": "STEADY", "message": "Environment reset to steady-state."}
+    raise HTTPException(status_code=400, detail="Invalid mode. Use gpu_spike, chiller_failure, or reset")
+
+
+@app.get("/admin/simulation-control/status")
+async def simulation_status():
+    """Command Center: Get current simulation mode."""
+    return {"mode": _simulation_mode.value}
+
+
 @app.get("/simulated-metrics/log")
 async def simulated_ai_log():
-    """Returns rotating AI decision log entries for portal System Log."""
+    """Returns AI decision log entries. Critical message when simulation chaos active."""
     import time
-    idx = int(time.time() / 3) % len(_AI_LOG_ENTRIES)
-    return {"entry": _AI_LOG_ENTRIES[idx], "timestamp": time.time()}
+    t = time.time()
+    if _simulation_mode in (SimulationMode.GPU_SPIKE, SimulationMode.CHILLER_FAILURE):
+        return {
+            "entry": "[CRITICAL] Thermal Inertia detected. Engaging Predictive Fan Modulation.",
+            "timestamp": t,
+            "critical": True,
+        }
+    idx = int(t / 3) % len(_AI_LOG_ENTRIES)
+    return {"entry": _AI_LOG_ENTRIES[idx], "timestamp": t, "critical": False}
 
 
 @app.post("/ingest/csv")
@@ -419,6 +515,46 @@ async def set_state(state_input: StateInput):
     elif state == SystemState.GUARD_MODE:
         _state_machine.set_state(SystemState.GUARD_MODE, "User requested guard mode")
     return {"state": _state_machine.state.value}
+
+
+class LeadInput(BaseModel):
+    """Input for POST /api/v1/leads."""
+    fullName: str
+    businessEmail: str
+    phone: str
+    dataCenterScale: str
+
+
+@app.post("/api/v1/leads")
+async def create_lead(lead: LeadInput):
+    """
+    Lead capture for Blueprint Request form.
+    Stores submissions in data/leads.json and logs to console.
+    """
+    leads_path = project_root / "data" / "leads.json"
+    leads_path.parent.mkdir(parents=True, exist_ok=True)
+
+    entry = {
+        "fullName": lead.fullName,
+        "businessEmail": lead.businessEmail,
+        "phone": lead.phone,
+        "dataCenterScale": lead.dataCenterScale,
+        "submittedAt": datetime.utcnow().isoformat() + "Z",
+    }
+
+    leads = []
+    if leads_path.exists():
+        try:
+            with open(leads_path) as f:
+                leads = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            leads = []
+    leads.append(entry)
+    with open(leads_path, "w") as f:
+        json.dump(leads, f, indent=2)
+
+    print(f"[CooledAI Lead] Blueprint Request: {lead.fullName} | {lead.businessEmail} | {lead.dataCenterScale} MW")
+    return {"status": "success", "message": "Blueprint Request Received."}
 
 
 @app.get("/adapters")

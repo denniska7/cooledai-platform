@@ -3,6 +3,12 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 
+const getApiUrl = (): string => {
+  const url = process.env.NEXT_PUBLIC_API_URL;
+  if (!url) return "";
+  return url.replace(/\/$/, "");
+};
+
 const CONSUMER_DOMAINS = [
   "gmail.com",
   "yahoo.com",
@@ -31,8 +37,10 @@ export function LeadForm() {
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const newErrors: Record<string, string> = {};
 
@@ -44,10 +52,33 @@ export function LeadForm() {
     if (!form.dataCenterScale.trim()) newErrors.dataCenterScale = "Required";
 
     setErrors(newErrors);
+    setSubmitError(null);
     if (Object.keys(newErrors).length > 0) return;
 
-    setSubmitted(true);
-    // TODO: POST to backend / lead capture
+    setSubmitting(true);
+    try {
+      const base = getApiUrl();
+      if (!base) throw new Error("API URL not configured");
+      const res = await fetch(`${base}/api/v1/leads`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          fullName: form.fullName,
+          businessEmail: form.businessEmail,
+          phone: form.phone,
+          dataCenterScale: form.dataCenterScale,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || res.statusText);
+      }
+      setSubmitted(true);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Submission failed");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const inputClass =
@@ -72,9 +103,12 @@ export function LeadForm() {
         </p>
 
         {submitted ? (
-          <div className="rounded border border-white bg-white/5 p-8 text-center">
+          <div className="rounded border border-[rgba(255,255,255,0.1)] bg-white/5 p-8 text-center">
             <p className="font-medium text-white tracking-wide">
-              Thank you. We&apos;ll be in touch within 24 hours.
+              Blueprint Request Received.
+            </p>
+            <p className="mt-3 text-sm text-white/60 tracking-wide">
+              Our systems are analyzing your infrastructure profile.
             </p>
           </div>
         ) : (
@@ -133,11 +167,15 @@ export function LeadForm() {
                 <p className={errorClass}>{errors.dataCenterScale}</p>
               )}
             </div>
+            {submitError && (
+              <p className="text-sm text-red-400">{submitError}</p>
+            )}
             <button
               type="submit"
-              className="w-full rounded border border-white bg-white px-6 py-4 font-medium tracking-tight text-black transition-opacity hover:opacity-90"
+              disabled={submitting}
+              className="w-full rounded border border-white bg-white px-6 py-4 font-medium tracking-tight text-black transition-opacity hover:opacity-90 disabled:opacity-50"
             >
-              Request Blueprint
+              {submitting ? "Submitting…" : "Request Blueprint"}
             </button>
           </form>
         )}

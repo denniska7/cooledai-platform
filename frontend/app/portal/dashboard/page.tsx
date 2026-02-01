@@ -25,6 +25,7 @@ type Metrics = {
   current_capacity?: number;
   carbon_offset_kg?: number;
   opex_reclaimed_usd?: number;
+  simulation_critical?: boolean;
 } | null;
 
 type LogEntry = { entry: string; timestamp: number } | null;
@@ -50,7 +51,7 @@ async function fetchAiLog(): Promise<LogEntry> {
     const res = await fetch(`${base}/simulated-metrics/log`, { cache: "no-store" });
     if (!res.ok) return null;
     const data = await res.json();
-    return { entry: data.entry, timestamp: data.timestamp };
+    return { entry: data.entry, timestamp: data.timestamp, critical: data.critical };
   } catch {
     return null;
   }
@@ -172,7 +173,7 @@ export default function PortalDashboardPage() {
                   exit={{ opacity: 0 }}
                   transition={{ duration: 0.3 }}
                 >
-                  <SystemLog entry={aiLog.entry} timestamp={aiLog.timestamp} />
+                  <SystemLog entry={aiLog.entry} timestamp={aiLog.timestamp} critical={aiLog.critical} />
                 </motion.div>
               ) : (
                 <div className="rounded border border-[rgba(255,255,255,0.1)] bg-black p-4 font-mono text-sm text-white/50">
