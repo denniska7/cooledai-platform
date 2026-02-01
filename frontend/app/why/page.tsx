@@ -1,5 +1,8 @@
 import { NavBar } from "../../components/NavBar";
 import Link from "next/link";
+import { CollisionGraph } from "../../components/why/CollisionGraph";
+import { ReactionSchematic } from "../../components/why/ReactionSchematic";
+import { ValueVectors } from "../../components/why/ValueVectors";
 
 export default function WhyPage() {
   return (
@@ -7,59 +10,104 @@ export default function WhyPage() {
       <NavBar />
 
       <main className="pt-20">
-        <section className="mx-auto max-w-3xl px-6 py-24">
-          <h1 className="text-3xl font-medium tracking-tight text-white md:text-4xl">
-            Why CooledAI?
-          </h1>
-
-          <div className="mt-16 space-y-16">
-            <div>
-              <h2 className="text-lg font-medium tracking-tight text-white border-b border-white/20 pb-2">
-                The Rising Cost of Compute
-              </h2>
-              <p className="mt-4 text-white/80 leading-relaxed">
-                Electricity prices and AI compute density are rising in tandem,
-                creating a margin crisis for data centers. Every watt of cooling
-                overhead erodes profitability. Legacy systems were built for
-                predictable, steady-state workloads—not the spiky, high-density
-                demands of modern AI training and inference.
+        <div className="mx-auto max-w-4xl px-6">
+          {/* Section 1: The Collision Course */}
+          <section className="py-32">
+            <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl">
+              The Decoupling of Compute and Power.
+            </h2>
+            <div className="mt-12 space-y-8 text-white/80 leading-relaxed">
+              <p>
+                While AI chip performance doubles rapidly—following the curve of
+                Moore&apos;s Law and beyond—data center power infrastructure
+                upgrades take years. Permits, capital allocation, and physical
+                construction move at a pace that silicon does not.
+              </p>
+              <p>
+                The result is a &quot;Thermal Wall&quot;: facilities cannot
+                deploy the newest hardware (H100s, B200s, and beyond) due to heat
+                constraints, not space constraints. Racks sit partially empty.
+                Chips throttle. The bottleneck is thermodynamics, not
+                transistor count.
               </p>
             </div>
+            <div className="mt-16">
+              <CollisionGraph />
+            </div>
+          </section>
 
-            <div>
-              <h2 className="text-lg font-medium tracking-tight text-white border-b border-white/20 pb-2">
-                Performance vs. Efficiency
-              </h2>
-              <p className="mt-4 text-white/80 leading-relaxed">
-                Most systems throttle performance to save energy. CooledAI uses
-                predictive modeling to keep chips at peak performance while
-                optimizing the environment around them. No trade-offs. No
-                compromise.
+          {/* Section 2: The Failure of Reaction */}
+          <section className="py-32 border-t border-white/20">
+            <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl">
+              Reactive Cooling is Already Too Late.
+            </h2>
+            <div className="mt-12 space-y-8 text-white/80 leading-relaxed">
+              <p>
+                Legacy CRAC and CRAH units wait for a temperature sensor to
+                spike before ramping up cooling. The control loop is simple:
+                sense heat, then react. But AI workloads spike in milliseconds.
+                A single training step can push a GPU from 40°C to 85°C before
+                any cooling system has time to respond.
+              </p>
+              <p>
+                This latency causes micro-throttling—the GPU backs off to protect
+                itself—and cumulative hardware degradation. Thermal cycling
+                (rapid heating and cooling) accelerates solder fatigue and
+                reduces silicon lifespan. Reactive cooling doesn&apos;t just
+                waste energy; it shortens the life of your most expensive
+                assets.
               </p>
             </div>
+            <div className="mt-16">
+              <ReactionSchematic />
+            </div>
+          </section>
 
-            <div>
-              <h2 className="text-lg font-medium tracking-tight text-white border-b border-white/20 pb-2">
-                The AI Boom
-              </h2>
-              <p className="mt-4 text-white/80 leading-relaxed">
-                Legacy cooling systems were built for the 2010s cloud—low
-                density, high redundancy, reactive control. The 2020s AI boom
-                demands the opposite: high density, predictive control, and
-                energy autonomy. CooledAI was built for this era.
+          {/* Section 3: The Predictive Paradigm Shift */}
+          <section className="py-32 border-t border-white/20">
+            <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl">
+              Intelligence Precedes Heat.
+            </h2>
+            <div className="mt-12 space-y-8 text-white/80 leading-relaxed">
+              <p>
+                CooledAI ingests real-time telemetry: workload scheduling, GPU
+                voltage draw, ambient rack temperatures, and historical thermal
+                signatures. We build a predictive thermal model that anticipates
+                energy demand before it manifests as heat.
+              </p>
+              <p>
+                We don&apos;t react to heat. We anticipate it. Pre-cooling kicks
+                in before the spike. Fans and chillers ramp in sync with
+                compute, not in response to it. The result is a thermal envelope
+                that stays flat—no spikes, no throttling, no wasted cycles.
               </p>
             </div>
-          </div>
+          </section>
 
-          <div className="mt-20">
-            <Link
-              href="/#request-audit"
-              className="inline-block rounded border border-white bg-white px-6 py-3 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90"
-            >
-              Request a Custom Efficiency Blueprint
-            </Link>
-          </div>
-        </section>
+          {/* Section 4: Three Vectors of Value */}
+          <section className="py-32 border-t border-white/20">
+            <h2 className="mb-16 text-2xl font-medium tracking-tight text-white md:text-3xl">
+              Three Vectors of Value
+            </h2>
+            <ValueVectors />
+          </section>
+
+          {/* Section 5: The Final Call */}
+          <section className="py-32 border-t border-white/20">
+            <p className="max-w-2xl text-2xl font-medium tracking-tight text-white md:text-3xl">
+              The AI boom will not be constrained by silicon. It will be
+              constrained by thermodynamics.
+            </p>
+            <div className="mt-12">
+              <Link
+                href="/#request-audit"
+                className="inline-block rounded border-2 border-white bg-transparent px-8 py-4 text-sm font-medium tracking-tight text-white transition-opacity hover:opacity-90"
+              >
+                Request Your Efficiency Blueprint
+              </Link>
+            </div>
+          </section>
+        </div>
       </main>
 
       <footer className="border-t border-white/20 py-8">
