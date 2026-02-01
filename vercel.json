@@ -1,1 +1,8 @@
-{ "rootDirectory": "frontend", "framework": "nextjs" }
+{
+  "version": 2,
+  "rootDirectory": "frontend",
+  "framework": "nextjs",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/$1" }
+  ]
+}
