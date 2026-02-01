@@ -9,3 +9,17 @@
     letter-spacing: -0.02em;
   }
 }
+
+@keyframes draw-path {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.animate-draw-10s {
+  stroke-dasharray: 1;
+  animation: draw-path 10s linear infinite;
+}

@@ -9,13 +9,12 @@ export function NeuralMapDiagram() {
             <polygon points="0 0, 10 3.5, 0 7" fill="rgba(255,255,255,0.6)" />
           </marker>
         </defs>
-        {/* Input: Rack Telemetry */}
         <rect x="20" y="70" width="95" height="60" fill="none" stroke="rgba(255,255,255,0.6)" strokeWidth="1" />
         <text x="67" y="95" fill="#FFFFFF" fontSize="10" fontFamily="system-ui" textAnchor="middle">Rack Telemetry</text>
         <text x="67" y="110" fill="rgba(255,255,255,0.5)" fontSize="8" fontFamily="system-ui" textAnchor="middle">Temp · Power · Load</text>
         <text x="67" y="122" fill="rgba(255,255,255,0.35)" fontSize="7" fontFamily="system-ui" textAnchor="middle">Power · Room temp</text>
 
-        <line x1="115" y1="100" x2="155" y2="100" stroke="rgba(255,255,255,0.5)" strokeWidth="1" markerEnd="url(#arrow)" />
+        <line x1="115" y1="100" x2="155" y2="100" stroke="rgba(255,255,255,0.5)" strokeWidth="1" markerEnd="url(#arrow)" pathLength={1} className="animate-draw-10s" />
 
         {/* Predictive Engine */}
         <rect x="155" y="55" width="100" height="90" fill="none" stroke="#00FFCC" strokeWidth="1.5" strokeOpacity="0.9" />
@@ -36,7 +35,7 @@ export function NeuralMapDiagram() {
         <text x="320" y="32" fill="rgba(255,255,255,0.45)" fontSize="7" fontFamily="system-ui" textAnchor="middle">Job schedule · Pre-cool</text>
         <line x1="320" y1="36" x2="255" y2="55" stroke="rgba(255,255,255,0.25)" strokeWidth="0.5" strokeDasharray="2" markerEnd="url(#arrow)" />
 
-        <line x1="255" y1="100" x2="365" y2="100" stroke="rgba(255,255,255,0.5)" strokeWidth="1" markerEnd="url(#arrow)" />
+        <line x1="255" y1="100" x2="365" y2="100" stroke="rgba(255,255,255,0.5)" strokeWidth="1" markerEnd="url(#arrow)" pathLength={1} className="animate-draw-10s" />
 
         {/* Output: Fan/Chiller Control */}
         <rect x="375" y="70" width="95" height="60" fill="none" stroke="#FFFFFF" strokeWidth="1" strokeOpacity="0.8" />
