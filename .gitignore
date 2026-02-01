@@ -1,2 +1,5 @@
 .vercel
 .env*.local
+data/leads.json
+node_modules/
+**/node_modules/
