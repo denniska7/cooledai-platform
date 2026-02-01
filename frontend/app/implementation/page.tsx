@@ -141,6 +141,150 @@ export default function ImplementationPage() {
             </div>
           </section>
 
+          {/* Data Connectivity & Security */}
+          <section className="py-16 border-t border-[rgba(255,255,255,0.1)]">
+            <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl mb-10">
+              Data Connectivity & Security
+            </h2>
+
+            <h3 className="text-sm font-medium text-white/70 uppercase tracking-wider mb-6">
+              Connectivity Options
+            </h3>
+            <div className="grid gap-6 md:grid-cols-3">
+              {/* Option 1: Edge Agent */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.4 }}
+                className="rounded border border-white/10 bg-black p-6"
+              >
+                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded border border-white/20">
+                  <svg viewBox="0 0 24 24" className="h-6 w-6 text-white/80" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <rect x="4" y="4" width="16" height="16" rx="2" />
+                    <path d="M4 12h16M12 4v16" />
+                  </svg>
+                </div>
+                <h4 className="text-lg font-medium tracking-tight text-white">
+                  CooledAI Edge Agent
+                </h4>
+                <span className="mt-1 inline-block text-xs text-white/50 uppercase tracking-wider">
+                  Recommended
+                </span>
+                <p className="mt-4 text-sm text-white/70 leading-relaxed">
+                  A lightweight Docker container deployed on your local VM. Uses Outbound-Only HTTPS (Port 443) to stream telemetry. No inbound firewall changes required.
+                </p>
+                <p className="mt-4 text-xs text-white/50">
+                  <span className="font-medium text-white/70">Best for:</span> Facilities requiring fast deployment and zero-trust security.
+                </p>
+                <div className="mt-6">
+                  <svg viewBox="0 0 200 60" className="w-full" preserveAspectRatio="xMidYMid meet">
+                    <defs>
+                      <marker id="edge-arrow" markerWidth="6" markerHeight="4" refX="5" refY="2" orient="auto">
+                        <polygon points="0 0, 6 2, 0 4" fill="rgba(255,255,255,0.6)" />
+                      </marker>
+                    </defs>
+                    <rect x="10" y="15" width="50" height="30" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
+                    <text x="35" y="32" fill="rgba(255,255,255,0.8)" fontSize="8" fontFamily="system-ui" textAnchor="middle">VM</text>
+                    <line x1="60" y1="30" x2="130" y2="30" stroke="rgba(255,255,255,0.5)" strokeWidth="1" strokeDasharray="4" markerEnd="url(#edge-arrow)" />
+                    <text x="95" y="22" fill="rgba(255,255,255,0.5)" fontSize="7" fontFamily="system-ui" textAnchor="middle">HTTPS 443</text>
+                    <rect x="140" y="15" width="50" height="30" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
+                    <text x="165" y="32" fill="rgba(255,255,255,0.8)" fontSize="8" fontFamily="system-ui" textAnchor="middle">Cloud</text>
+                  </svg>
+                </div>
+              </motion.div>
+
+              {/* Option 2: Site-to-Site VPN */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.4, delay: 0.05 }}
+                className="rounded border border-white/10 bg-black p-6"
+              >
+                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded border border-white/20">
+                  <svg viewBox="0 0 24 24" className="h-6 w-6 text-white/80" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                  </svg>
+                </div>
+                <h4 className="text-lg font-medium tracking-tight text-white">
+                  Secure Site-to-Site VPN
+                </h4>
+                <p className="mt-4 text-sm text-white/70 leading-relaxed">
+                  An encrypted IPsec tunnel between your facility and our sovereign cloud. Provides a dedicated, private network path for all control and monitoring data.
+                </p>
+                <p className="mt-4 text-xs text-white/50">
+                  <span className="font-medium text-white/70">Best for:</span> Enterprise-scale deployments and multi-site management.
+                </p>
+                <div className="mt-6">
+                  <svg viewBox="0 0 200 60" className="w-full" preserveAspectRatio="xMidYMid meet">
+                    <rect x="10" y="15" width="45" height="30" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
+                    <text x="32" y="32" fill="rgba(255,255,255,0.8)" fontSize="7" fontFamily="system-ui" textAnchor="middle">Facility</text>
+                    <path d="M55 30 Q100 10 145 30" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="1" strokeDasharray="3" />
+                    <text x="100" y="18" fill="rgba(255,255,255,0.5)" fontSize="7" fontFamily="system-ui" textAnchor="middle">IPsec</text>
+                    <rect x="145" y="15" width="45" height="30" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
+                    <text x="167" y="32" fill="rgba(255,255,255,0.8)" fontSize="7" fontFamily="system-ui" textAnchor="middle">Sovereign</text>
+                  </svg>
+                </div>
+              </motion.div>
+
+              {/* Option 3: Cloud-to-Cloud API */}
+              <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                whileInView={{ opacity: 1, y: 0 }}
+                viewport={{ once: true }}
+                transition={{ duration: 0.4, delay: 0.1 }}
+                className="rounded border border-white/10 bg-black p-6"
+              >
+                <div className="mb-4 flex h-12 w-12 items-center justify-center rounded border border-white/20">
+                  <svg viewBox="0 0 24 24" className="h-6 w-6 text-white/80" fill="none" stroke="currentColor" strokeWidth="1.5">
+                    <path d="M3 15a4 4 0 0 0 4 4h9a5 5 0 1 0-.1-9.999 5.002 5.002 0 0 0-9.78 2A3.5 3.5 0 0 0 3 15z" />
+                  </svg>
+                </div>
+                <h4 className="text-lg font-medium tracking-tight text-white">
+                  Cloud-to-Cloud API Integration
+                </h4>
+                <p className="mt-4 text-sm text-white/70 leading-relaxed">
+                  Direct handshake with your existing DCIM/BMS provider (Schneider, Sunbird, Vertiv). Zero hardware or local software footprint.
+                </p>
+                <p className="mt-4 text-xs text-white/50">
+                  <span className="font-medium text-white/70">Best for:</span> Facilities already utilizing modern cloud-based infrastructure management.
+                </p>
+                <div className="mt-6">
+                  <svg viewBox="0 0 200 60" className="w-full" preserveAspectRatio="xMidYMid meet">
+                    <ellipse cx="50" cy="30" rx="35" ry="18" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
+                    <text x="50" y="33" fill="rgba(255,255,255,0.8)" fontSize="7" fontFamily="system-ui" textAnchor="middle">DCIM/BMS</text>
+                    <line x1="85" y1="30" x2="115" y2="30" stroke="rgba(255,255,255,0.5)" strokeWidth="1" />
+                    <text x="100" y="22" fill="rgba(255,255,255,0.5)" fontSize="7" fontFamily="system-ui" textAnchor="middle">API</text>
+                    <ellipse cx="150" cy="30" rx="35" ry="18" fill="none" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
+                    <text x="150" y="33" fill="rgba(255,255,255,0.8)" fontSize="7" fontFamily="system-ui" textAnchor="middle">CooledAI</text>
+                  </svg>
+                </div>
+              </motion.div>
+            </div>
+
+            {/* Sovereign Data Security */}
+            <div className="mt-16 rounded border border-white/10 bg-black p-8">
+              <h3 className="text-xl font-medium tracking-tight text-white">
+                Sovereign Data Security
+              </h3>
+              <ul className="mt-6 space-y-4 text-sm text-white/80 leading-relaxed">
+                <li className="flex gap-3">
+                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-white/60" />
+                  All data is encrypted at rest (AES-256) and in transit (TLS 1.3).
+                </li>
+                <li className="flex gap-3">
+                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-white/60" />
+                  Read-Only &apos;Shadow Mode&apos; by default. Autonomous control requires multi-factor physical authorization.
+                </li>
+                <li className="flex gap-3">
+                  <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-white/60" />
+                  SOC2 Type II and ISO 27001 compliance-ready architecture.
+                </li>
+              </ul>
+            </div>
+          </section>
+
           {/* SaaS Pricing */}
           <section className="py-16 border-t border-[rgba(255,255,255,0.1)]">
             <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl">
