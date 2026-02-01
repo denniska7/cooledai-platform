@@ -25,6 +25,7 @@ export const apiFetch = async (
 // Convenience methods for CooledAI endpoints
 export const api = {
   health: () => apiFetch("/health"),
+  getSimulatedMetrics: () => apiFetch("/simulated-metrics"),
   getOptimize: () => apiFetch("/optimize"),
   getState: () => apiFetch("/state"),
   postOptimize: (body: unknown) =>

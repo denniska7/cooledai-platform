@@ -220,6 +220,25 @@ async def health_check():
     return {"status": "ok"}
 
 
+@app.get("/simulated-metrics")
+async def simulated_metrics():
+    """
+    Simulated real-time metrics for System Pulse visualization.
+    Returns synthetic thermal/optimization data for demo purposes.
+    """
+    import time
+    import math
+    t = time.time()
+    return {
+        "efficiency_score": 87.0 + 5 * math.sin(t * 0.3),
+        "thermal_lag_seconds": 2.1 + 0.5 * math.sin(t * 0.2),
+        "state": "OPTIMIZING",
+        "nodes_active": 24,
+        "cooling_delta": 0.12,
+        "timestamp": t,
+    }
+
+
 @app.post("/ingest/csv")
 async def ingest_csv(file: UploadFile = File(...)):
     """
