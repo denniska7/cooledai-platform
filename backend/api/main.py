@@ -217,7 +217,7 @@ class OptimizationResponse(BaseModel):
 @app.get("/health")
 async def health_check():
     """Health check endpoint for load balancers and monitoring."""
-    return {"status": "healthy", "service": "CooledAI"}
+    return {"status": "ok"}
 
 
 @app.post("/ingest/csv")
