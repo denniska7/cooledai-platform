@@ -1,0 +1,84 @@
+# Physics Configuration for Heat Distribution Simulation
+
+# Thermal Properties
+thermal:
+  # Thermal diffusivity of air (m²/s)
+  diffusivity: 2.2e-5
+
+  # Air properties at 20°C
+  density: 1.204  # kg/m³
+  specific_heat: 1005  # J/(kg·K)
+  thermal_conductivity: 0.0257  # W/(m·K)
+
+# Data Center Geometry
+geometry:
+  # Domain dimensions (meters)
+  length: 10.0   # x-direction
+  width: 8.0     # y-direction
+  height: 3.0    # z-direction
+
+# Boundary Conditions
+boundaries:
+  # Inlet cooling air temperature (°C)
+  inlet_temp: 18.0
+
+  # Initial room temperature (°C)
+  initial_temp: 22.0
+
+  # Floor/ceiling boundary type: "dirichlet" or "neumann"
+  floor_type: "neumann"
+  ceiling_type: "neumann"
+
+# Heat Sources (Servers)
+servers:
+  # Number of server racks
+  num_racks: 8
+
+  # Heat output per rack (Watts)
+  power_per_rack: 5000
+
+  # Server rack dimensions (meters)
+  rack_width: 0.6
+  rack_depth: 1.0
+  rack_height: 2.0
+
+# Training Parameters
+training:
+  # Number of collocation points for PDE
+  n_collocation: 10000
+
+  # Number of boundary points
+  n_boundary: 2000
+
+  # Number of initial condition points
+  n_initial: 1000
+
+  # Training epochs
+  epochs: 10000
+
+  # Learning rate
+  learning_rate: 1e-3
+
+  # Batch size
+  batch_size: 256
+
+  # Loss weights
+  loss_weights:
+    pde_loss: 1.0
+    boundary_loss: 100.0
+    initial_loss: 100.0
+    data_loss: 10.0
+
+# Neural Network Architecture
+network:
+  # Input dimension (x, y, z, t)
+  input_dim: 4
+
+  # Output dimension (Temperature)
+  output_dim: 1
+
+  # Hidden layers
+  hidden_layers: [64, 64, 64, 64, 64]
+
+  # Activation function
+  activation: "tanh"

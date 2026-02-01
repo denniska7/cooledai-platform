@@ -1,0 +1,212 @@
+# Hardware Profiles for Modern Data Center Equipment
+# Following 2026 standards for AI infrastructure
+
+# NVIDIA Blackwell GB200 - Next-Generation AI Accelerator
+nvidia_blackwell_gb200:
+  name: "NVIDIA Blackwell GB200"
+  generation: "Blackwell"
+  release_year: 2024
+
+  # GPU Specifications
+  gpu:
+    model: "GB200"
+    architecture: "Blackwell"
+    power_per_gpu: 1200  # Watts per GPU
+    thermal_design_power: 1200  # TDP in Watts
+    max_junction_temp: 85  # °C (Maximum safe operating temperature)
+    idle_power: 50  # Watts (idle/low utilization)
+
+  # Rack Configuration
+  rack:
+    gpus_per_server: 8  # 8 GPUs per server node
+    servers_per_rack: 16  # 16 servers per 42U rack
+    total_gpus_per_rack: 128  # 8 * 16 = 128 GPUs
+    rack_power_compute: 153600  # Watts (1200W * 128 GPUs)
+    rack_power_overhead: 10%  # Power for fans, BMC, networking
+    total_rack_power: 168960  # Watts (~169 kW total)
+
+  # Cooling Configuration (2026 Hybrid Standard)
+  cooling:
+    type: "hybrid"  # Liquid + Air
+
+    # Liquid Cooling (Direct-to-Chip)
+    liquid:
+      enabled: true
+      heat_capture_percentage: 90  # 90% of heat captured by liquid
+      components:
+        - "GPU Dies"
+        - "HBM (High Bandwidth Memory)"
+        - "CPU"
+        - "Power Delivery (VRMs)"
+      coolant_type: "water_glycol"  # Water-glycol mixture
+      inlet_temp: 20  # °C (Coolant inlet temperature)
+      outlet_temp: 35  # °C (Coolant outlet after heat absorption)
+      flow_rate: 4.0  # Liters per minute per server
+      pressure: 2.5  # bar (operating pressure)
+
+    # Air Cooling (Residual Heat Rejection)
+    air:
+      enabled: true
+      heat_rejection_percentage: 10  # 10% residual heat to air
+      components:
+        - "PCIe Connectors"
+        - "Passive Components"
+        - "Enclosure"
+        - "Networking Cards"
+      inlet_temp: 18  # °C (Cold aisle supply air)
+      outlet_temp: 28  # °C (Hot aisle return air)
+      airflow_cfm: 150  # CFM per server
+
+  # Thermal Characteristics
+  thermal:
+    heat_output_liquid: 138240  # Watts (90% of total)
+    heat_output_air: 15360  # Watts (10% of total)
+
+    # Heat flux density
+    heat_flux_per_rack: 4000  # W/m² (very high density)
+
+    # Time constants
+    thermal_time_constant: 30  # seconds (how fast temperature changes)
+    coolant_time_constant: 5   # seconds (liquid loop response)
+    air_time_constant: 15      # seconds (air response)
+
+  # Operational Parameters
+  operation:
+    utilization_typical: 70  # % (typical workload)
+    utilization_peak: 95     # % (peak workload)
+    utilization_idle: 5      # % (idle/standby)
+
+    # Power scaling
+    power_scaling: "cubic"  # Power scales ~cubically with utilization
+
+  # Safety & Monitoring
+  monitoring:
+    temperature_sensors: 24  # Per server
+    flow_sensors: 2          # Liquid coolant
+    power_sensors: 8         # Per rail
+
+  # Maintenance
+  maintenance:
+    liquid_coolant_change: 12  # months
+    filter_replacement: 3      # months
+    thermal_paste_refresh: 24  # months
+
+
+# Traditional Air-Cooled Server (for comparison)
+traditional_server:
+  name: "Traditional x86 Server"
+
+  cpu:
+    power: 300  # Watts (2x 150W CPUs)
+
+  rack:
+    servers_per_rack: 42  # 1U servers
+    total_rack_power: 12600  # Watts (~13 kW)
+
+  cooling:
+    type: "air_only"
+    air:
+      heat_rejection_percentage: 100
+      inlet_temp: 18  # °C
+      outlet_temp: 32  # °C
+      airflow_cfm: 100  # CFM per server
+
+
+# Cooling Infrastructure
+cooling_infrastructure:
+
+  # Liquid Cooling Distribution Unit (CDU)
+  cdu:
+    name: "Liquid Cooling Distribution Unit"
+    capacity: 500  # kW heat removal capacity
+    pumps: 2  # Redundant pumps
+    heat_exchangers: 2  # Redundant heat exchangers
+
+    # Performance
+    efficiency_pue: 0.05  # PUE contribution (very efficient)
+    power_consumption: 15  # kW (pump + controls)
+
+    # Coolant loop
+    primary_loop_temp: 20  # °C (to racks)
+    primary_loop_return: 35  # °C (from racks)
+    secondary_loop_temp: 10  # °C (chiller water)
+    secondary_loop_return: 15  # °C
+
+  # Computer Room Air Conditioner (CRAC)
+  crac:
+    name: "CRAC Unit"
+    capacity: 100  # kW cooling capacity
+    airflow: 10000  # CFM
+    efficiency_eer: 10  # EER (Energy Efficiency Ratio)
+    power_consumption: 10  # kW
+
+    # Air handling
+    supply_temp: 18  # °C
+    return_temp: 28  # °C
+    humidity_setpoint: 50  # % RH
+
+  # Chiller Plant
+  chiller:
+    name: "Central Chiller"
+    capacity: 2000  # kW (refrigeration tons)
+    efficiency_cop: 5.0  # COP (Coefficient of Performance)
+    power_consumption: 400  # kW
+
+    # Water temps
+    chilled_water_supply: 10  # °C
+    chilled_water_return: 15  # °C
+    condenser_water_supply: 30  # °C
+    condenser_water_return: 35  # °C
+
+
+# PUE Calculation Parameters
+pue_calculation:
+  # IT Equipment Power
+  it_power:
+    compute: "sum of all server power"
+    networking: "switches, routers"
+    storage: "storage arrays"
+
+  # Facility Power (Non-IT)
+  facility_power:
+    cooling:
+      chillers: "chiller plant power"
+      pumps: "primary + secondary pumps"
+      crac_fans: "CRAC/CRAH fan power"
+      cooling_towers: "cooling tower fans"
+    power_distribution:
+      ups_losses: "UPS efficiency losses"
+      pdu_losses: "PDU distribution losses"
+      transformer_losses: "step-down transformer losses"
+    lighting: "facility lighting"
+    other: "building management, security"
+
+  # PUE Formula
+  # PUE = (IT Power + Facility Power) / IT Power
+  # Target PUE for 2026: 1.15 - 1.25 (with hybrid cooling)
+
+  target_pue:
+    excellent: 1.15  # Best-in-class (liquid cooling)
+    good: 1.25       # Modern facility
+    acceptable: 1.35 # Older facility
+    poor: 1.50       # Legacy air-cooled
+
+
+# Validation Metrics
+validation:
+  # Check that configuration is physically reasonable
+  checks:
+    - name: "Total cooling equals total heat"
+      formula: "cooling_capacity >= total_rack_power"
+
+    - name: "Liquid capture percentage"
+      formula: "90% <= liquid_capture <= 95%"
+
+    - name: "Air rejection percentage"
+      formula: "5% <= air_rejection <= 10%"
+
+    - name: "Temperature delta reasonable"
+      formula: "coolant_delta_T = 10-20°C"
+
+    - name: "PUE target achievable"
+      formula: "PUE <= 1.3 with hybrid cooling"
