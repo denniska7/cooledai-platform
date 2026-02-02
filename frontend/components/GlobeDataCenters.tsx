@@ -33,7 +33,7 @@ export function GlobeDataCenters() {
 
     let animationId: number;
     let time = 0;
-    const rotationSpeed = 0.0003;
+    const rotationSpeed = 0.00015; // Slow Earth-like spin
 
     const resize = () => {
       canvas.width = window.innerWidth;
@@ -48,32 +48,72 @@ export function GlobeDataCenters() {
       const h = canvas.height;
       const cx = w / 2;
       const cy = h / 2;
-      const radius = Math.min(w, h) * 0.35;
+      const radius = Math.min(w, h) * 0.38;
+      const aspectY = 0.42; // Slightly squashed for globe look
 
-      // Draw globe outline (ellipse)
-      ctx.strokeStyle = "rgba(0, 255, 204, 0.18)";
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.ellipse(cx, cy, radius, radius * 0.4, 0, 0, Math.PI * 2);
-      ctx.stroke();
-
-      // Rotate longitude over time
       const rot = time * rotationSpeed;
 
-      // Project data center points onto 2D (simple orthographic)
+      // Clip to globe ellipse so graticule stays inside
+      ctx.save();
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, radius, radius * aspectY, 0, 0, Math.PI * 2);
+      ctx.clip();
+
+      // Draw latitude lines (horizontal rings)
+      const latStep = 30;
+      for (let lat = -60; lat <= 60; lat += latStep) {
+        const phi = (lat * Math.PI) / 180;
+        const r = radius * Math.cos(phi);
+        const y = radius * aspectY * Math.sin(phi);
+        if (r > 2) {
+          ctx.strokeStyle = "rgba(0, 255, 204, 0.12)";
+          ctx.lineWidth = 0.8;
+          ctx.beginPath();
+          ctx.ellipse(cx, cy - y, r, r * aspectY, 0, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+      }
+
+      // Draw longitude lines (meridians) - curved arcs
+      const lonStep = 30;
+      for (let lon = 0; lon < 360; lon += lonStep) {
+        const lambda = ((lon - 90) * Math.PI) / 180 + rot;
+        ctx.strokeStyle = "rgba(0, 255, 204, 0.12)";
+        ctx.lineWidth = 0.8;
+        ctx.beginPath();
+        for (let lat = -90; lat <= 90; lat += 3) {
+          const phi = (lat * Math.PI) / 180;
+          const x = cx + radius * Math.cos(phi) * Math.cos(lambda);
+          const y = cy - radius * aspectY * Math.sin(phi);
+          if (lat === -90) ctx.moveTo(x, y);
+          else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+      }
+
+      ctx.restore();
+
+      // Globe outline (stronger edge)
+      ctx.strokeStyle = "rgba(0, 255, 204, 0.22)";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, radius, radius * aspectY, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Project data center points onto 2D (orthographic)
       const points: { x: number; y: number; lng: number }[] = [];
       for (const [lat, lng] of DATA_CENTERS) {
         const lngRot = ((lng * Math.PI) / 180 + rot) % (Math.PI * 2);
         const phi = (90 - lat) * (Math.PI / 180);
         const theta = lngRot;
         const x = cx + radius * Math.sin(phi) * Math.cos(theta);
-        const y = cy - radius * 0.4 * Math.cos(phi);
+        const y = cy - radius * aspectY * Math.cos(phi);
         if (x >= cx - radius && x <= cx + radius) {
           points.push({ x, y, lng });
         }
       }
 
-      // Draw interconnecting lines (animate opacity)
+      // Interconnecting lines
       const lineOpacity = 0.08 + Math.sin(time * 0.002) * 0.04;
       ctx.strokeStyle = `rgba(0, 255, 204, ${lineOpacity})`;
       ctx.lineWidth = 0.8;
@@ -94,7 +134,7 @@ export function GlobeDataCenters() {
       }
       ctx.setLineDash([]);
 
-      // Draw data center lights
+      // Data center lights
       const pulse = 0.75 + Math.sin(time * 0.004) * 0.2;
       for (const p of points) {
         const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 12);
