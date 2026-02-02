@@ -8,7 +8,7 @@ import { NeuralMapDiagram } from "../../components/optimization/NeuralMapDiagram
 
 export default function OptimizationPage() {
   return (
-    <div className="min-h-screen bg-black">
+    <div className="min-h-screen bg-transparent">
       <NavBar />
 
       <main className="pt-20">

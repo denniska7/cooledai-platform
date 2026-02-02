@@ -9,7 +9,7 @@ export default function SafetyShieldSettingsPage() {
 
   return (
     <div
-      className={`min-h-screen bg-black flex flex-col md:flex-row transition-all duration-500 min-h-[100dvh] ${
+      className={`min-h-screen bg-transparent flex flex-col md:flex-row transition-all duration-500 min-h-[100dvh] ${
         safetyShield
           ? "ring-2 ring-[#00FFCC] ring-inset animate-shield-pulse"
           : "ring-2 ring-white ring-inset"

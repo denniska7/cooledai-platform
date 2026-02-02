@@ -10,6 +10,8 @@ import { SavingsTicker } from "./components/SavingsTicker";
 import { SystemLog } from "./components/SystemLog";
 import { PowerReclaimedChart } from "./components/PowerReclaimedChart";
 import { EfficiencyReportModal } from "./components/EfficiencyReportModal";
+import { EfficiencyScore } from "./components/EfficiencyScore";
+import { SevenDayTestProgress } from "./components/SevenDayTestProgress";
 import { useInterval } from "../../../lib/useInterval";
 
 type Metrics = {
@@ -89,7 +91,7 @@ export default function PortalDashboardPage() {
 
   return (
     <div
-      className={`min-h-screen bg-black flex flex-col md:flex-row min-h-[100dvh] transition-all duration-500 ${
+      className={`min-h-screen bg-transparent flex flex-col md:flex-row min-h-[100dvh] transition-all duration-500 ${
         safetyShield
           ? "ring-2 ring-[#00FFCC] ring-inset animate-shield-pulse"
           : "ring-2 ring-white ring-inset"
@@ -104,16 +106,43 @@ export default function PortalDashboardPage() {
             </h1>
             <div className="flex items-center gap-4">
               {hasSeenSimulation && (
-                <button
-                  onClick={() => setReportModalOpen(true)}
-                  className="rounded border border-[#00FFCC] bg-[#00FFCC]/10 px-4 py-2 text-sm font-medium tracking-tight text-[#00FFCC] transition-opacity hover:bg-[#00FFCC]/20"
-                >
-                  Generate Efficiency Report
-                </button>
+                <>
+                  <button
+                    onClick={() => setReportModalOpen(true)}
+                    className="rounded border border-[#00FFCC] bg-[#00FFCC]/10 px-4 py-2 text-sm font-medium tracking-tight text-[#00FFCC] transition-opacity hover:bg-[#00FFCC]/20"
+                  >
+                    Download Efficiency Audit
+                  </button>
+                </>
               )}
               <SafetyShieldToggle enabled={safetyShield} onToggle={setSafetyShield} />
             </div>
           </div>
+
+          {/* Efficiency Score */}
+          <motion.section
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4 }}
+            className="rounded border border-[rgba(255,255,255,0.1)] bg-black p-6"
+          >
+            <EfficiencyScore
+              score={metrics?.efficiency_score ?? 94}
+              reclaimedPowerKw={Math.round(70 + (metrics?.efficiency_score ?? 94) * 0.8) || 142}
+            />
+          </motion.section>
+
+          {/* 7-Day Test Progress */}
+          <motion.section
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.02 }}
+            className="rounded border border-[rgba(255,255,255,0.1)] bg-black p-6"
+          >
+            <SevenDayTestProgress
+              currentDay={Math.min(7, Math.max(1, Math.floor((metrics?.efficiency_score ?? 30) / 15) + 1))}
+            />
+          </motion.section>
 
           {/* Predictive Gauge */}
           <motion.section

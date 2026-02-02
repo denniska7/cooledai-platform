@@ -6,7 +6,7 @@ import { NavBar } from "../../components/NavBar";
 
 export default function ImplementationPage() {
   return (
-    <div className="min-h-screen bg-black">
+    <div className="min-h-screen bg-transparent">
       <NavBar />
 
       <main className="pt-20">
@@ -29,7 +29,7 @@ export default function ImplementationPage() {
               transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
               className="mt-6 max-w-2xl text-lg text-white/70 leading-relaxed"
             >
-              CooledAI deploys in phases. Shadow Mode proves ROI before any
+              CooledAI deploys in phases. The 7-Day Efficiency Test proves ROI before any
               control is handed over. Edge-first architecture ensures
               sub-millisecond fail-safes. Scales from single-rack pilots to
               multi-megawatt fleets.
@@ -67,7 +67,7 @@ export default function ImplementationPage() {
               transition={{ duration: 0.6, ease: "easeOut" }}
               className="text-2xl font-medium tracking-tight text-white md:text-3xl"
             >
-              7-Day Shadow Mode
+              The 7-Day Efficiency Test
             </motion.h2>
             <motion.div
               initial={{ opacity: 0, x: -60 }}
@@ -336,7 +336,7 @@ export default function ImplementationPage() {
                 </li>
                 <li className="flex gap-3">
                   <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-white/60" />
-                  Read-Only &apos;Shadow Mode&apos; by default. Autonomous control requires multi-factor physical authorization.
+                  Read-Only &apos;7-Day Test&apos; by default. Autonomous control requires multi-factor physical authorization.
                 </li>
                 <li className="flex gap-3">
                   <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-white/60" />
@@ -399,7 +399,7 @@ export default function ImplementationPage() {
               </h3>
               <p className="mt-3 max-w-xl text-sm text-white/70 leading-relaxed">
                 We are accepting 5 more high-density facilities for Q1 2026.
-                Join the CooledAI Private Beta for early access to Shadow Mode
+                Join the CooledAI Private Beta for early access to The 7-Day Efficiency Test
                 and the Mission Control Portal.
               </p>
               <Link

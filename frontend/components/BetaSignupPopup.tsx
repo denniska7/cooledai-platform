@@ -95,7 +95,7 @@ export function BetaSignupPopup() {
                 {submitted ? (
                   <p className="text-center text-sm text-white/90 leading-relaxed">
                     Request Logged. Dennis will reach out via email shortly to
-                    coordinate your 7-day Shadow Mode audit.
+                    coordinate your 7-Day Efficiency Test audit.
                   </p>
                 ) : (
                   <>

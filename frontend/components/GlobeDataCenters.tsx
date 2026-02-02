@@ -51,8 +51,8 @@ export function GlobeDataCenters() {
       const radius = Math.min(w, h) * 0.35;
 
       // Draw globe outline (ellipse)
-      ctx.strokeStyle = "rgba(0, 255, 204, 0.08)";
-      ctx.lineWidth = 1;
+      ctx.strokeStyle = "rgba(0, 255, 204, 0.18)";
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.ellipse(cx, cy, radius, radius * 0.4, 0, 0, Math.PI * 2);
       ctx.stroke();
@@ -74,9 +74,9 @@ export function GlobeDataCenters() {
       }
 
       // Draw interconnecting lines (animate opacity)
-      const lineOpacity = 0.03 + Math.sin(time * 0.002) * 0.02;
+      const lineOpacity = 0.08 + Math.sin(time * 0.002) * 0.04;
       ctx.strokeStyle = `rgba(0, 255, 204, ${lineOpacity})`;
-      ctx.lineWidth = 0.5;
+      ctx.lineWidth = 0.8;
 
       for (let i = 0; i < points.length; i++) {
         for (let j = i + 1; j < points.length; j++) {
@@ -95,20 +95,20 @@ export function GlobeDataCenters() {
       ctx.setLineDash([]);
 
       // Draw data center lights
-      const pulse = 0.6 + Math.sin(time * 0.004) * 0.2;
+      const pulse = 0.75 + Math.sin(time * 0.004) * 0.2;
       for (const p of points) {
-        const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 8);
-        gradient.addColorStop(0, `rgba(0, 255, 204, ${0.4 * pulse})`);
-        gradient.addColorStop(0.5, `rgba(0, 255, 204, ${0.15 * pulse})`);
+        const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 12);
+        gradient.addColorStop(0, `rgba(0, 255, 204, ${0.6 * pulse})`);
+        gradient.addColorStop(0.5, `rgba(0, 255, 204, ${0.25 * pulse})`);
         gradient.addColorStop(1, "rgba(0, 255, 204, 0)");
         ctx.fillStyle = gradient;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 8, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, 12, 0, Math.PI * 2);
         ctx.fill();
 
-        ctx.fillStyle = `rgba(0, 255, 204, ${0.9 * pulse})`;
+        ctx.fillStyle = `rgba(0, 255, 204, ${pulse})`;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 2, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
         ctx.fill();
       }
 

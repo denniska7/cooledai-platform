@@ -22,7 +22,7 @@ export default function PortalLoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-black flex flex-col items-center justify-center px-6">
+    <div className="min-h-screen bg-transparent flex flex-col items-center justify-center px-6">
       <div className="w-full max-w-sm">
         <h1 className="text-2xl font-medium tracking-tight text-white mb-2">
           CooledAI Portal

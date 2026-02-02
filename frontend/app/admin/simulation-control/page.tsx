@@ -42,7 +42,7 @@ export default function SimulationControlPage() {
   };
 
   return (
-    <div className="min-h-screen bg-black">
+    <div className="min-h-screen bg-transparent">
       <header className="border-b border-[rgba(255,255,255,0.1)] px-6 py-4">
         <div className="flex items-center justify-between">
           <Link href="/" className="text-lg font-medium tracking-tight text-white">

@@ -33,11 +33,14 @@ function computeReportValues(metrics: EfficiencyReportModalProps["metrics"]) {
   // 12-month ROI: scale opex reclaimed to annual
   const roi12Month = Math.round(opexReclaimed * 12);
 
+  const capacityReclaimedKw = Math.round(70 + (metrics?.efficiency_score ?? 87) * 0.8);
+
   return {
     traditionalCost,
     cooledaiCost,
     energySavedPct,
     energySavedKwh,
+    capacityReclaimedKw,
     lifespanExtension,
     roi12Month,
   };
@@ -49,6 +52,49 @@ export function EfficiencyReportModal({
   metrics,
 }: EfficiencyReportModalProps) {
   const values = computeReportValues(metrics);
+
+  const handleDownload = () => {
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) return;
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head><title>CooledAI Efficiency Audit</title>
+        <style>
+          body{font-family:system-ui;background:#000;color:#fff;padding:24px;max-width:600px;margin:0 auto}
+          h1{font-size:18px;text-transform:uppercase;margin-bottom:8px}
+          .sub{font-size:11px;color:rgba(255,255,255,0.5);margin-bottom:24px}
+          .section{margin:20px 0}
+          .label{font-size:11px;color:rgba(255,255,255,0.6);text-transform:uppercase}
+          .value{font-size:24px;margin:4px 0}
+          .accent{color:#00FFCC}
+          .grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin:24px 0}
+          .bar{height:80px;background:rgba(255,255,255,0.1);margin:8px 0;display:flex;align-items:flex-end}
+          .bar-fill{background:#00FFCC;width:87%}
+          .bar-fill-trad{background:rgba(255,255,255,0.4);width:100%}
+        </style>
+        </head>
+        <body>
+          <h1>Efficiency Audit</h1>
+          <p class="sub">CooledAI Pilot · Traditional vs CooledAI Optimized Cost</p>
+          <div class="section">
+            <p class="label">Traditional Cooling Cost vs CooledAI Optimized Cost</p>
+            <div class="bar"><div class="bar-fill-trad" style="height:100%"></div></div>
+            <p>Traditional: ${values.traditionalCost}% · CooledAI: ${values.cooledaiCost}%</p>
+          </div>
+          <div class="grid">
+            <div><p class="label">Capacity Reclaimed</p><p class="value accent">${values.capacityReclaimedKw} kW</p><p class="label">Fit more hardware in the same room</p></div>
+            <div><p class="label">Energy Recovered</p><p class="value">${values.energySavedPct}%</p><p class="label">~${values.energySavedKwh.toLocaleString()} kWh vs reactive</p></div>
+            <div><p class="label">12-Mo ROI</p><p class="value accent">$${(values.roi12Month / 1000).toFixed(0)}k</p><p class="label">Enterprise projection</p></div>
+          </div>
+          <p style="font-size:11px;color:rgba(255,255,255,0.4);margin-top:32px">Based on pilot telemetry. Enterprise deployment may vary. CooledAI · The Universal Autonomy Layer for Every Watt of Compute</p>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.print();
+    printWindow.close();
+  };
 
   return (
     <AnimatePresence>
@@ -76,17 +122,25 @@ export function EfficiencyReportModal({
               <div className="border-b border-white/20 px-8 py-6">
                 <div className="flex items-center justify-between">
                   <h2 className="text-lg font-medium tracking-tight text-white uppercase">
-                    Certificate of Efficiency
+                    Efficiency Audit
                   </h2>
-                  <button
-                    onClick={onClose}
-                    className="text-white/50 transition-colors hover:text-white"
-                    aria-label="Close"
-                  >
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleDownload}
+                      className="rounded border border-[#00FFCC] bg-[#00FFCC]/10 px-3 py-1.5 text-xs font-medium text-[#00FFCC] transition-opacity hover:bg-[#00FFCC]/20"
+                    >
+                      Download PDF
+                    </button>
+                    <button
+                      onClick={onClose}
+                      className="text-white/50 transition-colors hover:text-white"
+                      aria-label="Close"
+                    >
                     <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
                   </button>
+                  </div>
                 </div>
                 <p className="mt-1 text-xs text-white/50 uppercase tracking-widest">
                   CooledAI Pilot · Thermal Optimization Summary
@@ -95,10 +149,10 @@ export function EfficiencyReportModal({
 
               {/* Content */}
               <div className="space-y-8 px-8 py-8">
-                {/* SVG Bar chart: Traditional vs CooledAI Power Cost */}
+                {/* Traditional vs CooledAI Cost Comparison */}
                 <div>
                   <p className="mb-4 text-xs font-medium text-white/70 uppercase tracking-wider">
-                    Power Cost Comparison
+                    Traditional Cooling Cost vs CooledAI Optimized Cost
                   </p>
                   <div className="flex items-end justify-between gap-8">
                     <div className="flex flex-1 flex-col items-center gap-2">
@@ -167,7 +221,16 @@ export function EfficiencyReportModal({
                 {/* Metrics grid */}
                 <div className="grid gap-6 sm:grid-cols-3">
                   <div className="rounded border border-white/20 bg-white/5 p-4">
-                    <p className="text-xs text-white/50 uppercase tracking-wider">Total Energy Saved</p>
+                    <p className="text-xs text-white/50 uppercase tracking-wider">Capacity Reclaimed</p>
+                    <p className="mt-2 text-2xl font-medium text-[#00FFCC]">
+                      {values.capacityReclaimedKw} kW
+                    </p>
+                    <p className="mt-1 text-xs text-white/60">
+                      Fit more hardware in the same room
+                    </p>
+                  </div>
+                  <div className="rounded border border-white/20 bg-white/5 p-4">
+                    <p className="text-xs text-white/50 uppercase tracking-wider">Total Energy Recovered</p>
                     <p className="mt-2 text-2xl font-medium text-white">
                       {values.energySavedPct}%
                     </p>
@@ -182,15 +245,6 @@ export function EfficiencyReportModal({
                     </p>
                     <p className="mt-1 text-xs text-white/60">
                       Thermal variance reduction
-                    </p>
-                  </div>
-                  <div className="rounded border border-white/20 bg-white/5 p-4">
-                    <p className="text-xs text-white/50 uppercase tracking-wider">12-Mo ROI Forecast</p>
-                    <p className="mt-2 text-2xl font-medium text-[#00FFCC]">
-                      ${(values.roi12Month / 1000).toFixed(0)}k
-                    </p>
-                    <p className="mt-1 text-xs text-white/60">
-                      Enterprise tier projection
                     </p>
                   </div>
                 </div>

@@ -17,7 +17,7 @@ export default function PortalPage() {
   }, [isAuthenticated, router]);
 
   return (
-    <div className="min-h-screen bg-black flex items-center justify-center">
+    <div className="min-h-screen bg-transparent flex items-center justify-center">
       <div className="h-6 w-6 rounded-full border-2 border-white/30 border-t-white animate-spin" />
     </div>
   );

@@ -9,7 +9,7 @@ import { ValueVectors } from "../../components/why/ValueVectors";
 
 export default function WhyPage() {
   return (
-    <div className="min-h-screen bg-black">
+    <div className="min-h-screen bg-transparent">
       <NavBar />
 
       <main className="pt-20">

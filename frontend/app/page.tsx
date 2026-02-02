@@ -8,7 +8,7 @@ import { LeadForm } from "../components/LeadForm";
 
 export default function HomePage() {
   return (
-    <div className="relative min-h-screen bg-black text-white overflow-hidden">
+    <div className="relative min-h-screen bg-transparent text-white overflow-hidden">
       <NavBar />
 
       <main className="relative pt-20">

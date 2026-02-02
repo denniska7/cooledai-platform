@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
+import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 import { BetaSignupPopup } from "../components/BetaSignupPopup";
 import { GlobeDataCenters } from "../components/GlobeDataCenters";
@@ -35,6 +36,7 @@ export default function RootLayout({
         <GlobeDataCenters />
         {children}
         <BetaSignupPopup />
+        <Analytics />
       </body>
     </html>
   );
