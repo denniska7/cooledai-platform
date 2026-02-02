@@ -32,7 +32,7 @@ import io
 project_root = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -626,6 +626,28 @@ def _send_beta_email(beta: BetaSignupInput) -> bool:
     except Exception as e:
         print(f"[CooledAI Beta] Email failed: {e}")
         return False
+
+
+@app.post("/api/v1/telemetry")
+async def receive_telemetry(request: Request):
+    """
+    Receive telemetry from Universal Protocol Gateway (edge agent).
+    Accepts: {"telemetry": [...], "agent_id": "..."} or {"heartbeat": {...}}
+    """
+    payload = await request.json()
+    if "heartbeat" in payload:
+        # Agent health signal (CPU/RAM)
+        hb = payload["heartbeat"]
+        agent_id = hb.get("agent_id", "unknown")
+        print(f"[CooledAI Gateway] Heartbeat from {agent_id}: CPU={hb.get('cpu_percent')}% RAM={hb.get('ram_percent')}%")
+        return {"status": "ok"}
+    if "telemetry" in payload:
+        telemetry = payload["telemetry"]
+        agent_id = payload.get("agent_id", "unknown")
+        print(f"[CooledAI Gateway] Telemetry from {agent_id}: {len(telemetry)} records")
+        # TODO: Store in DB, feed to optimization engine
+        return {"status": "ok", "received": len(telemetry)}
+    return {"status": "error", "message": "Expected telemetry or heartbeat"}
 
 
 @app.get("/api/v1/test-email")

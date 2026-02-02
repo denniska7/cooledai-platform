@@ -21,7 +21,7 @@ Input → Neural Network → Output
 (x, y, z, t) → NN → T(x, y, z, t)
 ```
 
-**Problem**: Requires massive amounts of training data and doesn't guarantee physically realistic predictions.
+**Problem**: Requires massive amounts of training data and doesn't recover physically realistic predictions.
 
 ### Physics-Informed Neural Networks (PINNs)
 PINNs embed physical laws directly into the training process:
@@ -33,7 +33,7 @@ Input → Neural Network → Output → Check Physics Laws → Loss
 
 **Advantages**:
 - ✅ Works with minimal or zero training data
-- ✅ Guarantees physically consistent predictions
+- ✅ Reclaims physically consistent predictions
 - ✅ Can solve inverse problems (find unknown parameters)
 - ✅ Naturally handles irregular geometries
 - ✅ Provides continuous solutions (not grid-based)
