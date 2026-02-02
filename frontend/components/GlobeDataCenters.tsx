@@ -1,30 +1,7 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-
-// Earth continent polygons [lat, lng] - Natural Earth–inspired outlines
-const LAND_MASSES: [number, number][][] = [
-  // North America (Alaska → Canada → USA → Mexico → Central America)
-  [[72, -165], [70, -155], [69, -140], [60, -140], [55, -130], [49, -125], [45, -125], [40, -124], [38, -123], [34, -120], [32, -117], [28, -115], [25, -110], [22, -105], [20, -98], [25, -97], [30, -95], [32, -92], [30, -85], [25, -82], [28, -80], [35, -76], [42, -71], [45, -66], [48, -64], [55, -60], [60, -65], [65, -80], [70, -100], [72, -165]],
-  // South America (Colombia → Brazil bulge → Argentina/Chile)
-  [[12, -72], [8, -67], [2, -52], [-5, -52], [-12, -45], [-18, -40], [-25, -48], [-32, -55], [-38, -60], [-45, -65], [-52, -70], [-55, -72], [-54, -68], [-45, -65], [-35, -58], [-25, -50], [-15, -50], [-8, -55], [0, -52], [5, -60], [10, -68], [12, -72]],
-  // Europe (Scandinavia → UK → Iberia → Mediterranean)
-  [[71, -25], [70, -10], [68, 5], [65, 10], [62, 5], [60, 0], [55, -5], [52, -3], [50, 0], [48, 2], [45, 5], [43, 10], [42, 15], [44, 20], [47, 25], [50, 28], [55, 30], [60, 28], [63, 22], [65, 15], [68, 10], [71, -5], [71, -25]],
-  // Africa (distinctive triangular shape)
-  [[37, -6], [35, 0], [33, 10], [28, 15], [20, 10], [12, 5], [5, 10], [0, 15], [-8, 20], [-18, 28], [-28, 28], [-35, 22], [-35, 18], [-28, 18], [-15, 15], [-5, 12], [5, 5], [15, 0], [25, -5], [32, -8], [37, -6]],
-  // Asia (Russia → China → India → Southeast Asia → Japan)
-  [[72, 55], [70, 70], [65, 85], [55, 95], [45, 105], [40, 115], [35, 120], [30, 120], [28, 95], [25, 90], [22, 88], [20, 100], [18, 105], [15, 105], [12, 100], [25, 75], [35, 70], [45, 65], [55, 60], [65, 55], [70, 60], [72, 55]],
-  // Australia
-  [[-10, 115], [-12, 125], [-18, 128], [-25, 130], [-32, 135], [-36, 140], [-38, 148], [-36, 152], [-28, 153], [-25, 145], [-20, 140], [-15, 125], [-10, 115]],
-  // Greenland
-  [[83, -45], [78, -55], [72, -55], [68, -52], [65, -50], [62, -48], [65, -42], [72, -38], [78, -40], [83, -45]],
-  // Japan
-  [[45, 140], [43, 141], [38, 139], [35, 138], [33, 130], [34, 129], [36, 133], [40, 140], [45, 140]],
-  // British Isles
-  [[60, -7], [58, -6], [55, -6], [53, -4], [52, 0], [54, -2], [58, -5], [60, -7]],
-  // Madagascar
-  [[-12, 49], [-15, 48], [-20, 44], [-25, 44], [-25, 47], [-20, 48], [-15, 50], [-12, 49]],
-];
+import { EARTH_LAND_POLYGONS } from "@/lib/earthLand";
 
 // Data center coordinates (lat, lng)
 const DATA_CENTERS: [number, number][] = [
@@ -47,7 +24,6 @@ function project(
   const x = cx + radius * Math.sin(phi) * Math.cos(theta);
   const y = cy - radius * Math.cos(phi);
   const visible = Math.sin(phi) * Math.cos(theta) >= -0.02;
-  // Shade: 1 = lit (top-right), 0 = shadow (bottom-left) for 3D depth
   const shade = Math.max(0, 0.5 + 0.5 * (Math.sin(phi) * Math.cos(theta) * 0.7 + Math.cos(phi) * 0.3));
   return { x, y, visible, shade };
 }
@@ -64,7 +40,7 @@ export function GlobeDataCenters() {
 
     let animationId: number;
     let time = 0;
-    const rotationSpeed = 0.00018; // Smooth rotation for 3D motion
+    const rotationSpeed = 0.00018;
 
     const resize = () => {
       canvas.width = window.innerWidth;
@@ -80,66 +56,78 @@ export function GlobeDataCenters() {
       const cx = w / 2;
       const cy = h / 2;
       const size = Math.min(w, h);
-      const radius = size * 0.32; // Perfect circle - same in both dimensions
+      const radius = size * 0.32;
 
       const rot = time * rotationSpeed;
 
-      // Clip to globe circle (strictly circular)
+      // Atmospheric glow (soft halo around globe)
+      const glowGrad = ctx.createRadialGradient(cx, cy, radius * 0.7, cx, cy, radius * 1.8);
+      glowGrad.addColorStop(0, "rgba(100, 150, 220, 0.03)");
+      glowGrad.addColorStop(0.6, "rgba(80, 130, 200, 0.02)");
+      glowGrad.addColorStop(1, "rgba(0, 0, 0, 0)");
+      ctx.fillStyle = glowGrad;
+      ctx.fillRect(0, 0, w, h);
+
+      // Clip to globe circle
       ctx.save();
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.clip();
 
-      // Ocean base - Earth-like blue (Atlantic/Pacific)
-      ctx.fillStyle = "rgba(15, 45, 90, 0.92)";
+      // Ocean base - deep Earth blue
+      ctx.fillStyle = "rgba(8, 35, 75, 0.95)";
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.fill();
 
-      // 3D sphere shading - light from top-right, shadow bottom-left (Earth-like)
-      const lightX = cx - radius * 0.4;
-      const lightY = cy - radius * 0.4;
-      const shadeGrad = ctx.createRadialGradient(
-        lightX, lightY, 0,
-        cx, cy, radius * 1.3
+      // Ocean gradient - lighter near lit edge
+      const oceanGrad = ctx.createRadialGradient(
+        cx - radius * 0.5, cy - radius * 0.5, 0,
+        cx, cy, radius * 1.2
       );
-      shadeGrad.addColorStop(0, "rgba(80, 120, 160, 0.2)");
-      shadeGrad.addColorStop(0.4, "rgba(0, 0, 0, 0)");
-      shadeGrad.addColorStop(1, "rgba(0, 15, 40, 0.5)");
-      ctx.fillStyle = shadeGrad;
+      oceanGrad.addColorStop(0, "rgba(40, 90, 150, 0.25)");
+      oceanGrad.addColorStop(0.5, "rgba(0, 0, 0, 0)");
+      oceanGrad.addColorStop(1, "rgba(0, 10, 30, 0.3)");
+      ctx.fillStyle = oceanGrad;
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.fill();
 
-      // Draw land masses - Earth-like gray/tan with 3D shading
-      for (const polygon of LAND_MASSES) {
+      // Draw land masses - Natural Earth accurate coastlines
+      for (const polygon of EARTH_LAND_POLYGONS) {
         const pts: { x: number; y: number; shade: number }[] = [];
         let anyVisible = false;
-        for (const [lat, lng] of polygon) {
+        for (const pt of polygon) {
+          const [lat, lng] = pt as [number, number];
           const p = project(lat, lng, cx, cy, radius, rot);
           pts.push({ x: p.x, y: p.y, shade: p.shade });
           if (p.visible) anyVisible = true;
         }
         if (pts.length > 2 && anyVisible) {
           const avgShade = pts.reduce((s, p) => s + p.shade, 0) / pts.length;
-          const gray = Math.round(100 + avgShade * 50); // 100-150 range
-          ctx.fillStyle = `rgba(${gray}, ${gray + 5}, ${gray + 8}, 0.92)`;
+          const gray = Math.round(105 + avgShade * 45);
+          ctx.fillStyle = `rgba(${gray}, ${gray + 10}, ${gray + 15}, 0.94)`;
           ctx.beginPath();
           ctx.moveTo(pts[0].x, pts[0].y);
           for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
           ctx.closePath();
           ctx.fill();
+
+          // Subtle coastline outline for definition
+          ctx.strokeStyle = `rgba(${gray - 15}, ${gray - 5}, ${gray}, 0.25)`;
+          ctx.lineWidth = 0.4;
+          ctx.stroke();
         }
       }
 
-      // Latitude lines (subtle - Earth-like globe)
+      // Latitude lines
       for (let lat = -60; lat <= 60; lat += 30) {
         const latRad = (lat * Math.PI) / 180;
         const r = radius * Math.cos(latRad);
         const y = radius * Math.sin(latRad);
         if (r > 3) {
-          ctx.strokeStyle = "rgba(255, 255, 255, 0.04)";
-          ctx.lineWidth = 0.5;
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.035)";
+          ctx.lineWidth = 0.4;
           ctx.beginPath();
           ctx.ellipse(cx, cy - y, r, r, 0, 0, Math.PI * 2);
           ctx.stroke();
@@ -149,8 +137,8 @@ export function GlobeDataCenters() {
       // Longitude lines
       for (let lon = 0; lon < 360; lon += 30) {
         const lambda = ((lon - 90) * Math.PI) / 180 + rot;
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.04)";
-        ctx.lineWidth = 0.5;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.035)";
+        ctx.lineWidth = 0.4;
         ctx.beginPath();
         for (let lat = -90; lat <= 90; lat += 4) {
           const phi = (90 - lat) * (Math.PI / 180);
@@ -164,8 +152,25 @@ export function GlobeDataCenters() {
 
       ctx.restore();
 
-      // Globe outline - crisp circular edge for 3D definition
-      ctx.strokeStyle = "rgba(255, 255, 255, 0.2)";
+      // Terminator (day/night line) - subtle
+      ctx.save();
+      ctx.globalAlpha = 0.15;
+      ctx.strokeStyle = "rgba(0, 0, 0, 0.5)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      const termTheta = (Math.PI / 2) + rot;
+      for (let lat = -90; lat <= 90; lat += 3) {
+        const phi = (90 - lat) * (Math.PI / 180);
+        const x = cx + radius * Math.sin(phi) * Math.cos(termTheta);
+        const y = cy - radius * Math.cos(phi);
+        if (lat === -90) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+      ctx.restore();
+
+      // Globe outline - crisp edge with subtle rim light
+      ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
       ctx.lineWidth = 1.2;
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
@@ -178,10 +183,10 @@ export function GlobeDataCenters() {
         if (p.visible) points.push({ x: p.x, y: p.y });
       }
 
-      // Interconnecting lines (white)
-      const lineOpacity = 0.12 + Math.sin(time * 0.002) * 0.05;
+      // Interconnecting lines
+      const lineOpacity = 0.14 + Math.sin(time * 0.002) * 0.06;
       ctx.strokeStyle = `rgba(255, 255, 255, ${lineOpacity})`;
-      ctx.lineWidth = 0.7;
+      ctx.lineWidth = 0.8;
 
       for (let i = 0; i < points.length; i++) {
         for (let j = i + 1; j < points.length; j++) {
@@ -199,21 +204,21 @@ export function GlobeDataCenters() {
       }
       ctx.setLineDash([]);
 
-      // Data center lights - pure white (no green tint)
-      const pulse = 0.85 + Math.sin(time * 0.003) * 0.12;
+      // Data center lights - white with glow
+      const pulse = 0.88 + Math.sin(time * 0.003) * 0.1;
       for (const p of points) {
-        const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 16);
-        gradient.addColorStop(0, `rgba(255, 255, 255, ${0.9 * pulse})`);
-        gradient.addColorStop(0.35, `rgba(255, 255, 255, ${0.4 * pulse})`);
+        const gradient = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, 18);
+        gradient.addColorStop(0, `rgba(255, 255, 255, ${0.92 * pulse})`);
+        gradient.addColorStop(0.3, `rgba(255, 255, 255, ${0.45 * pulse})`);
         gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
         ctx.fillStyle = gradient;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 16, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, 18, 0, Math.PI * 2);
         ctx.fill();
 
         ctx.fillStyle = `rgba(255, 255, 255, ${pulse})`;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, 4.5, 0, Math.PI * 2);
         ctx.fill();
       }
 
