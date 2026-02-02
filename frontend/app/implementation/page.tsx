@@ -330,6 +330,26 @@ export default function ImplementationPage() {
             </div>
           </section>
 
+          {/* Beta Access Callout */}
+          <section className="py-16 border-t border-[rgba(255,255,255,0.1)]">
+            <div className="rounded border border-white/10 bg-black p-8">
+              <h3 className="text-lg font-medium tracking-tight text-white">
+                Beta Access
+              </h3>
+              <p className="mt-3 max-w-xl text-sm text-white/70 leading-relaxed">
+                We are accepting 5 more high-density facilities for Q1 2026.
+                Join the CooledAI Private Beta for early access to Shadow Mode
+                and the Mission Control Portal.
+              </p>
+              <Link
+                href="/#request-audit"
+                className="mt-6 inline-block border border-white px-6 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90"
+              >
+                Request Beta Access
+              </Link>
+            </div>
+          </section>
+
           {/* CTA */}
           <section className="py-24 border-t border-[rgba(255,255,255,0.1)]">
             <p className="max-w-2xl text-xl font-medium tracking-tight text-white">

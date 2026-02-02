@@ -19,6 +19,7 @@ Endpoints:
 - GET /health - Health check
 """
 
+import os
 import sys
 import json
 from pathlib import Path
@@ -525,11 +526,48 @@ class LeadInput(BaseModel):
     dataCenterScale: str
 
 
+class BetaSignupInput(BaseModel):
+    """Input for POST /api/v1/beta."""
+    email: str
+    facilityScale: str = ""
+
+
+def _send_lead_email(lead: LeadInput) -> bool:
+    """Send lead notification to dennis@cooledai.com via Resend. Returns True if sent."""
+    api_key = os.environ.get("RESEND_API_KEY")
+    if not api_key:
+        print("[CooledAI Lead] RESEND_API_KEY not set. Email not sent. Add RESEND_API_KEY to receive emails.")
+        return False
+    try:
+        import resend
+        resend.api_key = api_key
+        html = f"""
+        <h2>CooledAI Blueprint Request</h2>
+        <p><strong>Name:</strong> {lead.fullName}</p>
+        <p><strong>Email:</strong> {lead.businessEmail}</p>
+        <p><strong>Phone:</strong> {lead.phone}</p>
+        <p><strong>Data Center Scale:</strong> {lead.dataCenterScale} MW</p>
+        <p><em>Submitted at {datetime.utcnow().isoformat()}Z</em></p>
+        """
+        params = {
+            "from": os.environ.get("LEAD_EMAIL_FROM", "CooledAI <onboarding@resend.dev>"),
+            "to": [os.environ.get("LEAD_EMAIL_TO", "dennis@cooledai.com")],
+            "subject": f"CooledAI Blueprint Request: {lead.fullName} ({lead.businessEmail})",
+            "html": html,
+        }
+        resend.Emails.send(params)
+        print(f"[CooledAI Lead] Email sent to dennis@cooledai.com")
+        return True
+    except Exception as e:
+        print(f"[CooledAI Lead] Email failed: {e}")
+        return False
+
+
 @app.post("/api/v1/leads")
 async def create_lead(lead: LeadInput):
     """
     Lead capture for Blueprint Request form.
-    Stores submissions in data/leads.json and logs to console.
+    Stores submissions in data/leads.json, sends email to dennis@cooledai.com, and logs to console.
     """
     leads_path = project_root / "data" / "leads.json"
     leads_path.parent.mkdir(parents=True, exist_ok=True)
@@ -553,10 +591,51 @@ async def create_lead(lead: LeadInput):
     with open(leads_path, "w") as f:
         json.dump(leads, f, indent=2)
 
+    _send_lead_email(lead)
+
     simulation_ready_url = "https://cooledai.com/portal"
     print(f"[CooledAI Lead] Blueprint Request: {lead.fullName} | {lead.businessEmail} | {lead.dataCenterScale} MW")
     print(f"[CooledAI Lead] Simulation Ready: {simulation_ready_url}")
     return {"status": "success", "message": "Blueprint Request Received."}
+
+
+def _send_beta_email(beta: BetaSignupInput) -> bool:
+    """Send beta signup notification to dennis@cooledai.com via Resend."""
+    api_key = os.environ.get("RESEND_API_KEY")
+    if not api_key:
+        print("[CooledAI Beta] RESEND_API_KEY not set. Email not sent.")
+        return False
+    try:
+        import resend
+        resend.api_key = api_key
+        html = f"""
+        <h2>CooledAI Beta Signup</h2>
+        <p><strong>Email:</strong> {beta.email}</p>
+        <p><strong>Facility Scale:</strong> {beta.facilityScale or 'Not specified'} MW</p>
+        <p><em>Submitted at {datetime.utcnow().isoformat()}Z</em></p>
+        """
+        params = {
+            "from": os.environ.get("LEAD_EMAIL_FROM", "CooledAI <onboarding@resend.dev>"),
+            "to": [os.environ.get("LEAD_EMAIL_TO", "dennis@cooledai.com")],
+            "subject": f"CooledAI New Beta Request: {beta.email}",
+            "html": html,
+        }
+        resend.Emails.send(params)
+        print(f"[CooledAI Beta] Email sent to dennis@cooledai.com")
+        return True
+    except Exception as e:
+        print(f"[CooledAI Beta] Email failed: {e}")
+        return False
+
+
+@app.post("/api/v1/beta")
+async def create_beta_signup(beta: BetaSignupInput):
+    """
+    Beta signup from popup. Sends email to dennis@cooledai.com.
+    """
+    _send_beta_email(beta)
+    print(f"[CooledAI Beta] Signup: {beta.email} | {beta.facilityScale} MW")
+    return {"status": "success", "message": "Beta request received."}
 
 
 @app.get("/adapters")

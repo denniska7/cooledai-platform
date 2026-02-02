@@ -47,6 +47,16 @@ export function PortalSidebar() {
             </Link>
           );
         })}
+        <div className="mt-4 pt-4 border-t border-white/10">
+          <Link
+            href="/#request-audit"
+            onClick={() => setMobileOpen(false)}
+            className="flex items-center gap-2 px-4 py-3 text-sm text-white/60 hover:text-white rounded transition-colors"
+          >
+            <span>Join Beta</span>
+            <span className="text-xs text-white/40">Coming soon</span>
+          </Link>
+        </div>
       </nav>
       <div className="p-4 border-t border-white/20">
         <button

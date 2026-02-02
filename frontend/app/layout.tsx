@@ -1,6 +1,7 @@
 import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
+import { BetaSignupPopup } from "../components/BetaSignupPopup";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -29,7 +30,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={inter.variable}>
-      <body className="min-h-screen bg-black text-white">{children}</body>
+      <body className="min-h-screen bg-black text-white">
+        {children}
+        <BetaSignupPopup />
+      </body>
     </html>
   );
 }
