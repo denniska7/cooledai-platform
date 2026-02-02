@@ -628,6 +628,30 @@ def _send_beta_email(beta: BetaSignupInput) -> bool:
         return False
 
 
+@app.get("/api/v1/test-email")
+async def test_email():
+    """
+    Send a test email to dennis@cooledai.com. Use this to verify Resend is configured.
+    """
+    api_key = os.environ.get("RESEND_API_KEY")
+    to_email = os.environ.get("LEAD_EMAIL_TO", "dennis@cooledai.com")
+    if not api_key:
+        return {"ok": False, "error": "RESEND_API_KEY not set"}
+    try:
+        import resend
+        resend.api_key = api_key
+        params = {
+            "from": os.environ.get("LEAD_EMAIL_FROM", "CooledAI <onboarding@resend.dev>"),
+            "to": [to_email],
+            "subject": "CooledAI Test Email",
+            "html": "<p>If you received this, Resend is working.</p>",
+        }
+        resend.Emails.send(params)
+        return {"ok": True, "message": f"Test email sent to {to_email}"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/api/v1/beta")
 async def create_beta_signup(beta: BetaSignupInput):
     """
