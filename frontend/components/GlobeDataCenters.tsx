@@ -2,22 +2,28 @@
 
 import { useEffect, useRef } from "react";
 
-// Simplified continent polygons [lat, lng] - recognizable Earth outlines
+// Earth continent polygons [lat, lng] - Natural Earth–inspired outlines
 const LAND_MASSES: [number, number][][] = [
-  // North America
-  [[70, -140], [70, -100], [65, -80], [50, -125], [40, -125], [35, -120], [30, -115], [25, -100], [20, -100], [15, -90], [25, -80], [45, -65], [50, -60], [55, -65], [60, -140], [70, -140]],
-  // South America
-  [[12, -70], [10, -60], [0, -50], [-15, -50], [-25, -55], [-35, -70], [-50, -75], [-55, -70], [-40, -65], [-20, -60], [-5, -70], [5, -75], [12, -70]],
-  // Europe
-  [[71, -10], [65, 5], [55, 10], [50, 0], [45, -5], [43, 5], [45, 15], [50, 25], [55, 30], [60, 25], [65, 20], [71, -10]],
-  // Africa
-  [[37, -5], [35, 0], [32, 10], [15, 0], [5, 10], [-5, 15], [-18, 25], [-35, 20], [-35, 15], [-20, 15], [-5, 10], [10, 0], [25, -10], [37, -5]],
-  // Asia
-  [[70, 50], [65, 70], [55, 90], [50, 105], [40, 115], [30, 120], [25, 105], [30, 85], [35, 75], [45, 70], [55, 60], [65, 55], [70, 50]],
+  // North America (Alaska → Canada → USA → Mexico → Central America)
+  [[72, -165], [70, -155], [69, -140], [60, -140], [55, -130], [49, -125], [45, -125], [40, -124], [38, -123], [34, -120], [32, -117], [28, -115], [25, -110], [22, -105], [20, -98], [25, -97], [30, -95], [32, -92], [30, -85], [25, -82], [28, -80], [35, -76], [42, -71], [45, -66], [48, -64], [55, -60], [60, -65], [65, -80], [70, -100], [72, -165]],
+  // South America (Colombia → Brazil bulge → Argentina/Chile)
+  [[12, -72], [8, -67], [2, -52], [-5, -52], [-12, -45], [-18, -40], [-25, -48], [-32, -55], [-38, -60], [-45, -65], [-52, -70], [-55, -72], [-54, -68], [-45, -65], [-35, -58], [-25, -50], [-15, -50], [-8, -55], [0, -52], [5, -60], [10, -68], [12, -72]],
+  // Europe (Scandinavia → UK → Iberia → Mediterranean)
+  [[71, -25], [70, -10], [68, 5], [65, 10], [62, 5], [60, 0], [55, -5], [52, -3], [50, 0], [48, 2], [45, 5], [43, 10], [42, 15], [44, 20], [47, 25], [50, 28], [55, 30], [60, 28], [63, 22], [65, 15], [68, 10], [71, -5], [71, -25]],
+  // Africa (distinctive triangular shape)
+  [[37, -6], [35, 0], [33, 10], [28, 15], [20, 10], [12, 5], [5, 10], [0, 15], [-8, 20], [-18, 28], [-28, 28], [-35, 22], [-35, 18], [-28, 18], [-15, 15], [-5, 12], [5, 5], [15, 0], [25, -5], [32, -8], [37, -6]],
+  // Asia (Russia → China → India → Southeast Asia → Japan)
+  [[72, 55], [70, 70], [65, 85], [55, 95], [45, 105], [40, 115], [35, 120], [30, 120], [28, 95], [25, 90], [22, 88], [20, 100], [18, 105], [15, 105], [12, 100], [25, 75], [35, 70], [45, 65], [55, 60], [65, 55], [70, 60], [72, 55]],
   // Australia
-  [[-10, 115], [-15, 125], [-25, 130], [-35, 135], [-38, 145], [-35, 150], [-28, 115], [-20, 115], [-10, 115]],
+  [[-10, 115], [-12, 125], [-18, 128], [-25, 130], [-32, 135], [-36, 140], [-38, 148], [-36, 152], [-28, 153], [-25, 145], [-20, 140], [-15, 125], [-10, 115]],
   // Greenland
-  [[83, -45], [78, -55], [72, -55], [65, -50], [60, -45], [65, -40], [75, -35], [83, -45]],
+  [[83, -45], [78, -55], [72, -55], [68, -52], [65, -50], [62, -48], [65, -42], [72, -38], [78, -40], [83, -45]],
+  // Japan
+  [[45, 140], [43, 141], [38, 139], [35, 138], [33, 130], [34, 129], [36, 133], [40, 140], [45, 140]],
+  // British Isles
+  [[60, -7], [58, -6], [55, -6], [53, -4], [52, 0], [54, -2], [58, -5], [60, -7]],
+  // Madagascar
+  [[-12, 49], [-15, 48], [-20, 44], [-25, 44], [-25, 47], [-20, 48], [-15, 50], [-12, 49]],
 ];
 
 // Data center coordinates (lat, lng)
@@ -84,28 +90,28 @@ export function GlobeDataCenters() {
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.clip();
 
-      // Ocean base - dark blue-gray
-      ctx.fillStyle = "rgba(15, 25, 40, 0.85)";
+      // Ocean base - Earth-like blue (Atlantic/Pacific)
+      ctx.fillStyle = "rgba(15, 45, 90, 0.92)";
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.fill();
 
-      // 3D sphere shading - light from top-right, shadow bottom-left
+      // 3D sphere shading - light from top-right, shadow bottom-left (Earth-like)
       const lightX = cx - radius * 0.4;
       const lightY = cy - radius * 0.4;
       const shadeGrad = ctx.createRadialGradient(
         lightX, lightY, 0,
         cx, cy, radius * 1.3
       );
-      shadeGrad.addColorStop(0, "rgba(60, 70, 85, 0.25)");
+      shadeGrad.addColorStop(0, "rgba(80, 120, 160, 0.2)");
       shadeGrad.addColorStop(0.4, "rgba(0, 0, 0, 0)");
-      shadeGrad.addColorStop(1, "rgba(0, 0, 0, 0.55)");
+      shadeGrad.addColorStop(1, "rgba(0, 15, 40, 0.5)");
       ctx.fillStyle = shadeGrad;
       ctx.beginPath();
       ctx.arc(cx, cy, radius, 0, Math.PI * 2);
       ctx.fill();
 
-      // Draw land masses - gray with 3D shading (lighter on lit side)
+      // Draw land masses - Earth-like gray/tan with 3D shading
       for (const polygon of LAND_MASSES) {
         const pts: { x: number; y: number; shade: number }[] = [];
         let anyVisible = false;
@@ -116,8 +122,8 @@ export function GlobeDataCenters() {
         }
         if (pts.length > 2 && anyVisible) {
           const avgShade = pts.reduce((s, p) => s + p.shade, 0) / pts.length;
-          const gray = Math.round(95 + avgShade * 55); // 95-150 range
-          ctx.fillStyle = `rgba(${gray}, ${gray}, ${gray + 5}, 0.9)`;
+          const gray = Math.round(100 + avgShade * 50); // 100-150 range
+          ctx.fillStyle = `rgba(${gray}, ${gray + 5}, ${gray + 8}, 0.92)`;
           ctx.beginPath();
           ctx.moveTo(pts[0].x, pts[0].y);
           for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
@@ -126,14 +132,14 @@ export function GlobeDataCenters() {
         }
       }
 
-      // Latitude lines (circular)
+      // Latitude lines (subtle - Earth-like globe)
       for (let lat = -60; lat <= 60; lat += 30) {
         const latRad = (lat * Math.PI) / 180;
         const r = radius * Math.cos(latRad);
         const y = radius * Math.sin(latRad);
         if (r > 3) {
-          ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
-          ctx.lineWidth = 0.6;
+          ctx.strokeStyle = "rgba(255, 255, 255, 0.04)";
+          ctx.lineWidth = 0.5;
           ctx.beginPath();
           ctx.ellipse(cx, cy - y, r, r, 0, 0, Math.PI * 2);
           ctx.stroke();
@@ -143,8 +149,8 @@ export function GlobeDataCenters() {
       // Longitude lines
       for (let lon = 0; lon < 360; lon += 30) {
         const lambda = ((lon - 90) * Math.PI) / 180 + rot;
-        ctx.strokeStyle = "rgba(255, 255, 255, 0.07)";
-        ctx.lineWidth = 0.6;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.04)";
+        ctx.lineWidth = 0.5;
         ctx.beginPath();
         for (let lat = -90; lat <= 90; lat += 4) {
           const phi = (90 - lat) * (Math.PI / 180);
