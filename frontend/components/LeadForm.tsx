@@ -3,11 +3,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 
-const getApiUrl = (): string => {
-  const url = process.env.NEXT_PUBLIC_API_URL;
-  if (!url) return "";
-  return url.replace(/\/$/, "");
-};
+const FORMSPREE_LEAD = "https://formspree.io/f/xqeldapd";
 
 const CONSUMER_DOMAINS = [
   "gmail.com",
@@ -64,9 +60,7 @@ export function LeadForm() {
 
     setSubmitting(true);
     try {
-      const base = getApiUrl();
-      if (!base) throw new Error("API URL not configured");
-      const res = await fetch(`${base}/api/v1/leads`, {
+      const res = await fetch(FORMSPREE_LEAD, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -76,10 +70,7 @@ export function LeadForm() {
           dataCenterScale: form.dataCenterScale,
         }),
       });
-      if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.detail || res.statusText);
-      }
+      if (!res.ok) throw new Error("Submission failed");
       setSubmitted(true);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Submission failed");
@@ -95,8 +86,8 @@ export function LeadForm() {
   return (
     <motion.section
       id="request-audit"
-      initial={{ opacity: 0, y: 30, filter: "blur(10px)" }}
-      whileInView={{ opacity: 1, y: 0, filter: "blur(0px)" }}
+      initial={{ opacity: 0, x: -80 }}
+      whileInView={{ opacity: 1, x: 0 }}
       viewport={{ once: true, margin: "-100px" }}
       transition={{ duration: 0.6, ease: "easeOut" }}
       className="border-t border-white py-32"

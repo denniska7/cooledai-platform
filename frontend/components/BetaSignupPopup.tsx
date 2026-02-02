@@ -4,11 +4,7 @@ import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { usePathname } from "next/navigation";
 
-const getApiUrl = (): string => {
-  const url = process.env.NEXT_PUBLIC_API_URL;
-  if (!url) return "";
-  return url.replace(/\/$/, "");
-};
+const FORMSPREE_BETA = "https://formspree.io/f/xykpdzdd";
 
 export function BetaSignupPopup() {
   const pathname = usePathname();
@@ -40,9 +36,7 @@ export function BetaSignupPopup() {
     }
     setSubmitting(true);
     try {
-      const base = getApiUrl();
-      if (!base) throw new Error("API URL not configured");
-      const res = await fetch(`${base}/api/v1/beta`, {
+      const res = await fetch(FORMSPREE_BETA, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({

@@ -1,3 +1,6 @@
+"use client";
+
+import { motion } from "framer-motion";
 import { NavBar } from "../../components/NavBar";
 import Link from "next/link";
 import { CollisionGraph } from "../../components/why/CollisionGraph";
@@ -13,10 +16,22 @@ export default function WhyPage() {
         <div className="mx-auto max-w-4xl px-6">
           {/* Section 1: The Collision Course */}
           <section className="py-32">
-            <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl">
+            <motion.h2
+              initial={{ opacity: 0, x: -80 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.6, ease: "easeOut" }}
+              className="text-2xl font-medium tracking-tight text-white md:text-3xl"
+            >
               Chips Outpace Cooling.
-            </h2>
-            <div className="mt-12 space-y-8 text-white/80 leading-relaxed">
+            </motion.h2>
+            <motion.div
+              initial={{ opacity: 0, x: -60 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
+              className="mt-12 space-y-8 text-white/80 leading-relaxed"
+            >
               <p>
                 AI chip performance doubles every 18–24 months. But data center
                 cooling upgrades take years. Permits, budgets, and construction
@@ -28,7 +43,7 @@ export default function WhyPage() {
                 heat limits, not space. Racks sit partially empty. Chips slow
                 down. The bottleneck is heat, not transistor count.
               </p>
-            </div>
+            </motion.div>
             <div className="mt-16">
               <CollisionGraph />
             </div>
@@ -36,10 +51,22 @@ export default function WhyPage() {
 
           {/* Section 2: The Failure of Reaction */}
           <section className="py-32 border-t border-white/20">
-            <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl">
+            <motion.h2
+              initial={{ opacity: 0, x: -80 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, ease: "easeOut" }}
+              className="text-2xl font-medium tracking-tight text-white md:text-3xl"
+            >
               Reactive Cooling is Already Too Late.
-            </h2>
-            <div className="mt-12 space-y-8 text-white/80 leading-relaxed">
+            </motion.h2>
+            <motion.div
+              initial={{ opacity: 0, x: -60 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
+              className="mt-12 space-y-8 text-white/80 leading-relaxed"
+            >
               <p>
                 Traditional CRAC and CRAH units wait for a temperature sensor to
                 spike before ramping up cooling. The control loop is simple:
@@ -55,18 +82,36 @@ export default function WhyPage() {
                 waste energy; it shortens the life of your most expensive
                 assets.
               </p>
-            </div>
-            <div className="mt-16">
+            </motion.div>
+            <motion.div
+              initial={{ opacity: 0, x: -60 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, delay: 0.15, ease: "easeOut" }}
+              className="mt-16"
+            >
               <ReactionSchematic />
-            </div>
+            </motion.div>
           </section>
 
           {/* Section 3: The Predictive Paradigm Shift */}
           <section className="py-32 border-t border-white/20">
-            <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl">
+            <motion.h2
+              initial={{ opacity: 0, x: -80 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, ease: "easeOut" }}
+              className="text-2xl font-medium tracking-tight text-white md:text-3xl"
+            >
               Predict Before Heat.
-            </h2>
-            <div className="mt-12 space-y-8 text-white/80 leading-relaxed">
+            </motion.h2>
+            <motion.div
+              initial={{ opacity: 0, x: -60 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
+              className="mt-12 space-y-8 text-white/80 leading-relaxed"
+            >
               <p>
                 CooledAI uses real-time data: workload, power use, rack temps,
                 and past heat patterns. We build a model that predicts heat
@@ -78,38 +123,87 @@ export default function WhyPage() {
                 compute, not in response to it. The result is a flat
                 temperature—no spikes, no slowdown, no wasted cycles.
               </p>
-            </div>
+            </motion.div>
+          </section>
+
+          {/* Target Markets */}
+          <section className="py-32 border-t border-white/20">
+            <motion.h2
+              initial={{ opacity: 0, x: -80 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, ease: "easeOut" }}
+              className="text-2xl font-medium tracking-tight text-white md:text-3xl"
+            >
+              Target Markets
+            </motion.h2>
+            <motion.div
+              initial={{ opacity: 0, x: -60 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
+              className="mt-8 space-y-6 text-white/80 leading-relaxed"
+            >
+              <p>
+                CooledAI scales from 100 kW pilot deployments to 100+ MW fleets.
+                Scalability is built in: add sites, add capacity, add autonomy.
+              </p>
+              <p>
+                <strong className="text-white">High-Criticality Partners:</strong>{" "}
+                Financial institutions and healthcare providers rely on 99.99%+
+                uptime. CooledAI delivers predictive thermal control that meets
+                the strictest SLAs—without sacrificing efficiency.
+              </p>
+            </motion.div>
           </section>
 
           {/* Section 4: Three Vectors of Value */}
           <section className="py-32 border-t border-white/20">
-            <h2 className="mb-16 text-2xl font-medium tracking-tight text-white md:text-3xl">
+            <motion.h2
+              initial={{ opacity: 0, x: -80 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, ease: "easeOut" }}
+              className="mb-16 text-2xl font-medium tracking-tight text-white md:text-3xl"
+            >
               Three Benefits
-            </h2>
+            </motion.h2>
             <ValueVectors />
           </section>
 
           {/* Section 5: The Final Call */}
           <section className="py-32 border-t border-white/20">
-            <p className="max-w-2xl text-2xl font-medium tracking-tight text-white md:text-3xl">
+            <motion.p
+              initial={{ opacity: 0, x: -80 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, ease: "easeOut" }}
+              className="max-w-2xl text-2xl font-medium tracking-tight text-white md:text-3xl"
+            >
               The AI boom will not be limited by chips. It will be limited by
               heat.
-            </p>
-            <div className="mt-12">
+            </motion.p>
+            <motion.div
+              initial={{ opacity: 0, x: -60 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
+              className="mt-12"
+            >
               <Link
                 href="/#request-audit"
                 className="inline-block rounded border-2 border-white bg-transparent px-8 py-4 text-sm font-medium tracking-tight text-white transition-opacity hover:opacity-90"
               >
                 Request Your Efficiency Blueprint
               </Link>
-            </div>
+            </motion.div>
           </section>
         </div>
       </main>
 
       <footer className="border-t border-white/20 py-8">
         <div className="mx-auto max-w-6xl px-6 text-center text-xs text-white/40 tracking-tight">
-          CooledAI · Energy Freedom for the AI Era
+          CooledAI · The Universal Autonomy Layer for Every Watt of Compute
         </div>
       </footer>
     </div>

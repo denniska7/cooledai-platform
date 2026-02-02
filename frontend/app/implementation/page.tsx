@@ -14,31 +14,68 @@ export default function ImplementationPage() {
           {/* Hero */}
           <section className="py-24">
             <motion.h1
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5 }}
+              initial={{ opacity: 0, x: -80 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.6, ease: "easeOut" }}
               className="text-4xl font-medium tracking-tight text-white md:text-5xl"
             >
               From Theory to Autonomy in 30 Days.
             </motion.h1>
             <motion.p
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ duration: 0.5, delay: 0.1 }}
+              initial={{ opacity: 0, x: -60 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true }}
+              transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
               className="mt-6 max-w-2xl text-lg text-white/70 leading-relaxed"
             >
               CooledAI deploys in phases. Shadow Mode proves ROI before any
               control is handed over. Edge-first architecture ensures
-              sub-millisecond fail-safes.
+              sub-millisecond fail-safes. Scales from single-rack pilots to
+              multi-megawatt fleets.
             </motion.p>
+          </section>
+
+          {/* Hybrid Infrastructure Support */}
+          <section className="py-16 border-t border-[rgba(255,255,255,0.1)]">
+            <motion.div
+              initial={{ opacity: 0, x: -80 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, ease: "easeOut" }}
+              className="rounded border border-[rgba(255,255,255,0.15)] bg-black/50 p-8"
+            >
+              <h3 className="text-xl font-medium tracking-tight text-white">
+                Hybrid Infrastructure Support
+              </h3>
+              <p className="mt-4 text-white/80 leading-relaxed">
+                CooledAI manages Air-Cooled, Liquid-Cooled, and Immersion-Cooled
+                environments simultaneously. Whether you run traditional CRAC
+                units, direct-to-chip liquid, or full-rack immersion—one
+                intelligence layer unifies thermal control across your entire
+                fleet.
+              </p>
+            </motion.div>
           </section>
 
           {/* Shadow Mode */}
           <section className="py-16 border-t border-[rgba(255,255,255,0.1)]">
-            <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl">
+            <motion.h2
+              initial={{ opacity: 0, x: -80 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, ease: "easeOut" }}
+              className="text-2xl font-medium tracking-tight text-white md:text-3xl"
+            >
               7-Day Shadow Mode
-            </h2>
-            <div className="mt-8 space-y-6 text-white/80 leading-relaxed">
+            </motion.h2>
+            <motion.div
+              initial={{ opacity: 0, x: -60 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
+              className="mt-8 space-y-6 text-white/80 leading-relaxed"
+            >
               <p>
                 The AI observes your environment without making changes. We
                 ingest real-time telemetry from your existing sensors and build
@@ -50,8 +87,14 @@ export default function ImplementationPage() {
                 savings, thermal hotspots, and capacity headroom. ROI is proven
                 before a single fan or chiller is touched.
               </p>
-            </div>
-            <div className="mt-10 rounded border border-[rgba(255,255,255,0.1)] bg-black p-6">
+            </motion.div>
+            <motion.div
+              initial={{ opacity: 0, x: -60 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, delay: 0.15, ease: "easeOut" }}
+              className="mt-10 rounded border border-[rgba(255,255,255,0.1)] bg-black p-6"
+            >
               <h3 className="text-sm font-medium text-white/90 uppercase tracking-wider mb-4">
                 Shadow Mode Output
               </h3>
@@ -61,14 +104,20 @@ export default function ImplementationPage() {
                 <li>• Capacity headroom by zone</li>
                 <li>• 7-day Performance Report with ROI projection</li>
               </ul>
-            </div>
+            </motion.div>
           </section>
 
           {/* Hardware Schematic */}
           <section className="py-16 border-t border-[rgba(255,255,255,0.1)]">
-            <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl mb-8">
+            <motion.h2
+              initial={{ opacity: 0, x: -80 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, ease: "easeOut" }}
+              className="text-2xl font-medium tracking-tight text-white md:text-3xl mb-8"
+            >
               Architecture
-            </h2>
+            </motion.h2>
             <div className="rounded border border-[rgba(255,255,255,0.1)] bg-black p-8">
               <svg viewBox="0 0 480 180" className="w-full max-w-2xl mx-auto" preserveAspectRatio="xMidYMid meet">
                 <defs>
@@ -99,9 +148,15 @@ export default function ImplementationPage() {
 
           {/* Integration Specs */}
           <section className="py-16 border-t border-[rgba(255,255,255,0.1)]">
-            <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl">
+            <motion.h2
+              initial={{ opacity: 0, x: -80 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, ease: "easeOut" }}
+              className="text-2xl font-medium tracking-tight text-white md:text-3xl"
+            >
               Integration Specs
-            </h2>
+            </motion.h2>
             <div className="mt-8 space-y-6 text-white/80 leading-relaxed">
               <p>
                 CooledAI integrates with your existing building and IT
@@ -143,9 +198,15 @@ export default function ImplementationPage() {
 
           {/* Data Connectivity & Security */}
           <section className="py-16 border-t border-[rgba(255,255,255,0.1)]">
-            <h2 className="text-2xl font-medium tracking-tight text-white md:text-3xl mb-10">
+            <motion.h2
+              initial={{ opacity: 0, x: -80 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-50px" }}
+              transition={{ duration: 0.6, ease: "easeOut" }}
+              className="text-2xl font-medium tracking-tight text-white md:text-3xl mb-10"
+            >
               Data Connectivity & Security
-            </h2>
+            </motion.h2>
 
             <h3 className="text-sm font-medium text-white/70 uppercase tracking-wider mb-6">
               Connectivity Options
@@ -214,7 +275,7 @@ export default function ImplementationPage() {
                   An encrypted IPsec tunnel between your facility and our sovereign cloud. Provides a dedicated, private network path for all control and monitoring data.
                 </p>
                 <p className="mt-4 text-xs text-white/50">
-                  <span className="font-medium text-white/70">Best for:</span> Enterprise-scale deployments and multi-site management.
+                  <span className="font-medium text-white/70">Best for:</span> Enterprise-scale deployments, multi-site management, and global scalability.
                 </p>
                 <div className="mt-6">
                   <svg viewBox="0 0 200 60" className="w-full" preserveAspectRatio="xMidYMid meet">
@@ -367,7 +428,7 @@ export default function ImplementationPage() {
 
       <footer className="border-t border-[rgba(255,255,255,0.1)] py-8">
         <div className="mx-auto max-w-6xl px-6 text-center text-xs text-white/40 tracking-tight">
-          CooledAI · Energy Freedom for the AI Era
+          CooledAI · The Universal Autonomy Layer for Every Watt of Compute
         </div>
       </footer>
     </div>
