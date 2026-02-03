@@ -3,6 +3,7 @@ import { Inter } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 import { BetaSignupPopup } from "../components/BetaSignupPopup";
+import { Footer } from "../components/Footer";
 import { GlobeDataCenters } from "../components/GlobeDataCenters";
 
 const inter = Inter({
@@ -32,9 +33,10 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" className={inter.variable}>
-      <body className="min-h-screen bg-black text-white">
+      <body className="min-h-screen bg-black text-white flex flex-col">
         <GlobeDataCenters />
-        {children}
+        <div className="flex-1">{children}</div>
+        <Footer />
         <BetaSignupPopup />
         <Analytics />
       </body>
