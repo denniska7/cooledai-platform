@@ -243,23 +243,28 @@ export default function HomePage() {
           </motion.div>
         </section>
 
-        {/* Universal Compatibility — marquee */}
-        <section className="border-t border-white/20 py-16 overflow-hidden">
-          <p className="text-center text-xs font-medium uppercase tracking-widest text-white/50 mb-8">
+        {/* Universal Compatibility — marquee (right to left) */}
+        <section className="relative border-t border-white/20 py-20 overflow-hidden">
+          <p className="text-center text-sm font-medium uppercase tracking-widest text-white/90 mb-10 px-4">
             Universalist Design: Built for the hardware you already own.
           </p>
-          <div className="flex animate-marquee gap-16 whitespace-nowrap text-white/40 text-sm font-medium tracking-tight">
-            <span>Vertiv</span>
-            <span>Schneider Electric</span>
-            <span>Eaton</span>
-            <span>HPE</span>
-            <span>NVIDIA</span>
-            <span className="text-white/20">·</span>
-            <span>Vertiv</span>
-            <span>Schneider Electric</span>
-            <span>Eaton</span>
-            <span>HPE</span>
-            <span>NVIDIA</span>
+          <div className="relative w-full">
+            {/* Edge fades so text appears to run through the screen */}
+            <div className="pointer-events-none absolute left-0 top-0 bottom-0 w-24 bg-gradient-to-r from-black to-transparent z-10" aria-hidden />
+            <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-24 bg-gradient-to-l from-black to-transparent z-10" aria-hidden />
+            <div className="flex animate-marquee-rtl gap-20 whitespace-nowrap py-2 text-base font-semibold tracking-tight text-white/90">
+              <span>Vertiv</span>
+              <span>Schneider Electric</span>
+              <span>Eaton</span>
+              <span>HPE</span>
+              <span>NVIDIA</span>
+              <span className="text-white/30">·</span>
+              <span>Vertiv</span>
+              <span>Schneider Electric</span>
+              <span>Eaton</span>
+              <span>HPE</span>
+              <span>NVIDIA</span>
+            </div>
           </div>
         </section>
 
@@ -505,15 +510,6 @@ export default function HomePage() {
               clusters. We meet the world’s strictest SLAs by predicting thermal
               chaos before it impacts your uptime.
             </p>
-            <div className="inline-flex items-center gap-2 rounded border border-white/30 bg-white/[0.03] px-4 py-2 mt-4">
-              <span className="text-xs font-medium uppercase tracking-widest text-white/50">
-                Protocol Agnostic
-              </span>
-              <span className="text-white/40">·</span>
-              <span className="text-sm text-white/70 tracking-tight">
-                SNMP · BACnet · Modbus · MQTT
-              </span>
-            </div>
           </motion.div>
         </section>
 

@@ -153,15 +153,6 @@ export default function WhyPage() {
                 clusters. We meet the world’s strictest SLAs by predicting thermal
                 chaos before it impacts your uptime.
               </p>
-              <div className="inline-flex items-center gap-2 rounded border border-white/30 bg-white/[0.03] px-4 py-2 mt-4">
-                <span className="text-xs font-medium uppercase tracking-widest text-white/50">
-                  Protocol Agnostic
-                </span>
-                <span className="text-white/40">·</span>
-                <span className="text-sm text-white/70 tracking-tight">
-                  SNMP · BACnet · Modbus · MQTT
-                </span>
-              </div>
             </motion.div>
           </section>
 
