@@ -4,7 +4,6 @@ import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 import { BetaSignupPopup } from "../components/BetaSignupPopup";
 import { Footer } from "../components/Footer";
-import { GlobeDataCenters } from "../components/GlobeDataCenters";
 
 const inter = Inter({
   subsets: ["latin"],
@@ -34,7 +33,6 @@ export default function RootLayout({
   return (
     <html lang="en" className={inter.variable}>
       <body className="min-h-screen bg-black text-white flex flex-col">
-        <GlobeDataCenters />
         <div className="flex-1">{children}</div>
         <Footer />
         <BetaSignupPopup />
