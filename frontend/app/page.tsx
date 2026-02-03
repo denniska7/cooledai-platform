@@ -478,7 +478,7 @@ export default function HomePage() {
           </motion.div>
         </section>
 
-        {/* Target Markets */}
+        {/* Mission-Critical Infrastructure */}
         <section className="mx-auto max-w-4xl px-6 py-24 border-t border-white/20">
           <motion.h2
             initial={{ opacity: 0, x: -80 }}
@@ -487,7 +487,7 @@ export default function HomePage() {
             transition={{ duration: 0.6, ease: "easeOut" }}
             className="text-2xl font-medium tracking-tight text-white md:text-3xl"
           >
-            Target Markets
+            Mission-Critical Infrastructure
           </motion.h2>
           <motion.div
             initial={{ opacity: 0, x: -60 }}
@@ -497,16 +497,23 @@ export default function HomePage() {
             className="mt-8 space-y-6 text-white/80 leading-relaxed"
           >
             <p>
-              CooledAI serves hyperscalers, colocation providers, and enterprise
-              data centers—from 100 kW pilot deployments to 100+ MW fleets.
-              Scalability is built in: add sites, add capacity, add autonomy.
+              Whether it’s a regional healthcare node, a high-density mining
+              fleet, or a Tier 4 financial data center, CooledAI is built for
+              environments where downtime is a non-starter. Our autonomy layer
+              is protocol-agnostic, providing a unified intelligence shield across
+              disparate hardware, legacy chillers, and next-gen liquid-cooled
+              clusters. We meet the world’s strictest SLAs by predicting thermal
+              chaos before it impacts your uptime.
             </p>
-            <p>
-              <strong className="text-white">High-Criticality Partners:</strong>{" "}
-              Financial institutions and healthcare providers rely on 99.99%+
-              uptime. CooledAI delivers predictive thermal control that meets
-              the strictest SLAs—without sacrificing efficiency.
-            </p>
+            <div className="inline-flex items-center gap-2 rounded border border-white/30 bg-white/[0.03] px-4 py-2 mt-4">
+              <span className="text-xs font-medium uppercase tracking-widest text-white/50">
+                Protocol Agnostic
+              </span>
+              <span className="text-white/40">·</span>
+              <span className="text-sm text-white/70 tracking-tight">
+                SNMP · BACnet · Modbus · MQTT
+              </span>
+            </div>
           </motion.div>
         </section>
 
