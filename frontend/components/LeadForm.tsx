@@ -94,10 +94,10 @@ export function LeadForm() {
     >
       <div className="mx-auto max-w-xl px-6">
         <h2 className="mb-4 text-3xl font-medium tracking-tight text-white">
-          Request Your 2026 Efficiency Blueprint
+          Get Your Savings Roadmap
         </h2>
         <p className="mb-12 text-sm text-white/70 tracking-wide">
-          No sales pitch. Just a data-driven blueprint of your potential savings.
+          No sales pitch. A data-driven roadmap of your reclaimable capacity and savings.
         </p>
 
         {submitted ? (
@@ -177,7 +177,7 @@ export function LeadForm() {
               disabled={submitting}
               className="w-full rounded border border-white bg-white px-6 py-4 font-medium tracking-tight text-black transition-opacity hover:opacity-90 disabled:opacity-50"
             >
-              {submitting ? "Submitting…" : "Request Blueprint"}
+              {submitting ? "Submitting…" : "Get My Savings Roadmap"}
             </button>
           </form>
         )}

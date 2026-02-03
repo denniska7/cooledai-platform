@@ -53,7 +53,7 @@ const vectors = [
   {
     icon: OpExIcon,
     title: "Cut Cooling Costs",
-    text: "Reduce total cooling energy spend by 8–12%. In multi-megawatt facilities, this translates to millions in savings that go straight to the bottom line. Scales from single-rack pilots to global fleets.",
+    text: "Reduce total cooling energy spend. In multi-megawatt facilities, savings scale to millions and go straight to the bottom line. Scales from single-rack pilots to global fleets.",
   },
 ];
 

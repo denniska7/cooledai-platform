@@ -31,8 +31,8 @@ export function Footer() {
             <p className="text-sm font-medium tracking-tight text-white">
               CooledAI LLC
             </p>
-            <p className="text-xs text-white/60 tracking-tight">
-              Roseville, CA
+            <p className="text-xs text-white/70 tracking-tight">
+              Headquartered in Roseville, CA
             </p>
             <p className="text-xs text-white/50">
               © {year} CooledAI LLC. All rights reserved.

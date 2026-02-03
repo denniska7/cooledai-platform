@@ -68,7 +68,7 @@ export function SystemPulse() {
       {metrics && (
         <div className="mt-4 grid grid-cols-3 gap-4 text-xs text-white/50">
           <div>
-            <span className="text-accent-lime">{metrics.efficiency_score.toFixed(1)}%</span> efficiency
+            <span className="text-accent-lime">Energy savings</span> active
           </div>
           <div>
             <span className="text-white/70">{metrics.nodes_active}</span> nodes

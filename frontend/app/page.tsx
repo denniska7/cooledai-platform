@@ -2,16 +2,29 @@
 
 import { motion } from "framer-motion";
 import Link from "next/link";
+import { useEffect, useState } from "react";
 import { NavBar } from "../components/NavBar";
 import { LiveSystemPulse } from "../components/LiveSystemPulse";
 import { LeadForm } from "../components/LeadForm";
 
 export default function HomePage() {
+  const [showStickyCta, setShowStickyCta] = useState(false);
+
+  useEffect(() => {
+    const onScroll = () => {
+      // Show sticky CTA after user scrolls past hero (~400px)
+      setShowStickyCta(window.scrollY > 400);
+    };
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
   return (
     <div className="relative min-h-screen bg-transparent text-white overflow-hidden">
       <NavBar />
 
-      <main className="relative pt-20">
+      <main className={`relative pt-20 ${showStickyCta ? "pb-20" : ""}`}>
         {/* Beta signup one-liner */}
         <div className="border-b border-white/20 bg-black/90">
           <div className="mx-auto max-w-6xl px-6 py-3 text-center">
@@ -43,9 +56,9 @@ export default function HomePage() {
             transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
             className="mt-6 max-w-2xl text-lg text-white/80"
           >
-            AI-optimized energy saving that automates thermal control and
-            scales from one rack to hundreds of megawatts. Stop reacting to
-            heat—predict it.
+            Reclaim your cooling-constrained power capacity. AI-optimized thermal
+            control that scales from one rack to hundreds of megawatts. Stop
+            reacting to heat—predict it.
           </motion.p>
           <motion.div
             initial={{ opacity: 0, x: -60, filter: "blur(10px)" }}
@@ -57,7 +70,7 @@ export default function HomePage() {
               href="/#request-audit"
               className="rounded border border-white bg-white px-6 py-4 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90"
             >
-              Request Custom Audit
+              Get My Savings Roadmap
             </Link>
             <Link
               href="/optimization"
@@ -66,7 +79,208 @@ export default function HomePage() {
               See the Science
             </Link>
           </motion.div>
+          {/* Explore strip */}
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.4, delay: 0.5 }}
+            className="mt-16 flex flex-wrap items-center justify-center gap-6 border-t border-white/10 pt-10"
+          >
+            <span className="text-xs font-medium uppercase tracking-widest text-white/50">Explore</span>
+            <Link href="/why" className="text-sm text-white/70 hover:text-white transition-colors underline-offset-4 hover:underline">
+              Why CooledAI
+            </Link>
+            <Link href="/optimization" className="text-sm text-white/70 hover:text-white transition-colors underline-offset-4 hover:underline">
+              How it works
+            </Link>
+            <Link href="/implementation" className="text-sm text-white/70 hover:text-white transition-colors underline-offset-4 hover:underline">
+              Implementation
+            </Link>
+            <Link href="/#request-audit" className="text-sm font-medium text-white underline underline-offset-4">
+              Get My Savings Roadmap
+            </Link>
+          </motion.div>
         </section>
+
+        {/* Security First — icon grid */}
+        <section className="mx-auto max-w-5xl px-6 py-24 border-t border-white/20">
+          <motion.h2
+            initial={{ opacity: 0, x: -80 }}
+            whileInView={{ opacity: 1, x: 0 }}
+            viewport={{ once: true, margin: "-50px" }}
+            transition={{ duration: 0.6, ease: "easeOut" }}
+            className="text-2xl font-medium tracking-tight text-white md:text-3xl mb-12"
+          >
+            Security First
+          </motion.h2>
+          <div className="grid gap-8 md:grid-cols-3">
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-30px" }}
+              transition={{ duration: 0.5, delay: 0.1 }}
+              className="flex flex-col items-start rounded border border-white/20 bg-white/[0.02] p-8"
+            >
+              <div className="flex h-12 w-12 items-center justify-center rounded border border-white/30 bg-black mb-6">
+                <svg className="h-6 w-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-medium tracking-tight text-white">Read-Only Integration</h3>
+              <p className="mt-2 text-sm text-white/70">SNMP, BACnet, Modbus. We ingest telemetry only—no control commands to your infrastructure during the 7-Day Shadow Audit.</p>
+            </motion.div>
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-30px" }}
+              transition={{ duration: 0.5, delay: 0.2 }}
+              className="flex flex-col items-start rounded border border-white/20 bg-white/[0.02] p-8"
+            >
+              <div className="flex h-12 w-12 items-center justify-center rounded border border-white/30 bg-black mb-6">
+                <svg className="h-6 w-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+                  <path d="M7 11V7a5 5 0 0110 0v4" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-medium tracking-tight text-white">AES-256 Encryption</h3>
+              <p className="mt-2 text-sm text-white/70">Data in transit (TLS) and at rest (AES-256). Enterprise-grade protection for your facility and telemetry data.</p>
+            </motion.div>
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-30px" }}
+              transition={{ duration: 0.5, delay: 0.3 }}
+              className="flex flex-col items-start rounded border border-white/20 bg-white/[0.02] p-8"
+            >
+              <div className="flex h-12 w-12 items-center justify-center rounded border border-white/30 bg-black mb-6">
+                <svg className="h-6 w-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+                  <path d="M9 12l2 2 4-4" />
+                </svg>
+              </div>
+              <h3 className="text-lg font-medium tracking-tight text-white">Zero-Downtime Deployment</h3>
+              <p className="mt-2 text-sm text-white/70">Edge agent and integrations deploy without taking systems offline. No scheduled outages required.</p>
+            </motion.div>
+          </div>
+        </section>
+
+        {/* The 7-Day Shadow Audit — timeline */}
+        <section className="mx-auto max-w-4xl px-6 py-24 border-t border-white/20">
+          <motion.h2
+            initial={{ opacity: 0, x: -80 }}
+            whileInView={{ opacity: 1, x: 0 }}
+            viewport={{ once: true, margin: "-50px" }}
+            transition={{ duration: 0.6, ease: "easeOut" }}
+            className="text-2xl font-medium tracking-tight text-white md:text-3xl mb-4"
+          >
+            The 7-Day Shadow Audit
+          </motion.h2>
+          <motion.p
+            initial={{ opacity: 0, x: -60 }}
+            whileInView={{ opacity: 1, x: 0 }}
+            viewport={{ once: true, margin: "-50px" }}
+            transition={{ duration: 0.6, delay: 0.05, ease: "easeOut" }}
+            className="text-white/70 text-sm mb-12"
+          >
+            A clean, low-friction path to your savings roadmap.
+          </motion.p>
+          <ol className="space-y-8">
+            <motion.li
+              initial={{ opacity: 0, x: -40 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-30px" }}
+              transition={{ duration: 0.5 }}
+              className="flex gap-6"
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/30 bg-black text-sm font-medium text-white">1</span>
+              <div>
+                <h3 className="text-lg font-medium tracking-tight text-white">Simple Connection</h3>
+                <p className="mt-1 text-sm text-white/60">~15 mins</p>
+                <p className="mt-2 text-white/80">Connect via your existing SNMP, BACnet, or Modbus TCP. Read-only; no changes to setpoints or equipment.</p>
+              </div>
+            </motion.li>
+            <motion.li
+              initial={{ opacity: 0, x: -40 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-30px" }}
+              transition={{ duration: 0.5, delay: 0.1 }}
+              className="flex gap-6"
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/30 bg-black text-sm font-medium text-white">2</span>
+              <div>
+                <h3 className="text-lg font-medium tracking-tight text-white">Passive Monitoring</h3>
+                <p className="mt-1 text-sm text-white/60">7 Days</p>
+                <p className="mt-2 text-white/80">Our AI observes and builds a thermal digital twin. No control commands; you keep full operational control.</p>
+              </div>
+            </motion.li>
+            <motion.li
+              initial={{ opacity: 0, x: -40 }}
+              whileInView={{ opacity: 1, x: 0 }}
+              viewport={{ once: true, margin: "-30px" }}
+              transition={{ duration: 0.5, delay: 0.2 }}
+              className="flex gap-6"
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/30 bg-black text-sm font-medium text-white">3</span>
+              <div>
+                <h3 className="text-lg font-medium tracking-tight text-white">Results</h3>
+                <p className="mt-1 text-sm text-white/60">Your Savings Roadmap</p>
+                <p className="mt-2 text-white/80">A data-driven blueprint: capacity reclaimed, efficiency gains, and a clear path to full AI optimization.</p>
+              </div>
+            </motion.li>
+          </ol>
+          <motion.div
+            initial={{ opacity: 0 }}
+            whileInView={{ opacity: 1 }}
+            viewport={{ once: true }}
+            className="mt-10"
+          >
+            <Link
+              href="/#request-audit"
+              className="rounded border border-white bg-white px-6 py-3 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90"
+            >
+              Get My Savings Roadmap
+            </Link>
+          </motion.div>
+        </section>
+
+        {/* Universal Compatibility — marquee */}
+        <section className="border-t border-white/20 py-16 overflow-hidden">
+          <p className="text-center text-xs font-medium uppercase tracking-widest text-white/50 mb-8">
+            Universalist Design: Built for the hardware you already own.
+          </p>
+          <div className="flex animate-marquee gap-16 whitespace-nowrap text-white/40 text-sm font-medium tracking-tight">
+            <span>Vertiv</span>
+            <span>Schneider Electric</span>
+            <span>Eaton</span>
+            <span>HPE</span>
+            <span>NVIDIA</span>
+            <span className="text-white/20">·</span>
+            <span>Vertiv</span>
+            <span>Schneider Electric</span>
+            <span>Eaton</span>
+            <span>HPE</span>
+            <span>NVIDIA</span>
+          </div>
+        </section>
+
+        {/* Sticky CTA: visible after scroll so users can convert without reaching bottom */}
+        {showStickyCta && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="fixed bottom-0 left-0 right-0 z-40 border-t border-white/20 bg-black/95 backdrop-blur-sm py-3"
+          >
+            <div className="mx-auto flex max-w-4xl items-center justify-center gap-4 px-6">
+              <span className="text-sm text-white/80 hidden sm:inline">Get your custom savings roadmap.</span>
+              <Link
+                href="/#request-audit"
+                className="rounded border border-white bg-white px-5 py-2.5 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90"
+              >
+                Get My Savings Roadmap
+              </Link>
+            </div>
+          </motion.div>
+        )}
 
         {/* AI-Optimized Energy Saving */}
         <section className="mx-auto max-w-4xl px-6 py-24 border-t border-white/20">
@@ -89,7 +303,7 @@ export default function HomePage() {
             <p>
               CooledAI turns cooling into a predictable, automated layer. Instead
               of manual setpoints and reactive responses, our system learns your
-              facility and adjusts in real time—reducing energy use by up to 12%
+              facility and adjusts in real time—reducing cooling energy use
               while keeping every watt of compute available.
             </p>
             <p>
@@ -204,7 +418,7 @@ export default function HomePage() {
               href="/#request-audit"
               className="rounded border border-white bg-white px-6 py-3 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90"
             >
-              Start with an Audit
+              Get My Savings Roadmap
             </Link>
           </motion.div>
         </section>
@@ -227,8 +441,9 @@ export default function HomePage() {
             transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
             className="mt-6 max-w-2xl text-white/80 leading-relaxed"
           >
-            AI chips use more power than traditional cooling can handle. We cut
-            cooling costs by 12% while keeping servers running at full speed.
+            AI chips use more power than traditional cooling can handle. Reclaim
+            your cooling-constrained power capacity—keep servers at full speed
+            without overbuilding cooling.
           </motion.p>
         </section>
 

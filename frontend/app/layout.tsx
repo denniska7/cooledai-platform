@@ -14,7 +14,7 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "CooledAI | The Universal Autonomy Layer for Every Watt of Compute",
   description:
-    "Predictive thermal optimization for high-density data centers. Air, liquid, and immersion cooling—unified. Reduce cooling costs by 12% while scaling from 100 kW to 100+ MW.",
+    "Predictive thermal optimization for high-density data centers. Air, liquid, and immersion cooling—unified. Meaningful cooling energy savings while scaling from 100 kW to 100+ MW.",
 };
 
 export const viewport: Viewport = {

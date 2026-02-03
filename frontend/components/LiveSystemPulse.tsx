@@ -63,8 +63,8 @@ export function LiveSystemPulse() {
 
   const items = [
     { label: "Current Temp", value: `${temp.toFixed(1)}°C`, unit: "" },
-    { label: "Efficiency Gain", value: `${efficiency.toFixed(1)}`, unit: "%" },
-    { label: "Power Saved", value: powerSaved.toString(), unit: " kW" },
+    { label: "Energy savings", value: "Active", unit: "" },
+    { label: "Power saved", value: powerSaved.toString(), unit: " kW" },
   ];
 
   return (
