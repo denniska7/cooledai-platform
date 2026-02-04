@@ -248,11 +248,12 @@ export default function HomePage() {
           <p className="text-center text-sm font-medium uppercase tracking-widest text-white/90 mb-10 px-4">
             Universalist Design: Built for the hardware you already own.
           </p>
-          <div className="relative w-full">
+          <div className="relative w-full overflow-hidden">
             {/* Edge fades so text appears to run through the screen */}
             <div className="pointer-events-none absolute left-0 top-0 bottom-0 w-24 bg-gradient-to-r from-black to-transparent z-10" aria-hidden />
             <div className="pointer-events-none absolute right-0 top-0 bottom-0 w-24 bg-gradient-to-l from-black to-transparent z-10" aria-hidden />
-            <div className="flex animate-marquee-rtl gap-20 whitespace-nowrap py-2 text-base font-semibold tracking-tight text-white/90">
+            {/* Strip starts at translateX(100%) off the right, animates to 50% for seamless loop */}
+            <div className="flex animate-marquee-rtl gap-20 whitespace-nowrap py-2 text-base font-semibold tracking-tight text-white/90 will-change-transform">
               <span>Vertiv</span>
               <span>Schneider Electric</span>
               <span>Eaton</span>

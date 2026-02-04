@@ -37,16 +37,16 @@
   animation: marquee 30s linear infinite;
 }
 
-/* Right-to-left marquee: content runs across the screen from right to left */
+/* Right-to-left marquee: starts off-screen right, runs continually, seamless loop */
 @keyframes marquee-rtl {
   0% {
-    transform: translateX(0);
+    transform: translateX(100%);
   }
   100% {
-    transform: translateX(-50%);
+    transform: translateX(50%);
   }
 }
 
 .animate-marquee-rtl {
-  animation: marquee-rtl 22s linear infinite;
+  animation: marquee-rtl 35s linear infinite;
 }
