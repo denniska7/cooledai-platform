@@ -79,27 +79,6 @@ export default function HomePage() {
               See the Science
             </Link>
           </motion.div>
-          {/* Explore strip */}
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.4, delay: 0.5 }}
-            className="mt-16 flex flex-wrap items-center justify-center gap-6 border-t border-white/10 pt-10"
-          >
-            <span className="text-xs font-medium uppercase tracking-widest text-white/50">Explore</span>
-            <Link href="/why" className="text-sm text-white/70 hover:text-white transition-colors underline-offset-4 hover:underline">
-              Why CooledAI
-            </Link>
-            <Link href="/optimization" className="text-sm text-white/70 hover:text-white transition-colors underline-offset-4 hover:underline">
-              How it works
-            </Link>
-            <Link href="/implementation" className="text-sm text-white/70 hover:text-white transition-colors underline-offset-4 hover:underline">
-              Implementation
-            </Link>
-            <Link href="/#request-audit" className="text-sm font-medium text-white underline underline-offset-4">
-              Get My Savings Roadmap
-            </Link>
-          </motion.div>
         </section>
 
         {/* Security First — icon grid */}
