@@ -7,7 +7,7 @@ interface SafetyShieldToggleProps {
 
 export function SafetyShieldToggle({ enabled, onToggle }: SafetyShieldToggleProps) {
   return (
-    <div className="flex items-center justify-between gap-6 min-h-[2.75rem]">
+    <div className="flex items-center justify-between gap-6">
       <div className="min-w-0">
         <p className="text-sm font-medium text-white">Autonomous Safety Shield</p>
         <p className="text-xs text-white/50 mt-0.5">
@@ -18,15 +18,15 @@ export function SafetyShieldToggle({ enabled, onToggle }: SafetyShieldToggleProp
         role="switch"
         aria-checked={enabled}
         onClick={() => onToggle(!enabled)}
-        className={`relative shrink-0 w-14 h-8 rounded-full border-2 transition-colors ${
+        className={`relative shrink-0 h-8 w-14 rounded-full border-2 transition-colors flex items-center ${
           enabled
-            ? "bg-[#00FFCC]/20 border-[#00FFCC]"
-            : "bg-black border-white"
+            ? "bg-[#00FFCC]/20 border-[#00FFCC] justify-end pl-1 pr-1"
+            : "bg-black border-white justify-start pl-1 pr-1"
         }`}
       >
         <span
-          className={`absolute top-1 left-1 w-6 h-6 rounded-full transition-transform duration-200 ${
-            enabled ? "translate-x-6 bg-[#00FFCC]" : "translate-x-0 bg-white"
+          className={`block h-5 w-5 shrink-0 rounded-full transition-colors duration-200 ${
+            enabled ? "bg-[#00FFCC]" : "bg-white"
           }`}
         />
       </button>
