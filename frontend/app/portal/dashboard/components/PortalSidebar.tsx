@@ -77,7 +77,7 @@ export function PortalSidebar() {
           </svg>
         </button>
         <Link href="/portal" className="flex items-center gap-2 text-lg font-semibold tracking-tight text-white">
-          <img src="/logo.png" alt="CooledAI Logo" width="160" height="auto" className="h-10 w-auto object-contain transition-all hover:opacity-80" />
+          <img src="/logo.png" alt="CooledAI Logo" style={{ height: "32px", width: "auto" }} className="block" />
           CooledAI
         </Link>
         <UserButton afterSignOutUrl="/" />

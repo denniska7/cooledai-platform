@@ -8,7 +8,7 @@ export function NavBar() {
     <nav className="fixed top-0 left-0 right-0 z-50 border-b border-white/20 bg-black">
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
         <Link href="/" className="flex items-center gap-2 text-lg font-medium tracking-tight text-white">
-          <img src="/logo.png" alt="CooledAI Logo" width="160" height="auto" className="h-10 w-auto object-contain transition-all hover:opacity-80" />
+          <img src="/logo.png" alt="CooledAI Logo" style={{ height: "40px", width: "auto" }} className="block" />
           <span>CooledAI</span>
         </Link>
         <div className="flex items-center gap-8">
