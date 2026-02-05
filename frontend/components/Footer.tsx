@@ -10,14 +10,17 @@ export function Footer() {
       <div className="mx-auto max-w-6xl px-6 py-10">
         <div className="flex flex-col gap-8 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-2">
-            <p className="text-sm font-medium tracking-tight text-white">
-              CooledAI LLC
-            </p>
+            <Link href="/" className="inline-flex items-center gap-2">
+              <img src="/logo.png" alt="CooledAI Logo" width={40} height={40} className="h-10 w-auto object-contain transition-all hover:opacity-80" />
+              <p className="text-sm font-medium tracking-tight text-white">
+                CooledAI
+              </p>
+            </Link>
             <p className="text-xs text-white/70 tracking-tight">
               Headquartered in Roseville, CA
             </p>
             <p className="text-xs text-white/50">
-              © {year} CooledAI LLC. All rights reserved.
+              © {year} CooledAI. All rights reserved.
             </p>
           </div>
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:gap-8">
