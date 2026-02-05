@@ -24,7 +24,7 @@ export function PortalSidebar() {
           className="flex items-center gap-2 text-lg font-semibold tracking-tight text-white"
           onClick={() => setMobileOpen(false)}
         >
-          <img src="/logo.png" alt="CooledAI Logo" width={40} height={40} className="h-10 w-auto object-contain transition-all hover:opacity-80" />
+          <img src="/logo.png" alt="CooledAI Logo" width="160" height="auto" className="h-10 w-auto object-contain transition-all hover:opacity-80" />
           CooledAI
         </Link>
         <span className="block text-xs text-white/50 mt-0.5">Customer Portal</span>
@@ -77,7 +77,7 @@ export function PortalSidebar() {
           </svg>
         </button>
         <Link href="/portal" className="flex items-center gap-2 text-lg font-semibold tracking-tight text-white">
-          <img src="/logo.png" alt="CooledAI Logo" width={40} height={40} className="h-10 w-auto object-contain transition-all hover:opacity-80" />
+          <img src="/logo.png" alt="CooledAI Logo" width="160" height="auto" className="h-10 w-auto object-contain transition-all hover:opacity-80" />
           CooledAI
         </Link>
         <UserButton afterSignOutUrl="/" />

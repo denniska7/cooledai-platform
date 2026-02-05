@@ -15,6 +15,15 @@ module.exports = {
           cyan: "#00FFCC",
           lime: "#84cc16",
         },
+        carbon: {
+          950: "#0a0a0a",
+          900: "#141414",
+          800: "#1a1a1a",
+        },
+        savings: {
+          DEFAULT: "#22c55e",
+          dim: "#22c55e",
+        },
       },
       keyframes: {
         "shield-pulse": {
