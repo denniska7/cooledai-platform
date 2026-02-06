@@ -33,7 +33,7 @@ export default function PrivacyPage() {
               <span className="text-[#22c55e]">1.</span> Data Collection
             </h2>
             <p>
-              We collect account info (email/billing via Clerk and Lemon Squeezy) and technical logs (chip temps, fan speeds, power draw).
+              We collect account info (email/billing via Lemon Squeezy and any account sign-in when enabled) and technical logs (chip temps, fan speeds, power draw).
             </p>
           </section>
 

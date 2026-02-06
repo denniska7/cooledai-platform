@@ -1,13 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import Script from "next/script";
 import { Inter } from "next/font/google";
-import { ClerkProvider } from "@clerk/nextjs";
+// Clerk removed — site runs in Demo Mode without auth
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 import { BetaSignupPopup } from "../components/BetaSignupPopup";
 import { Footer } from "../components/Footer";
-
-const clerkPubKey = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
 const inter = Inter({
   subsets: ["latin"],
@@ -60,11 +58,7 @@ export default function RootLayout({
             if(!setup()) var id=setInterval(function(){ if(setup()) clearInterval(id); }, 100);
           })();`}
         </Script>
-        {clerkPubKey ? (
-          <ClerkProvider publishableKey={clerkPubKey}>{content}</ClerkProvider>
-        ) : (
-          content
-        )}
+        {content}
       </body>
     </html>
   );

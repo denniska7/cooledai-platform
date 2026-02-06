@@ -3,7 +3,6 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { UserButton } from "@clerk/nextjs";
 
 const navItems = [
   { href: "/portal", label: "Overview" },
@@ -49,14 +48,9 @@ export function PortalSidebar() {
         })}
       </nav>
       <div className="p-4 border-t border-white/10 flex items-center justify-between gap-2">
-        <UserButton
-          afterSignOutUrl="/"
-          appearance={{
-            elements: {
-              avatarBox: "w-8 h-8",
-            },
-          }}
-        />
+        <span className="rounded-full border border-[#22c55e]/40 bg-[#22c55e]/10 px-3 py-1.5 text-xs font-medium text-[#22c55e]">
+          Demo Mode
+        </span>
         <span className="text-xs text-white/50 truncate">Account</span>
       </div>
     </>
@@ -80,7 +74,9 @@ export function PortalSidebar() {
           <img src="/logo.png" alt="CooledAI Logo" style={{ height: "32px", width: "auto" }} className="block" />
           CooledAI
         </Link>
-        <UserButton afterSignOutUrl="/" />
+        <span className="rounded-full border border-[#22c55e]/40 bg-[#22c55e]/10 px-2.5 py-1 text-xs font-medium text-[#22c55e]">
+          Demo
+        </span>
       </header>
 
       {mobileOpen && (

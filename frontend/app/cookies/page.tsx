@@ -112,8 +112,7 @@ export default function CookiesPage() {
                 management</strong> — The CooledAI Customer Portal uses
                 browser-based session state (e.g., session or local storage, or
                 cookies) to maintain secure user sessions. We do not currently
-                use a separate third-party identity provider (e.g., Clerk or
-                Supabase); if we introduce one, we will update this policy and
+                use a separate third-party identity provider; if we introduce one, we will update this policy and
                 our Privacy Policy accordingly.
               </li>
             </ul>

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { Suspense, useState, useMemo, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -36,7 +36,7 @@ function useSimulatedPulse() {
   return data;
 }
 
-export default function PortalOverviewPage() {
+function PortalOverviewContent() {
   const searchParams = useSearchParams();
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
   const pulseData = useSimulatedPulse();
@@ -225,5 +225,13 @@ export default function PortalOverviewPage() {
         </p>
       </motion.section>
     </div>
+  );
+}
+
+export default function PortalOverviewPage() {
+  return (
+    <Suspense fallback={<div className="p-6 md:p-8 max-w-6xl mx-auto animate-pulse text-white/50">Loading…</div>}>
+      <PortalOverviewContent />
+    </Suspense>
   );
 }
