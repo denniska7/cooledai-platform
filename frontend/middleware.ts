@@ -1,10 +1,27 @@
-// Clerk removed — no auth; all routes are public (Demo Mode)
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
+import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
-export function middleware(_req: NextRequest) {
-  return NextResponse.next();
-}
+const isProtectedRoute = createRouteMatcher([
+  "/portal(.*)",
+  "/admin(.*)",
+]);
+const isPublicRoute = createRouteMatcher([
+  "/",
+  "/why",
+  "/optimization",
+  "/implementation",
+  "/privacy",
+  "/terms",
+  "/cookies",
+  "/sign-in(.*)",
+  "/sign-up(.*)",
+  "/portal/login",
+]);
+
+export default clerkMiddleware(async (auth, req) => {
+  if (isProtectedRoute(req) && !isPublicRoute(req)) {
+    await auth.protect();
+  }
+});
 
 export const config = {
   matcher: [

@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { UserButton, OrganizationSwitcher } from "@clerk/nextjs";
 
 const navItems = [
   { href: "/portal", label: "Overview" },
@@ -47,11 +48,22 @@ export function PortalSidebar() {
           );
         })}
       </nav>
-      <div className="p-4 border-t border-white/10 flex items-center justify-between gap-2">
-        <span className="rounded-full border border-[#22c55e]/40 bg-[#22c55e]/10 px-3 py-1.5 text-xs font-medium text-[#22c55e]">
-          Demo Mode
-        </span>
-        <span className="text-xs text-white/50 truncate">Account</span>
+      <div className="p-4 border-t border-white/10 space-y-2">
+        <OrganizationSwitcher
+          hidePersonal
+          afterCreateOrganizationUrl="/portal"
+          afterSelectOrganizationUrl="/portal"
+          appearance={{
+            elements: {
+              rootBox: "w-full",
+              organizationSwitcherTrigger: "w-full justify-between rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-white/80 hover:bg-white/10",
+            },
+          }}
+        />
+        <div className="flex items-center justify-between gap-2">
+          <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: "w-8 h-8" } }} />
+          <span className="text-xs text-white/50 truncate">Account</span>
+        </div>
       </div>
     </>
   );
@@ -74,9 +86,7 @@ export function PortalSidebar() {
           <img src="/logo.png" alt="CooledAI Logo" style={{ height: "32px", width: "auto" }} className="block" />
           CooledAI
         </Link>
-        <span className="rounded-full border border-[#22c55e]/40 bg-[#22c55e]/10 px-2.5 py-1 text-xs font-medium text-[#22c55e]">
-          Demo
-        </span>
+        <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: "w-8 h-8" } }} />
       </header>
 
       {mobileOpen && (

@@ -10,12 +10,7 @@ export default function PortalLayout({
   return (
     <div className="min-h-screen bg-[#0a0a0a] flex flex-col md:flex-row">
       <PortalSidebar />
-      <main className="flex-1 overflow-auto relative">
-        <div className="absolute top-3 right-4 z-10 rounded-full border border-[#22c55e]/40 bg-[#22c55e]/10 px-3 py-1 text-xs font-medium text-[#22c55e]">
-          Demo Mode
-        </div>
-        {children}
-      </main>
+      <main className="flex-1 overflow-auto">{children}</main>
     </div>
   );
 }

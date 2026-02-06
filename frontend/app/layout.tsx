@@ -1,7 +1,8 @@
 import type { Metadata, Viewport } from "next";
 import Script from "next/script";
 import { Inter } from "next/font/google";
-// Clerk removed — site runs in Demo Mode without auth
+import { ClerkProvider } from "@clerk/nextjs";
+import { dark } from "@clerk/themes";
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 import { BetaSignupPopup } from "../components/BetaSignupPopup";
@@ -58,7 +59,12 @@ export default function RootLayout({
             if(!setup()) var id=setInterval(function(){ if(setup()) clearInterval(id); }, 100);
           })();`}
         </Script>
-        {content}
+        <ClerkProvider
+          publishableKey={process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY!}
+          appearance={{ baseTheme: dark }}
+        >
+          {content}
+        </ClerkProvider>
       </body>
     </html>
   );
