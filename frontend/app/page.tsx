@@ -6,9 +6,11 @@ import { useEffect, useState } from "react";
 import { NavBar } from "../components/NavBar";
 import { LiveSystemPulse } from "../components/LiveSystemPulse";
 import { LeadForm } from "../components/LeadForm";
+import { LeadFormModal } from "../components/LeadFormModal";
 
 export default function HomePage() {
   const [showStickyCta, setShowStickyCta] = useState(false);
+  const [leadModalOpen, setLeadModalOpen] = useState(false);
 
   useEffect(() => {
     const onScroll = () => {
@@ -498,8 +500,95 @@ export default function HomePage() {
           <LiveSystemPulse />
         </section>
 
+        {/* Pricing */}
+        <section className="mx-auto max-w-5xl px-6 py-24 border-t border-white/20">
+          <motion.h2
+            initial={{ opacity: 0, x: -40 }}
+            whileInView={{ opacity: 1, x: 0 }}
+            viewport={{ once: true, margin: "-50px" }}
+            transition={{ duration: 0.5, ease: "easeOut" }}
+            className="text-2xl font-medium tracking-tight text-white md:text-3xl mb-4"
+          >
+            Pricing
+          </motion.h2>
+          <motion.p
+            initial={{ opacity: 0, x: -40 }}
+            whileInView={{ opacity: 1, x: 0 }}
+            viewport={{ once: true, margin: "-50px" }}
+            transition={{ duration: 0.5, delay: 0.05, ease: "easeOut" }}
+            className="text-white/60 text-sm mb-12"
+          >
+            From a free 7-day shadow audit to fleet-wide Enterprise.
+          </motion.p>
+          <div className="grid gap-6 md:grid-cols-3">
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-30px" }}
+              transition={{ duration: 0.4, delay: 0.1 }}
+              className="rounded-xl border border-[#22c55e]/40 bg-[#141414] p-6 ring-1 ring-[#22c55e]/20"
+            >
+              <div className="bg-[#22c55e]/15 border-b border-[#22c55e]/30 -mx-6 -mt-6 px-6 py-2 mb-6 rounded-t-xl">
+                <span className="text-xs font-semibold uppercase tracking-wider text-[#22c55e]">Audit</span>
+              </div>
+              <p className="text-2xl font-bold text-white">$0</p>
+              <p className="text-sm text-white/50 mt-0.5">7-day shadow period</p>
+              <p className="mt-4 text-sm text-white/70">Full thermal visibility. No commitment.</p>
+              <Link
+                href="/#request-audit"
+                className="mt-6 inline-block w-full rounded-lg border border-[#22c55e]/40 bg-[#22c55e]/10 px-4 py-2.5 text-center text-sm font-medium text-[#22c55e] hover:bg-[#22c55e]/20 transition-colors"
+              >
+                Get started
+              </Link>
+            </motion.div>
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-30px" }}
+              transition={{ duration: 0.4, delay: 0.15 }}
+              className="rounded-xl border border-white/20 bg-[#141414] p-6"
+            >
+              <p className="text-lg font-semibold text-white">Optimizer Pro</p>
+              <p className="text-2xl font-bold text-white mt-2">Custom</p>
+              <p className="text-sm text-white/50">per site / month</p>
+              <p className="mt-4 text-sm text-white/70">Single-site AI optimization.</p>
+              <button
+                type="button"
+                onClick={() => setLeadModalOpen(true)}
+                className="mt-6 w-full rounded-lg border border-white/20 bg-white/5 px-4 py-2.5 text-sm font-medium text-white/80 hover:bg-white/10 hover:text-white transition-colors"
+              >
+                Contact Sales
+              </button>
+            </motion.div>
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              whileInView={{ opacity: 1, y: 0 }}
+              viewport={{ once: true, margin: "-30px" }}
+              transition={{ duration: 0.4, delay: 0.2 }}
+              className="rounded-xl border border-white/20 bg-[#141414] p-6"
+            >
+              <p className="text-lg font-semibold text-white">Enterprise</p>
+              <p className="text-2xl font-bold text-white mt-2">Custom</p>
+              <p className="text-sm text-white/50">multi-site</p>
+              <p className="mt-4 text-sm text-white/70">Fleet-wide optimization and dedicated support.</p>
+              <Link
+                href="/audit-request"
+                className="mt-6 block w-full rounded-lg border border-[#22c55e]/40 bg-[#22c55e]/10 px-4 py-2.5 text-center text-sm font-medium text-[#22c55e] hover:bg-[#22c55e]/20 transition-colors"
+              >
+                Request Shadow Audit
+              </Link>
+            </motion.div>
+          </div>
+        </section>
+
         {/* Lead Form */}
         <LeadForm />
+
+        <LeadFormModal
+          isOpen={leadModalOpen}
+          onClose={() => setLeadModalOpen(false)}
+          title="Get in touch"
+        />
       </main>
 
       <footer className="border-t border-white/20 py-8">

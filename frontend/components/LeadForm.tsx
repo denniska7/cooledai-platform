@@ -5,38 +5,28 @@ import { motion } from "framer-motion";
 
 const FORMSPREE_LEAD = "https://formspree.io/f/xqeldapd";
 
-const CONSUMER_DOMAINS = [
-  "gmail.com",
-  "yahoo.com",
-  "hotmail.com",
-  "outlook.com",
-  "icloud.com",
-  "aol.com",
-  "mail.com",
-  "protonmail.com",
-  "live.com",
-  "msn.com",
-];
+const COOLING_CHALLENGES = [
+  { value: "", label: "Select primary challenge…" },
+  { value: "overheating", label: "Overheating" },
+  { value: "high_energy_bills", label: "High Energy Bills" },
+  { value: "humidity_control", label: "Humidity Control" },
+  { value: "other", label: "Other" },
+] as const;
 
-function isBusinessEmail(email: string): boolean {
-  const domain = email.split("@")[1]?.toLowerCase();
-  if (!domain) return false;
-  return !CONSUMER_DOMAINS.includes(domain);
-}
+type LeadFormProps = {
+  onSuccess?: () => void;
+  /** If true, render without section wrapper (e.g. for modal) */
+  compact?: boolean;
+};
 
-function companyFromEmail(email: string): string {
-  const domain = email.split("@")[1];
-  if (!domain) return "";
-  const name = domain.split(".")[0];
-  return name ? name.charAt(0).toUpperCase() + name.slice(1) : "";
-}
-
-export function LeadForm() {
+export function LeadForm({ onSuccess, compact = false }: LeadFormProps) {
   const [form, setForm] = useState({
     fullName: "",
-    businessEmail: "",
-    phone: "",
-    dataCenterScale: "",
+    corporateEmail: "",
+    companyName: "",
+    facilitySqFt: "",
+    currentPue: "",
+    primaryChallenge: "",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [submitted, setSubmitted] = useState(false);
@@ -48,11 +38,13 @@ export function LeadForm() {
     const newErrors: Record<string, string> = {};
 
     if (!form.fullName.trim()) newErrors.fullName = "Required";
-    if (!form.businessEmail.trim()) newErrors.businessEmail = "Required";
-    else if (!isBusinessEmail(form.businessEmail))
-      newErrors.businessEmail = "Please use a business email address";
-    if (!form.phone.trim()) newErrors.phone = "Required";
-    if (!form.dataCenterScale.trim()) newErrors.dataCenterScale = "Required";
+    if (!form.corporateEmail.trim()) newErrors.corporateEmail = "Required";
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(form.corporateEmail))
+      newErrors.corporateEmail = "Please enter a valid email";
+    if (!form.companyName.trim()) newErrors.companyName = "Required";
+    if (!form.facilitySqFt.trim()) newErrors.facilitySqFt = "Required";
+    if (!form.primaryChallenge)
+      newErrors.primaryChallenge = "Please select a challenge";
 
     setErrors(newErrors);
     setSubmitError(null);
@@ -65,13 +57,18 @@ export function LeadForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           fullName: form.fullName,
-          businessEmail: form.businessEmail,
-          phone: form.phone,
-          dataCenterScale: form.dataCenterScale,
+          corporateEmail: form.corporateEmail,
+          companyName: form.companyName,
+          facilitySqFt: form.facilitySqFt,
+          currentPue: form.currentPue || undefined,
+          primaryChallenge: form.primaryChallenge,
         }),
       });
       if (!res.ok) throw new Error("Submission failed");
       setSubmitted(true);
+      if (onSuccess) {
+        setTimeout(onSuccess, 1500);
+      }
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Submission failed");
     } finally {
@@ -80,108 +77,186 @@ export function LeadForm() {
   };
 
   const inputClass =
-    "w-full bg-transparent border border-white px-4 py-4 text-white placeholder-white/40 focus:border-accent-cyan focus:outline-none transition-colors tracking-wide";
+    "w-full rounded-lg border border-white/20 bg-[#0a0a0a] px-4 py-3.5 text-white placeholder-white/40 focus:border-[#22c55e] focus:outline-none focus:ring-1 focus:ring-[#22c55e]/50 transition-colors text-sm tracking-tight";
+  const labelClass = "block text-xs font-medium text-white/70 mb-1.5 tracking-tight";
   const errorClass = "mt-1 text-xs text-red-400";
 
-  return (
-    <motion.section
-      id="request-audit"
-      initial={{ opacity: 0, x: -80 }}
-      whileInView={{ opacity: 1, x: 0 }}
-      viewport={{ once: true, margin: "-100px" }}
-      transition={{ duration: 0.6, ease: "easeOut" }}
-      className="border-t border-white py-32"
-    >
-      <div className="mx-auto max-w-xl px-6">
-        <h2 className="mb-4 text-3xl font-medium tracking-tight text-white">
+  const content = (
+    <div className={compact ? "max-w-xl" : "mx-auto max-w-xl px-6"}>
+        <h2 className="text-2xl font-semibold tracking-tight text-white md:text-3xl">
           Get Your Savings Roadmap
         </h2>
-        <p className="mb-12 text-sm text-white/70 tracking-wide">
-          No sales pitch. A data-driven roadmap of your reclaimable capacity and savings.
+        <p className="mt-2 text-sm text-white/60 tracking-tight">
+          For data center managers. No sales pitch—a data-driven view of reclaimable capacity and savings.
         </p>
 
         {submitted ? (
-          <div className="rounded border border-[rgba(255,255,255,0.1)] bg-white/5 p-8 text-center">
-            <p className="font-medium text-white tracking-wide">
-              Infrastructure Profile Received.
+          <motion.div
+            initial={{ opacity: 0, scale: 0.98 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ duration: 0.3 }}
+            className="mt-10 rounded-xl border border-[#22c55e]/30 bg-[#22c55e]/5 p-8 text-center"
+          >
+            <p className="text-lg font-semibold text-[#22c55e]">Thank You</p>
+            <p className="mt-2 text-sm text-white/80">
+              We&apos;ll be in touch shortly with your preliminary thermal ROI report.
             </p>
-            <p className="mt-3 text-sm text-white/60 tracking-wide">
-              A Preliminary Thermal ROI Report is being generated for{" "}
-              <span className="text-white">
-                {companyFromEmail(form.businessEmail) || form.fullName}
-              </span>
-              . Check your dashboard in 4 hours.
-            </p>
-          </div>
+          </motion.div>
         ) : (
-          <form onSubmit={handleSubmit} className="space-y-6">
+          <form onSubmit={handleSubmit} className="mt-10 space-y-5">
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+              <div>
+                <label htmlFor="lead-fullName" className={labelClass}>
+                  Full Name
+                </label>
+                <input
+                  id="lead-fullName"
+                  type="text"
+                  placeholder="Jane Smith"
+                  value={form.fullName}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, fullName: e.target.value }))
+                  }
+                  className={inputClass}
+                />
+                {errors.fullName && (
+                  <p className={errorClass}>{errors.fullName}</p>
+                )}
+              </div>
+              <div>
+                <label htmlFor="lead-email" className={labelClass}>
+                  Corporate Email
+                </label>
+                <input
+                  id="lead-email"
+                  type="email"
+                  placeholder="jane@company.com"
+                  value={form.corporateEmail}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, corporateEmail: e.target.value }))
+                  }
+                  className={inputClass}
+                />
+                {errors.corporateEmail && (
+                  <p className={errorClass}>{errors.corporateEmail}</p>
+                )}
+              </div>
+            </div>
+
             <div>
+              <label htmlFor="lead-company" className={labelClass}>
+                Company Name
+              </label>
               <input
+                id="lead-company"
                 type="text"
-                placeholder="Name"
-                value={form.fullName}
+                placeholder="Acme Data Centers"
+                value={form.companyName}
                 onChange={(e) =>
-                  setForm((f) => ({ ...f, fullName: e.target.value }))
+                  setForm((f) => ({ ...f, companyName: e.target.value }))
                 }
                 className={inputClass}
               />
-              {errors.fullName && (
-                <p className={errorClass}>{errors.fullName}</p>
+              {errors.companyName && (
+                <p className={errorClass}>{errors.companyName}</p>
               )}
             </div>
+
+            <div className="grid grid-cols-1 gap-5 sm:grid-cols-2">
+              <div>
+                <label htmlFor="lead-sqft" className={labelClass}>
+                  Facility Square Footage (Approx)
+                </label>
+                <input
+                  id="lead-sqft"
+                  type="text"
+                  placeholder="e.g. 50,000"
+                  value={form.facilitySqFt}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, facilitySqFt: e.target.value }))
+                  }
+                  className={inputClass}
+                />
+                {errors.facilitySqFt && (
+                  <p className={errorClass}>{errors.facilitySqFt}</p>
+                )}
+              </div>
+              <div>
+                <label htmlFor="lead-pue" className={labelClass}>
+                  Current PUE <span className="text-white/40">(if known)</span>
+                </label>
+                <input
+                  id="lead-pue"
+                  type="text"
+                  placeholder="e.g. 1.5"
+                  value={form.currentPue}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, currentPue: e.target.value }))
+                  }
+                  className={inputClass}
+                />
+              </div>
+            </div>
+
             <div>
-              <input
-                type="email"
-                placeholder="Business Email"
-                value={form.businessEmail}
+              <label htmlFor="lead-challenge" className={labelClass}>
+                Primary Cooling Challenge
+              </label>
+              <select
+                id="lead-challenge"
+                value={form.primaryChallenge}
                 onChange={(e) =>
-                  setForm((f) => ({ ...f, businessEmail: e.target.value }))
+                  setForm((f) => ({ ...f, primaryChallenge: e.target.value }))
                 }
-                className={inputClass}
-              />
-              {errors.businessEmail && (
-                <p className={errorClass}>{errors.businessEmail}</p>
+                className={inputClass + " appearance-none cursor-pointer pr-10 bg-[#0a0a0a]"}
+                style={{
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='rgba(255,255,255,0.5)'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E")`,
+                  backgroundRepeat: "no-repeat",
+                  backgroundPosition: "right 12px center",
+                  backgroundSize: "18px",
+                }}
+              >
+                {COOLING_CHALLENGES.map((opt) => (
+                  <option key={opt.value || "empty"} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              {errors.primaryChallenge && (
+                <p className={errorClass}>{errors.primaryChallenge}</p>
               )}
             </div>
-            <div>
-              <input
-                type="tel"
-                placeholder="Phone"
-                value={form.phone}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, phone: e.target.value }))
-                }
-                className={inputClass}
-              />
-              {errors.phone && <p className={errorClass}>{errors.phone}</p>}
-            </div>
-            <div>
-              <input
-                type="text"
-                placeholder="Data Center Scale (MW)"
-                value={form.dataCenterScale}
-                onChange={(e) =>
-                  setForm((f) => ({ ...f, dataCenterScale: e.target.value }))
-                }
-                className={inputClass}
-              />
-              {errors.dataCenterScale && (
-                <p className={errorClass}>{errors.dataCenterScale}</p>
-              )}
-            </div>
+
             {submitError && (
               <p className="text-sm text-red-400">{submitError}</p>
             )}
+
             <button
               type="submit"
               disabled={submitting}
-              className="w-full rounded border border-white bg-white px-6 py-4 font-medium tracking-tight text-black transition-opacity hover:opacity-90 disabled:opacity-50"
+              className="w-full rounded-lg border-2 border-[#22c55e] bg-[#22c55e] px-6 py-4 text-sm font-semibold tracking-tight text-black shadow-[0_0_20px_rgba(34,197,94,0.3)] transition-all hover:bg-[#22c55e]/90 hover:shadow-[0_0_24px_rgba(34,197,94,0.4)] focus:outline-none focus:ring-2 focus:ring-[#22c55e]/50 focus:ring-offset-2 focus:ring-offset-[#0a0a0a] disabled:pointer-events-none disabled:opacity-50"
             >
               {submitting ? "Submitting…" : "Get My Savings Roadmap"}
             </button>
           </form>
         )}
-      </div>
+    </div>
+  );
+
+  if (compact) {
+    return content;
+  }
+
+  return (
+    <motion.section
+      id="request-audit"
+      initial={{ opacity: 0, y: 24 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, margin: "-80px" }}
+      transition={{ duration: 0.4, ease: "easeOut" }}
+      className="border-t border-white/20 py-24"
+    >
+      {content}
     </motion.section>
   );
 }

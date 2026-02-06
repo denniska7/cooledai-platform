@@ -1,6 +1,9 @@
 "use client";
 
+import { useState } from "react";
+import Link from "next/link";
 import { motion } from "framer-motion";
+import { LeadFormModal } from "../../../components/LeadFormModal";
 
 const tiers = [
   {
@@ -15,6 +18,7 @@ const tiers = [
       "No credit card required",
     ],
     cta: "Current plan",
+    ctaAction: "none" as const,
     active: true,
     highlight: true,
   },
@@ -29,7 +33,8 @@ const tiers = [
       "Real-time thermal predictions",
       "Single-site license",
     ],
-    cta: "Contact sales",
+    cta: "Contact Sales",
+    ctaAction: "contact" as const,
     active: false,
     highlight: false,
   },
@@ -44,13 +49,16 @@ const tiers = [
       "Dedicated success manager",
       "Custom SLAs & reporting",
     ],
-    cta: "Contact sales",
+    cta: "Request Shadow Audit",
+    ctaAction: "audit" as const,
     active: false,
     highlight: false,
   },
 ];
 
 export default function BillingPage() {
+  const [leadModalOpen, setLeadModalOpen] = useState(false);
+
   return (
     <div className="p-6 md:p-8 max-w-6xl mx-auto">
       <motion.div
@@ -100,15 +108,32 @@ export default function BillingPage() {
                 ))}
               </ul>
               <div className="mt-6 pt-4 border-t border-white/10">
-                <span
-                  className={`inline-block w-full rounded-lg border px-4 py-2.5 text-center text-sm font-medium ${
-                    tier.active
-                      ? "border-[#22c55e]/40 bg-[#22c55e]/10 text-[#22c55e]"
-                      : "border-white/20 bg-white/5 text-white/80"
-                  }`}
-                >
-                  {tier.cta}
-                </span>
+                {tier.ctaAction === "audit" ? (
+                  <Link
+                    href="/audit-request"
+                    className="block w-full rounded-lg border border-white/20 bg-white/5 px-4 py-2.5 text-center text-sm font-medium text-white/80 hover:bg-white/10 hover:text-white transition-colors"
+                  >
+                    {tier.cta}
+                  </Link>
+                ) : tier.ctaAction === "contact" ? (
+                  <button
+                    type="button"
+                    onClick={() => setLeadModalOpen(true)}
+                    className="w-full rounded-lg border border-white/20 bg-white/5 px-4 py-2.5 text-sm font-medium text-white/80 hover:bg-white/10 hover:text-white transition-colors"
+                  >
+                    {tier.cta}
+                  </button>
+                ) : (
+                  <span
+                    className={`inline-block w-full rounded-lg border px-4 py-2.5 text-center text-sm font-medium ${
+                      tier.active
+                        ? "border-[#22c55e]/40 bg-[#22c55e]/10 text-[#22c55e]"
+                        : "border-white/20 bg-white/5 text-white/80"
+                    }`}
+                  >
+                    {tier.cta}
+                  </span>
+                )}
               </div>
             </div>
           </motion.div>
@@ -126,6 +151,12 @@ export default function BillingPage() {
           typically covered by the first 14 days of recovered energy margins.
         </p>
       </motion.div>
+
+      <LeadFormModal
+        isOpen={leadModalOpen}
+        onClose={() => setLeadModalOpen(false)}
+        title="Get in touch"
+      />
     </div>
   );
 }

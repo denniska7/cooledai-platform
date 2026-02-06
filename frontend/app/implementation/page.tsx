@@ -364,7 +364,7 @@ export default function ImplementationPage() {
                   handover. Prove ROI before commitment.
                 </p>
                 <Link
-                  href="/#request-audit"
+                  href="/contact"
                   className="mt-6 inline-block border border-white px-6 py-3 text-sm font-medium text-white transition-opacity hover:opacity-90"
                 >
                   Request Pilot
@@ -382,10 +382,10 @@ export default function ImplementationPage() {
                   Digital Twin. Predictive shutdown. Mission Control Portal.
                 </p>
                 <Link
-                  href="/#request-audit"
+                  href="/contact"
                   className="mt-6 inline-block border border-white bg-white px-6 py-3 text-sm font-medium text-black transition-opacity hover:opacity-90"
                 >
-                  Request Enterprise
+                  Request Shadow Audit
                 </Link>
               </div>
             </div>

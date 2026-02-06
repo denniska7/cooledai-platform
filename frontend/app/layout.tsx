@@ -62,6 +62,7 @@ export default function RootLayout({
         <ClerkProvider
           publishableKey={process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY!}
           appearance={{ baseTheme: dark }}
+          signInUrl="/portal/login"
         >
           {content}
         </ClerkProvider>
