@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from "react";
-import { motion } from "framer-motion";
 
 const FORMSPREE_AUDIT = "https://formspree.io/f/mqkrpvwz";
 
@@ -33,7 +32,6 @@ export function AuditRequestForm() {
     message: "",
   });
   const [errors, setErrors] = useState<Record<string, string>>({});
-  const [submitted, setSubmitted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
@@ -68,7 +66,8 @@ export function AuditRequestForm() {
         }),
       });
       if (!res.ok) throw new Error("Submission failed");
-      setSubmitted(true);
+      window.location.href = "/audit-success";
+      return;
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Submission failed");
     } finally {
@@ -80,22 +79,6 @@ export function AuditRequestForm() {
     "w-full rounded-lg border border-white/20 bg-[#0a0a0a] px-4 py-3.5 text-white placeholder-white/40 focus:border-[#22c55e] focus:outline-none focus:ring-1 focus:ring-[#22c55e]/50 transition-colors text-sm tracking-tight";
   const labelClass = "block text-xs font-medium text-white/70 mb-1.5 tracking-tight";
   const errorClass = "mt-1 text-xs text-red-400";
-
-  if (submitted) {
-    return (
-      <motion.div
-        initial={{ opacity: 0, scale: 0.98 }}
-        animate={{ opacity: 1, scale: 1 }}
-        transition={{ duration: 0.3 }}
-        className="rounded-xl border border-[#22c55e]/30 bg-[#22c55e]/10 p-8 text-center"
-      >
-        <p className="text-lg font-semibold text-[#22c55e]">Audit Request Received.</p>
-        <p className="mt-2 text-sm text-white/90">
-          Dennis will reach out within 4 hours with your ROI projection.
-        </p>
-      </motion.div>
-    );
-  }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
