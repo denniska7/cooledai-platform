@@ -16,15 +16,19 @@ export function NavBar() {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <nav className="fixed top-0 left-0 right-0 z-50 border-b border-white/20 bg-black pt-[env(safe-area-inset-top)]">
-      <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3 sm:px-6 sm:py-4">
-        <Link href="/" className="flex items-center gap-2 text-lg font-medium tracking-tight text-white">
-          <img src="/logo.png" alt="CooledAI Logo" className="h-8 w-auto sm:h-10" />
-          <span>CooledAI</span>
+    <nav className="fixed top-0 left-0 right-0 z-50 border-b border-white/20 bg-black pt-[env(safe-area-inset-top)] overflow-hidden">
+      <div className="mx-auto flex max-w-6xl items-center px-4 py-3 sm:px-6 sm:py-4 min-w-0">
+        {/* Logo - flex-shrink container, text hidden below sm (640px) */}
+        <Link href="/" className="flex items-center gap-2 flex-shrink-0 min-w-0">
+          <img src="/logo.png" alt="CooledAI Logo" className="h-8 w-auto flex-shrink-0 sm:h-10" />
+          <span className="hidden sm:inline truncate text-lg font-medium tracking-tight text-white">CooledAI</span>
         </Link>
 
-        {/* Desktop nav */}
-        <div className="hidden lg:flex items-center gap-6 xl:gap-8">
+        {/* Spacer - pushes logo left, buttons right to prevent overlap */}
+        <div className="flex-1 min-w-0" aria-hidden="true" />
+
+        {/* Desktop nav - hidden below md (768px) */}
+        <div className="hidden md:flex items-center gap-4 lg:gap-6 xl:gap-8 flex-shrink-0">
           {navLinks.map((link) => (
             <Link
               key={link.href}
@@ -45,14 +49,14 @@ export function NavBar() {
           </div>
         </div>
 
-        {/* Mobile: hamburger + CTA */}
-        <div className="flex lg:hidden items-center gap-2">
+        {/* Mobile: hamburger + CTA - visible below md (768px), gap-2 saves horizontal pixels */}
+        <div className="flex md:hidden items-center gap-2 flex-shrink-0">
           <BackendStatusDot />
           <Link
             href="/#request-audit"
-            className="rounded border border-white bg-white px-3 py-2 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90 min-h-[44px] inline-flex items-center"
+            className="rounded border border-white bg-white px-3 py-2 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90 min-h-[44px] inline-flex items-center whitespace-nowrap"
           >
-            Get Roadmap
+            Roadmap
           </Link>
           <button
             type="button"
@@ -72,7 +76,7 @@ export function NavBar() {
       {/* Mobile overlay */}
       {mobileOpen && (
         <div
-          className="fixed inset-0 bg-black/80 z-40 lg:hidden"
+          className="fixed inset-0 bg-black/80 z-40 md:hidden"
           onClick={() => setMobileOpen(false)}
           aria-hidden="true"
         />
@@ -80,7 +84,7 @@ export function NavBar() {
 
       {/* Mobile drawer */}
       <div
-        className={`fixed top-0 right-0 z-50 h-full w-full max-w-sm bg-[#0a0a0a] border-l border-white/20 shadow-xl transform transition-transform duration-200 ease-out lg:hidden ${
+        className={`fixed top-0 right-0 z-50 h-full w-full max-w-sm bg-[#0a0a0a] border-l border-white/20 shadow-xl transform transition-transform duration-200 ease-out md:hidden ${
           mobileOpen ? "translate-x-0" : "translate-x-full"
         }`}
       >
