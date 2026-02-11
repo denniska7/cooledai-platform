@@ -171,7 +171,7 @@ export function AuditRequestForm() {
       <button
         type="submit"
         disabled={submitting}
-        className="w-full rounded-lg border-2 border-[#22c55e] bg-[#22c55e] px-6 py-4 text-sm font-semibold tracking-tight text-black shadow-[0_0_20px_rgba(34,197,94,0.3)] transition-all hover:bg-[#22c55e]/90 hover:shadow-[0_0_24px_rgba(34,197,94,0.4)] focus:outline-none focus:ring-2 focus:ring-[#22c55e]/50 focus:ring-offset-2 focus:ring-offset-[#0a0a0a] disabled:pointer-events-none disabled:opacity-50"
+        className="w-full min-h-[48px] rounded-lg border-2 border-[#22c55e] bg-[#22c55e] px-6 py-4 text-sm font-semibold tracking-tight text-black shadow-[0_0_20px_rgba(34,197,94,0.3)] transition-all hover:bg-[#22c55e]/90 hover:shadow-[0_0_24px_rgba(34,197,94,0.4)] focus:outline-none focus:ring-2 focus:ring-[#22c55e]/50 focus:ring-offset-2 focus:ring-offset-[#0a0a0a] disabled:pointer-events-none disabled:opacity-50"
       >
         {submitting ? "Submitting…" : "Request Shadow Audit"}
       </button>

@@ -17,7 +17,7 @@ export default function ContactPage() {
   return (
     <div className="min-h-screen bg-black text-white">
       <NavBar />
-      <main className="mx-auto max-w-6xl px-6 pt-24 pb-16">
+      <main className="mx-auto max-w-6xl px-4 sm:px-6 pt-20 sm:pt-24 pb-16">
         <Link
           href="/"
           className="inline-flex items-center gap-2 text-sm text-[#22c55e] hover:text-[#22c55e]/80 transition-colors mb-10"
@@ -44,7 +44,7 @@ export default function ContactPage() {
 
           {/* Why CooledAI? sidebar */}
           <aside className="mt-12 lg:mt-0 lg:w-80 lg:shrink-0">
-            <div className="rounded-xl border border-white/10 bg-[#0a0a0a] p-6 sticky top-24">
+            <div className="rounded-xl border border-white/10 bg-[#0a0a0a] p-5 sm:p-6 sticky top-24">
               <h2 className="text-lg font-semibold tracking-tight text-white">
                 Why CooledAI?
               </h2>

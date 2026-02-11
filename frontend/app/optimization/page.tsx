@@ -11,16 +11,16 @@ export default function OptimizationPage() {
     <div className="min-h-screen bg-transparent">
       <NavBar />
 
-      <main className="pt-20">
-        <div className="mx-auto max-w-5xl px-6">
+      <main className="pt-16 sm:pt-20">
+        <div className="mx-auto max-w-5xl px-4 sm:px-6">
           {/* Section 1: Static vs Fluid */}
-          <section className="py-32">
+          <section className="py-16 sm:py-24 md:py-32">
             <motion.h1
               initial={{ opacity: 0, x: -80 }}
               whileInView={{ opacity: 1, x: 0 }}
               viewport={{ once: true }}
               transition={{ duration: 0.6, ease: "easeOut" }}
-              className="text-3xl font-medium tracking-tight text-white md:text-4xl"
+              className="text-2xl sm:text-3xl font-medium tracking-tight text-white md:text-4xl"
             >
               Traditional Cooling is Static. CooledAI is Fluid.
             </motion.h1>
@@ -197,7 +197,7 @@ export default function OptimizationPage() {
       </main>
 
       <footer className="border-t border-white/20 py-8">
-        <div className="mx-auto max-w-6xl px-6 text-center text-xs text-white/40 tracking-tight">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 text-center text-xs text-white/40 tracking-tight">
           CooledAI · The Universal Autonomy Layer for Every Watt of Compute
         </div>
       </footer>

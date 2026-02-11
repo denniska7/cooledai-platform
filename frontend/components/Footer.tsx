@@ -7,7 +7,7 @@ export function Footer() {
 
   return (
     <footer className="border-t border-white/20 bg-black">
-      <div className="mx-auto max-w-6xl px-6 py-10">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6 py-8 sm:py-10">
         <div className="flex flex-col gap-8 sm:flex-row sm:items-center sm:justify-between">
           <div className="space-y-2">
             <Link href="/" className="inline-block">

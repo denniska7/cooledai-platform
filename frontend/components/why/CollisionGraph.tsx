@@ -5,7 +5,7 @@ export function CollisionGraph() {
   const traditionalPath = "M 45 88 L 420 82";
 
   return (
-    <div className="rounded border border-white/20 bg-black p-8">
+    <div className="rounded border border-white/20 bg-black p-4 sm:p-8 overflow-x-auto">
       <svg
         viewBox="0 0 460 140"
         className="w-full max-w-4xl min-h-[180px] mx-auto"

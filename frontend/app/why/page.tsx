@@ -12,10 +12,10 @@ export default function WhyPage() {
     <div className="min-h-screen bg-transparent">
       <NavBar />
 
-      <main className="pt-20">
-        <div className="mx-auto max-w-4xl px-6">
+      <main className="pt-16 sm:pt-20">
+        <div className="mx-auto max-w-4xl px-4 sm:px-6">
           {/* Section 1: The Collision Course */}
-          <section className="py-32">
+          <section className="py-16 sm:py-24 md:py-32">
             <motion.h2
               initial={{ opacity: 0, x: -80 }}
               whileInView={{ opacity: 1, x: 0 }}
@@ -191,7 +191,7 @@ export default function WhyPage() {
             >
               <Link
                 href="/#request-audit"
-                className="inline-block rounded border-2 border-white bg-transparent px-8 py-4 text-sm font-medium tracking-tight text-white transition-opacity hover:opacity-90"
+                className="inline-block min-h-[48px] rounded border-2 border-white bg-transparent px-6 py-4 text-sm font-medium tracking-tight text-white transition-opacity hover:opacity-90"
               >
                 Get My Savings Roadmap
               </Link>

@@ -3,10 +3,14 @@
 @tailwind utilities;
 
 @layer base {
+  html {
+    -webkit-tap-highlight-color: transparent;
+  }
   body {
     @apply bg-black text-white antialiased;
     background-color: #000000;
     letter-spacing: -0.02em;
+    overflow-x: hidden;
   }
 }
 

@@ -9,10 +9,10 @@ export default function ImplementationPage() {
     <div className="min-h-screen bg-transparent">
       <NavBar />
 
-      <main className="pt-20">
-        <div className="mx-auto max-w-4xl px-6">
+      <main className="pt-16 sm:pt-20">
+        <div className="mx-auto max-w-4xl px-4 sm:px-6">
           {/* Hero */}
-          <section className="py-24">
+          <section className="py-16 sm:py-24">
             <motion.h1
               initial={{ opacity: 0, x: -80 }}
               whileInView={{ opacity: 1, x: 0 }}
@@ -43,7 +43,7 @@ export default function ImplementationPage() {
               whileInView={{ opacity: 1, x: 0 }}
               viewport={{ once: true, margin: "-50px" }}
               transition={{ duration: 0.6, ease: "easeOut" }}
-              className="rounded border border-[rgba(255,255,255,0.15)] bg-black/50 p-8"
+              className="rounded border border-[rgba(255,255,255,0.15)] bg-black/50 p-5 sm:p-8"
             >
               <h3 className="text-xl font-medium tracking-tight text-white">
                 Hybrid Infrastructure Support

@@ -11,7 +11,7 @@ export default function AuditRequestPage() {
   return (
     <div className="min-h-screen bg-black text-white">
       <NavBar />
-      <main className="mx-auto max-w-xl px-6 pt-24 pb-16">
+      <main className="mx-auto max-w-xl px-4 sm:px-6 pt-20 sm:pt-24 pb-16">
         <Link
           href="/"
           className="inline-flex items-center gap-2 text-sm text-[#22c55e] hover:text-[#22c55e]/80 transition-colors mb-10"

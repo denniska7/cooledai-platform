@@ -29,7 +29,7 @@ export default function HomePage() {
       <main className={`relative pt-20 ${showStickyCta ? "pb-20" : ""}`}>
         {/* Beta signup one-liner */}
         <div className="border-b border-white/20 bg-black/90">
-          <div className="mx-auto max-w-6xl px-6 py-3 text-center">
+          <div className="mx-auto max-w-6xl px-4 sm:px-6 py-3 text-center">
             <p className="text-sm text-white/90 tracking-tight">
               Join the private beta—limited spots for Q1 2026.{" "}
               <Link
@@ -56,7 +56,7 @@ export default function HomePage() {
             initial={{ opacity: 0, x: -60, filter: "blur(10px)" }}
             animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
             transition={{ duration: 0.6, delay: 0.1, ease: "easeOut" }}
-            className="mt-6 max-w-2xl text-lg text-white/80"
+            className="mt-4 sm:mt-6 max-w-2xl text-base sm:text-lg text-white/80"
           >
             Reclaim your cooling-constrained power capacity. AI-optimized thermal
             control that scales from one rack to hundreds of megawatts. Stop
@@ -66,17 +66,17 @@ export default function HomePage() {
             initial={{ opacity: 0, x: -60, filter: "blur(10px)" }}
             animate={{ opacity: 1, x: 0, filter: "blur(0px)" }}
             transition={{ duration: 0.6, delay: 0.2, ease: "easeOut" }}
-            className="mt-10 flex flex-wrap gap-4"
+            className="mt-8 sm:mt-10 flex flex-col sm:flex-row flex-wrap gap-3 sm:gap-4"
           >
             <Link
               href="/#request-audit"
-              className="rounded border border-white bg-white px-6 py-4 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90"
+              className="rounded border border-white bg-white px-6 py-3.5 sm:py-4 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90 text-center min-h-[48px] flex items-center justify-center"
             >
               Get My Savings Roadmap
             </Link>
             <Link
               href="/optimization"
-              className="rounded border border-white bg-transparent px-6 py-4 text-sm font-medium tracking-tight text-white transition-opacity hover:opacity-90"
+              className="rounded border border-white bg-transparent px-6 py-3.5 sm:py-4 text-sm font-medium tracking-tight text-white transition-opacity hover:opacity-90 text-center min-h-[48px] flex items-center justify-center"
             >
               See the Science
             </Link>
@@ -90,17 +90,17 @@ export default function HomePage() {
             whileInView={{ opacity: 1, x: 0 }}
             viewport={{ once: true, margin: "-50px" }}
             transition={{ duration: 0.6, ease: "easeOut" }}
-            className="text-2xl font-medium tracking-tight text-white md:text-3xl mb-12"
+            className="text-xl sm:text-2xl font-medium tracking-tight text-white md:text-3xl mb-8 sm:mb-12"
           >
             Security First
           </motion.h2>
-          <div className="grid gap-8 md:grid-cols-3">
+          <div className="grid gap-6 sm:gap-8 md:grid-cols-3">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true, margin: "-30px" }}
               transition={{ duration: 0.5, delay: 0.1 }}
-              className="flex flex-col items-start rounded border border-white/20 bg-white/[0.02] p-8"
+              className="flex flex-col items-start rounded border border-white/20 bg-white/[0.02] p-6 sm:p-8"
             >
               <div className="flex h-12 w-12 items-center justify-center rounded border border-white/30 bg-black mb-6">
                 <svg className="h-6 w-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -115,7 +115,7 @@ export default function HomePage() {
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true, margin: "-30px" }}
               transition={{ duration: 0.5, delay: 0.2 }}
-              className="flex flex-col items-start rounded border border-white/20 bg-white/[0.02] p-8"
+              className="flex flex-col items-start rounded border border-white/20 bg-white/[0.02] p-6 sm:p-8"
             >
               <div className="flex h-12 w-12 items-center justify-center rounded border border-white/30 bg-black mb-6">
                 <svg className="h-6 w-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -131,7 +131,7 @@ export default function HomePage() {
               whileInView={{ opacity: 1, y: 0 }}
               viewport={{ once: true, margin: "-30px" }}
               transition={{ duration: 0.5, delay: 0.3 }}
-              className="flex flex-col items-start rounded border border-white/20 bg-white/[0.02] p-8"
+              className="flex flex-col items-start rounded border border-white/20 bg-white/[0.02] p-6 sm:p-8"
             >
               <div className="flex h-12 w-12 items-center justify-center rounded border border-white/30 bg-black mb-6">
                 <svg className="h-6 w-6 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -171,7 +171,7 @@ export default function HomePage() {
               whileInView={{ opacity: 1, x: 0 }}
               viewport={{ once: true, margin: "-30px" }}
               transition={{ duration: 0.5 }}
-              className="flex gap-6"
+              className="flex gap-4 sm:gap-6"
             >
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/30 bg-black text-sm font-medium text-white">1</span>
               <div>
@@ -199,7 +199,7 @@ export default function HomePage() {
               whileInView={{ opacity: 1, x: 0 }}
               viewport={{ once: true, margin: "-30px" }}
               transition={{ duration: 0.5, delay: 0.2 }}
-              className="flex gap-6"
+              className="flex gap-4 sm:gap-6"
             >
               <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full border border-white/30 bg-black text-sm font-medium text-white">3</span>
               <div>
@@ -217,7 +217,7 @@ export default function HomePage() {
           >
             <Link
               href="/#request-audit"
-              className="rounded border border-white bg-white px-6 py-3 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90"
+              className="rounded border border-white bg-white px-6 py-3 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90 inline-block min-h-[48px] flex items-center justify-center w-full sm:w-auto"
             >
               Get My Savings Roadmap
             </Link>
@@ -255,13 +255,13 @@ export default function HomePage() {
           <motion.div
             initial={{ opacity: 0, y: 10 }}
             animate={{ opacity: 1, y: 0 }}
-            className="fixed bottom-0 left-0 right-0 z-40 border-t border-white/20 bg-black/95 backdrop-blur-sm py-3"
+            className="fixed bottom-0 left-0 right-0 z-40 border-t border-white/20 bg-black/95 backdrop-blur-sm py-3 px-4 pb-[max(0.75rem,env(safe-area-inset-bottom))]"
           >
-            <div className="mx-auto flex max-w-4xl items-center justify-center gap-4 px-6">
+            <div className="mx-auto flex max-w-4xl items-center justify-center gap-3 sm:gap-4 flex-col sm:flex-row">
               <span className="text-sm text-white/80 hidden sm:inline">Get your custom savings roadmap.</span>
               <Link
                 href="/#request-audit"
-                className="rounded border border-white bg-white px-5 py-2.5 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90"
+                className="rounded border border-white bg-white px-5 py-3 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90 min-h-[48px] flex items-center justify-center w-full sm:w-auto"
               >
                 Get My Savings Roadmap
               </Link>
@@ -270,7 +270,7 @@ export default function HomePage() {
         )}
 
         {/* AI-Optimized Energy Saving */}
-        <section className="mx-auto max-w-4xl px-6 py-24 border-t border-white/20">
+        <section className="mx-auto max-w-4xl px-4 sm:px-6 py-16 sm:py-24 border-t border-white/20">
           <motion.h2
             initial={{ opacity: 0, x: -80 }}
             whileInView={{ opacity: 1, x: 0 }}
@@ -325,7 +325,7 @@ export default function HomePage() {
             A clear path from first contact to full AI-driven optimization.
           </motion.p>
 
-          <div className="grid gap-8 md:grid-cols-3 md:gap-12">
+          <div className="grid gap-6 sm:gap-8 md:grid-cols-3 md:gap-12">
             {/* Step 1: Audit */}
             <motion.div
               initial={{ opacity: 0, y: 30 }}
@@ -403,7 +403,7 @@ export default function HomePage() {
           >
             <Link
               href="/#request-audit"
-              className="rounded border border-white bg-white px-6 py-3 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90"
+              className="rounded border border-white bg-white px-6 py-3 text-sm font-medium tracking-tight text-black transition-opacity hover:opacity-90 inline-block min-h-[48px] flex items-center justify-center w-full sm:w-auto"
             >
               Get My Savings Roadmap
             </Link>
@@ -435,7 +435,7 @@ export default function HomePage() {
         </section>
 
         {/* The Lab vs. The Reality */}
-        <section className="mx-auto max-w-4xl px-6 py-24 border-t border-white/20">
+        <section className="mx-auto max-w-4xl px-4 sm:px-6 py-16 sm:py-24 border-t border-white/20">
           <motion.h2
             initial={{ opacity: 0, x: -80 }}
             whileInView={{ opacity: 1, x: 0 }}
@@ -496,7 +496,7 @@ export default function HomePage() {
         </section>
 
         {/* Live System Pulse */}
-        <section className="mx-auto max-w-4xl px-6 py-24 border-t border-white/20">
+        <section className="mx-auto max-w-4xl px-4 sm:px-6 py-16 sm:py-24 border-t border-white/20">
           <LiveSystemPulse />
         </section>
 
@@ -520,7 +520,7 @@ export default function HomePage() {
           >
             From a free 7-day shadow audit to fleet-wide Enterprise.
           </motion.p>
-          <div className="grid gap-6 md:grid-cols-3">
+          <div className="grid gap-4 sm:gap-6 md:grid-cols-3">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               whileInView={{ opacity: 1, y: 0 }}
@@ -591,8 +591,8 @@ export default function HomePage() {
         />
       </main>
 
-      <footer className="border-t border-white/20 py-8">
-        <div className="mx-auto max-w-6xl px-6 text-center text-xs text-white/40 tracking-tight">
+      <footer className="border-t border-white/20 py-8 px-4 sm:px-6">
+        <div className="mx-auto max-w-6xl text-center text-xs text-white/40 tracking-tight">
           CooledAI · The Universal Autonomy Layer for Every Watt of Compute
         </div>
       </footer>
