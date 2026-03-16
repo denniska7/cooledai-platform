@@ -1373,8 +1373,8 @@ _MAX_FAN_RPM = float(os.environ.get("COOLEDAI_MAX_FAN_RPM", "7000"))
 _NUM_FANS = int(os.environ.get("COOLEDAI_NUM_FANS", "6"))
 _USD_PER_KWH = float(os.environ.get("COOLEDAI_UTILITY_RATE", "0.12"))
 
-_PILOT_NODE_ID = os.environ.get("COOLEDAI_PILOT_NODE_ID", "st550-pilot")
-_BASELINE_NODE_ID = os.environ.get("COOLEDAI_BASELINE_NODE_ID", "st550-shadow")
+_PILOT_NODE_ID = os.environ.get("COOLEDAI_PILOT_NODE_ID", "ST550-Pilot-Node")
+_BASELINE_NODE_ID = os.environ.get("COOLEDAI_BASELINE_NODE_ID", "ST550-Shadow-Node")
 _BASELINE_FAN_RPM = float(os.environ.get("COOLEDAI_BASELINE_FAN_RPM", "0"))
 
 
@@ -1425,12 +1425,42 @@ async def receive_telemetry(request: Request):
         telemetry = payload["telemetry"]
         agent_id = payload.get("agent_id", "unknown")
         logging.debug("[CooledAI Gateway] Telemetry from %s: %d records", agent_id, len(telemetry))
+        now_ts = time.time()
+
+        # Build a consolidated record per agent_id so the stats endpoint
+        # can look up a single key (e.g. "ST550-Pilot-Node") instead of
+        # the sub-records ("/cpu", "/gpu0", "/fans").
+        consolidated = dict(_node_telemetry.get(agent_id, {}))
+        consolidated["_received_at"] = now_ts
+        consolidated["agent_id"] = agent_id
+
         for record in telemetry:
             node_id = record.get("node_id", agent_id)
-            record["_received_at"] = time.time()
+            record["_received_at"] = now_ts
             _node_telemetry[node_id] = record  # TODO: Scope by owner_id
-            if node_id == _PILOT_NODE_ID and "fan_rpm" in record:
-                _accumulate_savings(float(record["fan_rpm"]))
+
+            fan_rpms = record.get("fan_rpms")
+            if fan_rpms and isinstance(fan_rpms, list):
+                consolidated["fan_rpm"] = max(fan_rpms)
+                consolidated["fan_rpms"] = fan_rpms
+
+            temp_c = record.get("temperature_c")
+            if temp_c is not None:
+                nid = record.get("node_id", "")
+                if "/gpu" in nid:
+                    consolidated.setdefault("gpu_temps_c", [])
+                    consolidated["gpu_temps_c"].append(temp_c)
+                elif "/cpu" in nid:
+                    consolidated["cpu_temp_c"] = temp_c
+                consolidated["max_temp_c"] = max(
+                    consolidated.get("max_temp_c", 0), temp_c,
+                )
+
+        _node_telemetry[agent_id] = consolidated  # TODO: Scope by owner_id
+
+        if agent_id == _PILOT_NODE_ID and "fan_rpm" in consolidated:
+            _accumulate_savings(float(consolidated["fan_rpm"]))
+
         return {"status": "ok", "received": len(telemetry)}
     return {"status": "error", "message": "Expected telemetry or heartbeat"}
 
