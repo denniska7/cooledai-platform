@@ -17,6 +17,19 @@ from core.optimization.optimization_brain import (
     MAX_SAFE_TEMP,
     MIN_FAN_RPM,
 )
+from core.optimization.confidence_estimator import (
+    estimate_confidence_interval_quantile,
+    ConfidenceIntervalResult,
+    CAUTIONARY_CONFIDENCE_THRESHOLD,
+    CAUTIONARY_BASELINE_DELTA,
+)
+from core.optimization.optimizer import (
+    PowerCostOptimizer,
+    power_cost_of_cooling,
+    fan_power_at_rpm,
+    PowerCostResult,
+    OptimizationResult,
+)
 
 __all__ = [
     "OptimizationBrain",
@@ -24,4 +37,13 @@ __all__ = [
     "apply_guardrails",
     "MAX_SAFE_TEMP",
     "MIN_FAN_RPM",
+    "estimate_confidence_interval_quantile",
+    "ConfidenceIntervalResult",
+    "CAUTIONARY_CONFIDENCE_THRESHOLD",
+    "CAUTIONARY_BASELINE_DELTA",
+    "PowerCostOptimizer",
+    "power_cost_of_cooling",
+    "fan_power_at_rpm",
+    "PowerCostResult",
+    "OptimizationResult",
 ]

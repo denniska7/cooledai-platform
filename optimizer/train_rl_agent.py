@@ -217,9 +217,9 @@ def train_ppo_agent(
         print("✓ Model saved. You can resume training later.")
 
     except Exception as e:
-        print(f"\n❌ Training error: {e}")
-        import traceback
-        traceback.print_exc()
+        import logging as _log
+        _log.getLogger("cooledai.train_rl").error("Training error: %s", e, exc_info=True)
+        print(f"\nTraining error: {type(e).__name__}. Check logs for details.")
 
 
 def evaluate_agent(model, env, n_episodes: int = 10):

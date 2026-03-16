@@ -6,8 +6,8 @@ interface EfficiencyScoreProps {
 }
 
 export function EfficiencyScore({
-  score = 94,
-  reclaimedPowerKw = 142,
+  score = 0,
+  reclaimedPowerKw = 0,
 }: EfficiencyScoreProps) {
   return (
     <div className="rounded border border-[rgba(255,255,255,0.1)] bg-black p-6">

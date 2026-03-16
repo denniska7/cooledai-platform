@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useMemo, useEffect } from "react";
+import { Suspense, useState, useMemo, useEffect, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -14,8 +14,21 @@ import {
   Legend,
   ReferenceLine,
 } from "recharts";
+import { api } from "@/lib/api";
 
-// Simulated live data for demo; replace with API later
+const STATS_POLL_MS = 30_000;
+
+type LiveStats = {
+  efficiency_gain_pct: number;
+  power_reclaimed_kwh: number;
+  power_reclaimed_watts: number;
+  estimated_annual_savings_usd: number;
+  has_live_data: boolean;
+  uptime_hours: number;
+  pilot_node: { fan_rpm: number; fan_power_watts: number; temp_c: number | null; last_seen_s_ago: number | null };
+  baseline_node: { fan_rpm: number; fan_power_watts: number; source: string };
+};
+
 function useSimulatedPulse() {
   const [now] = useState(() => Date.now());
   const data = useMemo(() => {
@@ -40,9 +53,35 @@ function PortalOverviewContent() {
   const searchParams = useSearchParams();
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
   const pulseData = useSimulatedPulse();
-  const [efficiencyGain] = useState(12.4);
-  const [powerReclaimed] = useState(8470);
-  const [annualSavings] = useState(28400);
+
+  const [efficiencyGain, setEfficiencyGain] = useState(0);
+  const [powerReclaimed, setPowerReclaimed] = useState(0);
+  const [annualSavings, setAnnualSavings] = useState(0);
+  const [hasLiveData, setHasLiveData] = useState(false);
+  const [pilotWatts, setPilotWatts] = useState(0);
+  const [baselineWatts, setBaselineWatts] = useState(0);
+
+  const fetchStats = useCallback(async () => {
+    try {
+      const res = await api.getStats();
+      if (!res.ok) return;
+      const data: LiveStats = await res.json();
+      setEfficiencyGain(data.efficiency_gain_pct);
+      setPowerReclaimed(data.power_reclaimed_kwh);
+      setAnnualSavings(data.estimated_annual_savings_usd);
+      setHasLiveData(data.has_live_data);
+      setPilotWatts(data.pilot_node.fan_power_watts);
+      setBaselineWatts(data.baseline_node.fan_power_watts);
+    } catch {
+      /* API unreachable — keep last known values */
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchStats();
+    const id = setInterval(fetchStats, STATS_POLL_MS);
+    return () => clearInterval(id);
+  }, [fetchStats]);
 
   useEffect(() => {
     if (searchParams.get("success") === "true") {
@@ -86,7 +125,7 @@ function PortalOverviewContent() {
         <p className="text-sm text-white/50 mt-0.5">Real-time efficiency and savings at a glance</p>
       </motion.div>
 
-      {/* Stat cards */}
+      {/* Stat cards — live from /api/v1/stats */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
         <motion.div
           initial={{ opacity: 0, y: 12 }}
@@ -97,8 +136,14 @@ function PortalOverviewContent() {
           <p className="text-xs font-medium uppercase tracking-wider text-white/50 mb-1">
             Live Efficiency Gain
           </p>
-          <p className="text-3xl font-bold text-[#22c55e] tabular-nums">{efficiencyGain}%</p>
-          <p className="text-xs text-white/40 mt-1">vs. baseline cooling</p>
+          <p className="text-3xl font-bold text-[#22c55e] tabular-nums">
+            {efficiencyGain.toFixed(1)}%
+          </p>
+          <p className="text-xs text-white/40 mt-1">
+            {hasLiveData
+              ? `${pilotWatts.toFixed(0)}W pilot vs ${baselineWatts.toFixed(0)}W baseline`
+              : "awaiting telemetry…"}
+          </p>
         </motion.div>
         <motion.div
           initial={{ opacity: 0, y: 12 }}
@@ -109,8 +154,14 @@ function PortalOverviewContent() {
           <p className="text-xs font-medium uppercase tracking-wider text-white/50 mb-1">
             Total Power Reclaimed
           </p>
-          <p className="text-3xl font-bold text-[#22c55e] tabular-nums">{powerReclaimed.toLocaleString()} kWh</p>
-          <p className="text-xs text-white/40 mt-1">cumulative</p>
+          <p className="text-3xl font-bold text-[#22c55e] tabular-nums">
+            {powerReclaimed < 1
+              ? `${(powerReclaimed * 1000).toFixed(0)} Wh`
+              : `${powerReclaimed.toLocaleString(undefined, { maximumFractionDigits: 1 })} kWh`}
+          </p>
+          <p className="text-xs text-white/40 mt-1">
+            {hasLiveData ? "cumulative" : "awaiting telemetry…"}
+          </p>
         </motion.div>
         <motion.div
           initial={{ opacity: 0, y: 12 }}
@@ -122,9 +173,11 @@ function PortalOverviewContent() {
             Estimated Annual Savings
           </p>
           <p className="text-3xl font-bold text-[#22c55e] tabular-nums">
-            ${annualSavings.toLocaleString()}
+            ${annualSavings.toLocaleString(undefined, { maximumFractionDigits: 0 })}
           </p>
-          <p className="text-xs text-white/40 mt-1">projected</p>
+          <p className="text-xs text-white/40 mt-1">
+            {hasLiveData ? "projected at current rate" : "awaiting telemetry…"}
+          </p>
         </motion.div>
       </div>
 

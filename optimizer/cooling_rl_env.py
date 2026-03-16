@@ -127,7 +127,7 @@ class CoolingControlEnv(gym.Env):
             num_attention_heads=4
         ).to(device)
 
-        checkpoint = torch.load(model_path, map_location=device)
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
         self.physics_model.load_state_dict(checkpoint['model_state_dict'])
         self.physics_model.eval()
         print("RecurrentPINN loaded successfully!")
@@ -445,50 +445,56 @@ class CoolingControlEnv(gym.Env):
         Calculate reward for current state.
 
         Reward components:
-        1. Energy savings: Lower fan speed = higher reward
-        2. Safety penalty: Temperature above safe threshold
-        3. Stability bonus: Smooth temperature control
-        4. Safe zone bonus: Operating in optimal range
-        5. Action smoothing penalty: Penalize large fan speed changes (Phase 4.2)
+        1. Energy cost: cubic fan power penalty (Fan Affinity Laws)
+        2. Thermal safety: exponential penalty approaching ASHRAE limit
+        3. Target-tracking: reward for staying near target (asymmetric)
+        4. Stability: smooth temperature control
+        5. Action smoothing: penalize large fan speed changes (Phase 4.2)
+
+        Design principles (anti-reward-hacking):
+        - NO discrete cliffs: penalties are continuous and differentiable
+        - Energy cost is ALWAYS applied (no "free" low-fan zone)
+        - Thermal penalty is exponential near limit (no cliff-surfing)
+        - Over-cooling is penalized (energy waste, not just temperature)
         """
         reward = 0.0
 
         # 1. Energy cost (negative reward for high fan speed)
-        # Fan power ~ u^3 (cubic relationship)
+        # Fan power ~ u^3 (cubic relationship / Fan Affinity Laws)
         energy_cost = -0.1 * (self.u_flow ** 3)
         reward += energy_cost
 
-        # 2. Thermal safety penalties
-        if self.T_current > 80.0:
-            # Critical: Immediate failure
-            reward -= 1000.0
-        elif self.T_current > 75.0:
-            # Danger zone: Quadratic penalty
-            overheat = self.T_current - 75.0
-            reward -= 10.0 * (overheat ** 2)
-        elif self.T_current > 70.0:
-            # Warning zone: Linear penalty
-            warm = self.T_current - 70.0
-            reward -= 2.0 * warm
-        else:
-            # Safe zone bonus
-            if 50.0 < self.T_current < 70.0:
-                reward += 1.0
+        # 2. Thermal safety: exponential penalty approaching ASHRAE limit
+        # Smooth gradient from 65°C onward, avoids cliff at 80°C.
+        # At 65°C: penalty ~ -0.15, at 75°C: ~ -33, at 80°C: ~ -1097
+        T_warn = 65.0
+        T_ashrae = 80.0
+        if self.T_current > T_warn:
+            excess = self.T_current - T_warn
+            # Exponential: penalty doubles every ~2.2°C
+            thermal_penalty = -0.15 * np.exp(0.6 * excess)
+            reward += thermal_penalty
+        elif self.T_current < 40.0:
+            # Over-cooling penalty: wasting energy to cool below 40°C
+            overcool = 40.0 - self.T_current
+            reward -= 0.5 * overcool
 
-        # 3. Stability bonus (smooth control)
-        if abs(self.dT_dt) < 0.1:
-            reward += 0.5
+        # 3. Target-tracking: Gaussian-like reward centered on target
+        # Peak at target_temp (~60°C), gentle falloff both sides
+        target_temp = 60.0
+        dist_from_target = abs(self.T_current - target_temp)
+        target_reward = 2.0 * np.exp(-0.5 * (dist_from_target / 8.0) ** 2)
+        reward += target_reward
 
-        # 4. Penalty for prolonged danger
-        if self.time_in_danger > 10:
-            reward -= 5.0 * (self.time_in_danger - 10)
+        # 4. Stability bonus (smooth control) — scaled, not binary
+        stability_reward = 0.5 * np.exp(-10.0 * abs(self.dT_dt))
+        reward += stability_reward
 
-        # 5. Efficiency bonus (low temp with low fan speed)
-        if self.T_current < 65.0 and self.u_flow < 1.5:
-            reward += 2.0
+        # 5. Penalty for prolonged danger (escalating, not flat)
+        if self.time_in_danger > 0:
+            reward -= 2.0 * (self.time_in_danger ** 1.5)
 
         # 6. Phase 4.2: Action Continuity (smoothing penalty)
-        # Penalize large changes in fan speed to encourage smooth control
         fan_speed_change = abs(self.u_flow - self.u_flow_prev)
         smoothing_penalty = -self.action_smoothing_penalty * fan_speed_change
         reward += smoothing_penalty
@@ -620,6 +626,6 @@ if __name__ == "__main__":
         print(f"\n❌ Error: Model checkpoint not found at {model_path}")
         print("   Please ensure the RecurrentPINN model is trained first.")
     except Exception as e:
-        print(f"\n❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
+        import logging as _log
+        _log.getLogger("cooledai.rl_env").error("RL env error: %s", e, exc_info=True)
+        print(f"\nError: {type(e).__name__}. Check logs for details.")

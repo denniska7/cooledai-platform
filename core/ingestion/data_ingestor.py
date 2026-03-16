@@ -5,6 +5,12 @@ Uses fuzzy column matching to identify and map columns from ANY log file
 to normalized BaseNode attributes. Drop an EPYC CSV, HWiNFO export, or
 vendor-specific log - no code changes required.
 
+Telemetry Filter Pipeline (order matters):
+1. Sanity Check: If temp jumps >20°C in 1s (or rate >20°C/s), flag as 'Sensor Ghost'
+   and replace with last valid reading—prevents electrical noise from driving fan jitter.
+2. Moving Average: Last 5 readings to smooth telemetry before OptimizationBrain.
+3. Derivatives: Compute dT/dt for thermal momentum.
+
 Column Mapping (fuzzy match):
 - thermal_input: Tdie, Tctl, Temp, temperature, °C, CPU Temp
 - power_draw: Power, Package Power, TDP, CPU Power, W
@@ -16,10 +22,11 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 from io import StringIO
-from typing import Optional, List, Tuple
+from typing import Optional, List, Tuple, Any
 from datetime import datetime
 
 from core.hal.base_node import ServerNode, BaseNode
+from core.ingestion.thermal_derivatives import compute_derivatives
 
 # Stale data threshold: data older than this triggers GUARD_MODE (Communication Timeout)
 STALE_DATA_THRESHOLD_SECONDS = 5.0
@@ -54,36 +61,63 @@ COLUMN_PATTERNS = {
 }
 
 
+def apply_telemetry_filters(
+    nodes: List[BaseNode],
+    sanity_check_filter: Optional[Any] = None,
+    moving_avg_filter: Optional[Any] = None,
+) -> None:
+    """
+    Apply telemetry filters in order: Sanity Check (Sensor Ghost) then Moving Average.
+
+    Sanity Check: Replace temp jumps >20°C in 1s with last valid reading.
+    Moving Average: Smooth thermal_input, power_draw, cooling_output with last 5 readings.
+    Mutates nodes in place. Ensures fans don't jitter from electrical noise.
+    """
+    if sanity_check_filter is not None:
+        sanity_check_filter.filter(nodes)
+    if moving_avg_filter is not None:
+        moving_avg_filter.apply(nodes)
+
+
 class DataIngestor:
+    """Universal data ingestor with fuzzy column matching.
+
+    Automatically maps vendor-specific columns (Tdie, Package Power, Fan RPM)
+    to normalized BaseNode attributes. Supports multiple encodings and
+    delimiters. Applies Sanity Check (Sensor Ghost) and Moving Average (last 5)
+    before computing thermal derivatives. Prevents fan jitter from electrical noise.
     """
-    Universal data ingestor with fuzzy column matching.
-    
-    Automatically identifies columns in CSV/JSON and maps them to
-    normalized BaseNode attributes. Supports multiple encodings and
-    delimiters for maximum compatibility.
-    """
-    
-    def __init__(self, node_type: type = ServerNode):
-        """
-        Initialize the ingestor.
-        
+
+    def __init__(
+        self,
+        node_type: type = ServerNode,
+        sanity_check_filter: Optional[Any] = None,
+        moving_avg_filter: Optional[Any] = None,
+    ):
+        """Initialize the ingestor.
+
         Args:
-            node_type: BaseNode subclass to instantiate (default: ServerNode)
+            node_type: BaseNode subclass to instantiate (default: ServerNode).
+            sanity_check_filter: Optional SanityCheckFilter—replace Sensor Ghost readings (>20°C in 1s).
+            moving_avg_filter: Optional MovingAverageFilter (window=5) to smooth telemetry.
         """
         self.node_type = node_type
         self._column_map: dict = {}
+        self._sanity_check = sanity_check_filter
+        self._moving_avg = moving_avg_filter
     
     def _fuzzy_match_column(self, df: pd.DataFrame, attribute: str) -> Optional[str]:
-        """
-        Find column matching any pattern for the given attribute.
-        Uses case-insensitive partial matching.
-        
+        """Find column matching any pattern for the given attribute.
+
+        Uses case-insensitive partial matching against COLUMN_PATTERNS.
+        Example: "CPU (Tctl/Tdie)" matches thermal_input via "tdie".
+
         Args:
-            df: DataFrame with columns to search
-            attribute: BaseNode attribute name (e.g., thermal_input)
-            
+            df: DataFrame with columns to search.
+            attribute: BaseNode attribute name (e.g. thermal_input).
+
         Returns:
-            Column name if match found, else None
+            Column name if match found, else None.
         """
         patterns = COLUMN_PATTERNS.get(attribute, [])
         for col in df.columns:
@@ -94,11 +128,13 @@ class DataIngestor:
         return None
     
     def _detect_columns(self, df: pd.DataFrame) -> dict:
-        """
-        Auto-detect column mapping using fuzzy matching.
-        
+        """Auto-detect column mapping using fuzzy matching.
+
+        Args:
+            df: DataFrame with columns to map.
+
         Returns:
-            Dict mapping BaseNode attribute -> column name
+            Dict mapping BaseNode attribute -> source column name.
         """
         col_map = {}
         for attr in COLUMN_PATTERNS.keys():
@@ -114,9 +150,17 @@ class DataIngestor:
         return s.values.astype(np.float64)
     
     def _load_csv(self, source) -> pd.DataFrame:
-        """
-        Load CSV with flexible encoding and delimiter detection.
-        Handles file paths, file-like objects, and Streamlit uploads.
+        """Load CSV with flexible encoding and delimiter detection.
+
+        Tries encodings: utf-8, utf-8-sig, cp1252, latin-1, iso-8859-1.
+        Tries delimiters: comma, semicolon, tab. Handles file paths,
+        file-like objects, and bytes.
+
+        Args:
+            source: File path, file-like object, or bytes.
+
+        Returns:
+            DataFrame with parsed CSV data.
         """
         encodings = ["utf-8", "utf-8-sig", "cp1252", "latin-1", "iso-8859-1"]
         delimiters = [",", ";", "\t"]
@@ -216,7 +260,13 @@ class DataIngestor:
                 **node_data,
             )
             nodes.append(node)
-        
+
+        # Telemetry filters: Sanity Check (Sensor Ghost) then Moving Average
+        apply_telemetry_filters(nodes, self._sanity_check, self._moving_avg)
+
+        # First derivative (thermal momentum) for all temperature sensors
+        compute_derivatives(nodes, {})
+
         return nodes
     
     def ingest_dataframe(
@@ -225,9 +275,18 @@ class DataIngestor:
         column_map: Optional[dict] = None,
         node_id: str = "default",
     ) -> list:
-        """
-        Ingest pandas DataFrame directly.
+        """Ingest pandas DataFrame directly.
+
         Same logic as ingest_csv but for in-memory DataFrames.
+        Computes thermal derivatives after ingestion.
+
+        Args:
+            df: DataFrame with telemetry columns.
+            column_map: Optional override for auto-detected column mapping.
+            node_id: Node identifier for created nodes.
+
+        Returns:
+            List of BaseNode instances.
         """
         self._column_map = column_map or self._detect_columns(df)
         
@@ -250,7 +309,11 @@ class DataIngestor:
                 **node_data,
             )
             nodes.append(node)
-        
+
+        apply_telemetry_filters(nodes, self._sanity_check, self._moving_avg)
+
+        compute_derivatives(nodes, {})
+
         return nodes
     
     def get_column_map(self) -> dict:
@@ -258,7 +321,16 @@ class DataIngestor:
         return self._column_map.copy()
 
     def _parse_timestamp(self, val) -> Optional[datetime]:
-        """Parse timestamp from various formats (ISO, Unix, common strings)."""
+        """Parse timestamp from various formats.
+
+        Supports: ISO 8601, Unix seconds/milliseconds, pandas-compatible strings.
+
+        Args:
+            val: Timestamp value (str, float, datetime).
+
+        Returns:
+            datetime if parseable, else None.
+        """
         if val is None or (isinstance(val, float) and np.isnan(val)):
             return None
         if isinstance(val, datetime):
@@ -318,9 +390,17 @@ class DataIngestor:
         return False, ""
 
     def compute_correlations(self, nodes: list) -> dict:
-        """
-        Multi-variate correlation: CPU Utilization vs Power Draw vs Ambient Inlet Temp.
-        Returns correlation matrix and pairwise correlations.
+        """Compute multi-variate correlations for thermal analysis.
+
+        Physics: correlation(utilization, power) validates power follows load;
+        correlation(utilization, inlet) indicates thermal coupling; correlation
+        (power, inlet) shows heat load vs ambient effect.
+
+        Args:
+            nodes: List of BaseNode instances (minimum 3 for meaningful correlation).
+
+        Returns:
+            Dict with utilization_power, utilization_inlet, power_inlet correlations.
         """
         if not nodes or len(nodes) < 3:
             return {"utilization_power": 0, "utilization_inlet": 0, "power_inlet": 0}

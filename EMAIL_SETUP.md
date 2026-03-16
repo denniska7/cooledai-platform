@@ -36,7 +36,7 @@ In Railway → your CooledAI API project → Variables:
 
 ```bash
 export RESEND_API_KEY=re_xxxxxxxxxxxx
-python3 -m uvicorn backend.api.main:app --reload --port 8000
+python3 -m uvicorn api.main:app --reload --port 8000
 ```
 
 Then submit a lead from the frontend. Check dennis@cooledai.com inbox.

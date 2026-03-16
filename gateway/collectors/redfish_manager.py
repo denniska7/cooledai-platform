@@ -118,11 +118,13 @@ class RedfishManager(BaseCollector):
         return objs
     
     def write(self, target: str, value: Any, unit: str = "") -> bool:
-        """Redfish PATCH - e.g., fan curve. Called by ControlGate."""
+        """Redfish PATCH - e.g., fan curve. Supports revert_to_default (100% cooling)."""
         if not self._session:
             return False
         try:
-            path = target or "/redfish/v1/Chassis/1"
+            if target == "revert_to_default":
+                value = {"CoolingPercent": min(100, max(0, int(value)))} if value is not None else {"CoolingPercent": 100}
+            path = target if target and target != "revert_to_default" else "/redfish/v1/Chassis/1/Thermal"
             r = self._session.patch(f"{self.base_url}{path}", json=value, timeout=5)
             return r.ok
         except Exception:

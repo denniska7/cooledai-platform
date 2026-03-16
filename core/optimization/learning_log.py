@@ -23,7 +23,13 @@ AGGRESSION_NEAR_LIMIT = 2.0  # When approaching MAX_SAFE_TEMP
 
 @dataclass
 class LearningEntry:
-    """Single learning log entry."""
+    """Single learning log entry for prediction vs actual feedback.
+
+    Attributes:
+        timestamp: ISO timestamp. predicted_temp, actual_temp: °C.
+        error: actual - predicted. recommended_delta: cooling delta applied.
+        current_thermal, power_draw, cooling_output: context at time of action.
+    """
     timestamp: str
     predicted_temp: float
     actual_temp: float
@@ -49,9 +55,19 @@ def log_prediction(
     cooling_output: float,
     log_path: str = DEFAULT_LEARNING_LOG,
 ) -> None:
-    """
-    Record predicted vs actual temp for feedback loop.
-    Call after applying a command and measuring actual result.
+    """Record predicted vs actual temp for feedback loop.
+
+    Appends to CSV. Call after applying optimization command and measuring
+    actual temperature. Used by tune_model() to adjust aggression coefficients.
+
+    Args:
+        predicted_temp: Predicted temperature (°C).
+        actual_temp: Measured temperature (°C).
+        recommended_delta: Cooling delta that was applied.
+        current_thermal: Thermal before action (°C).
+        power_draw: Power at time of action (W).
+        cooling_output: Cooling at time of action.
+        log_path: Path to learning log CSV.
     """
     _ensure_log_dir(log_path)
     error = actual_temp - predicted_temp
@@ -113,9 +129,19 @@ def tune_model(
     log_path: str = DEFAULT_LEARNING_LOG,
     min_entries: int = 10,
 ) -> dict:
-    """
-    Analyze learning log and adjust Aggression Coefficients to minimize error.
-    Returns dict with tuned coefficients.
+    """Analyze learning log and tune aggression coefficients.
+
+    Physics: Positive mean_error = under-predicted (actual hotter) → increase
+    aggression. Negative = over-predicted → reduce aggression. Scales
+    aggression_base by 1 ± 0.1 based on mean_error direction.
+
+    Args:
+        log_path: Path to learning log CSV.
+        min_entries: Minimum entries required for tuning.
+
+    Returns:
+        Dict with aggression_base, aggression_near_limit, mae, mean_error,
+        entries_used, tuned (True if tuning performed).
     """
     entries = load_learning_log(log_path)
     if len(entries) < min_entries:

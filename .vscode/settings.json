@@ -1,9 +1,0 @@
-{
-  "files.exclude": {
-    "**/__pycache__": true,
-    "**/.next": true,
-    "**/node_modules": true,
-    "**/.git": true,
-    "**/*.pyc": true
-  }
-}

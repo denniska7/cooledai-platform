@@ -7,7 +7,7 @@ CONTROL_MODE: SHADOW (intercept) or PRODUCTION (safety bounds then send)
 import os
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 from datetime import datetime
 from enum import Enum
 
@@ -99,3 +99,16 @@ class ControlGate:
                 return MAX_TEMP_SETPOINT_C, True
 
         return value, True
+
+    def revert_all_to_default(self, collectors: List[BaseCollector]) -> None:
+        """
+        Send REVERT_TO_DEFAULT (100% cooling) to all cooling units.
+        Used by SafetyWatchdog when cloud connection is lost.
+        """
+        REVERT_TARGET = "revert_to_default"
+        REVERT_VALUE_PERCENT = 100.0
+        for c in collectors:
+            try:
+                self.write(c, REVERT_TARGET, REVERT_VALUE_PERCENT, "%")
+            except Exception as e:
+                _logger.warning("ControlGate: revert_to_default failed for %s: %s", getattr(c, "source", ""), e)

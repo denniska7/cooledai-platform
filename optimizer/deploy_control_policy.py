@@ -81,7 +81,7 @@ class CoolingControlPolicy:
             num_attention_heads=4
         ).to(device)
 
-        checkpoint = torch.load(pinn_path, map_location=device)
+        checkpoint = torch.load(pinn_path, map_location=device, weights_only=True)
         self.physics_model.load_state_dict(checkpoint['model_state_dict'])
         self.physics_model.eval()
         print("  ✓ RecurrentPINN loaded (MAE: 0.0842°C)")
@@ -459,6 +459,6 @@ if __name__ == "__main__":
         print("\nMake sure the RecurrentPINN model is trained:")
         print("  python3.11 train_recurrent_pinn.py")
     except Exception as e:
-        print(f"\n❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
+        import logging as _log
+        _log.getLogger("cooledai.deploy").error("Deployment error: %s", e, exc_info=True)
+        print(f"\nError: {type(e).__name__}. Check logs for details.")

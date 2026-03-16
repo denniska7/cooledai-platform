@@ -14,6 +14,7 @@ Usage:
 from backend.safety.watchdog import Watchdog, SafeStateConfig, MockCoolingAdapter
 from backend.safety.state_machine import SafetyOrchestrator, SystemState
 from backend.safety.guardrails import snap_rpm_to_safe_boundary, RESONANCE_ZONES
+from backend.safety.equipment_safety import EquipmentSafety, EquipmentSafetyResult
 
 __all__ = [
     "Watchdog",
@@ -23,4 +24,6 @@ __all__ = [
     "SystemState",
     "snap_rpm_to_safe_boundary",
     "RESONANCE_ZONES",
+    "EquipmentSafety",
+    "EquipmentSafetyResult",
 ]

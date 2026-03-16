@@ -10,15 +10,13 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { api } from "@/lib/api";
 
 type DataPoint = { time: string; power: number };
 
 async function fetchMetrics() {
-  const url = process.env.NEXT_PUBLIC_API_URL;
-  if (!url) return null;
   try {
-    const base = url.replace(/\/$/, "");
-    const res = await fetch(`${base}/simulated-metrics`, { cache: "no-store" });
+    const res = await api.getSimulatedMetrics();
     if (!res.ok) return null;
     return res.json();
   } catch {

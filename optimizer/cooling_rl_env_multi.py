@@ -146,7 +146,7 @@ class MultiRackCoolingEnv(gym.Env):
             num_attention_heads=4
         ).to(device)
 
-        checkpoint = torch.load(model_path, map_location=device)
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
         self.physics_model.load_state_dict(checkpoint['model_state_dict'])
         self.physics_model.eval()
         print(f"RecurrentPINN loaded successfully for {num_racks}-rack cluster!")
@@ -449,38 +449,34 @@ class MultiRackCoolingEnv(gym.Env):
         4. Action smoothing penalties (per-rack)
         """
         reward = 0.0
+        T_warn = 65.0
+        target_temp = 60.0
 
         # Iterate through all racks
         for i in range(self.num_racks):
-            # 1. Energy cost (negative reward for high fan speed)
+            T = self.T_current_racks[i]
+
+            # 1. Energy cost (cubic power law / Fan Affinity Laws)
             energy_cost = -0.1 * (self.u_flow_racks[i] ** 3)
             reward += energy_cost
 
-            # 2. Thermal safety penalties
-            T = self.T_current_racks[i]
-            if T > 80.0:
-                reward -= 1000.0
-            elif T > 75.0:
-                overheat = T - 75.0
-                reward -= 10.0 * (overheat ** 2)
-            elif T > 70.0:
-                warm = T - 70.0
-                reward -= 2.0 * warm
-            else:
-                if 50.0 < T < 70.0:
-                    reward += 1.0
+            # 2. Thermal safety: exponential penalty approaching ASHRAE limit
+            if T > T_warn:
+                excess = T - T_warn
+                reward -= 0.15 * np.exp(0.6 * excess)
+            elif T < 40.0:
+                reward -= 0.5 * (40.0 - T)  # Over-cooling penalty
 
-            # 3. Stability bonus
-            if abs(self.dT_dt_racks[i]) < 0.1:
-                reward += 0.5
+            # 3. Target-tracking: Gaussian reward centered on target
+            dist = abs(T - target_temp)
+            reward += 2.0 * np.exp(-0.5 * (dist / 8.0) ** 2)
 
-            # 4. Penalty for prolonged danger
-            if self.time_in_danger_racks[i] > 10:
-                reward -= 5.0 * (self.time_in_danger_racks[i] - 10)
+            # 4. Stability: scaled, not binary
+            reward += 0.5 * np.exp(-10.0 * abs(self.dT_dt_racks[i]))
 
-            # 5. Efficiency bonus
-            if T < 65.0 and self.u_flow_racks[i] < 1.5:
-                reward += 2.0
+            # 5. Penalty for prolonged danger (escalating)
+            if self.time_in_danger_racks[i] > 0:
+                reward -= 2.0 * (self.time_in_danger_racks[i] ** 1.5)
 
             # 6. Action Continuity (smoothing penalty)
             fan_speed_change = abs(self.u_flow_racks[i] - self.u_flow_prev_racks[i])
@@ -626,6 +622,6 @@ if __name__ == "__main__":
         print(f"\n❌ Error: Model checkpoint not found at {model_path}")
         print("   Please ensure the RecurrentPINN model is trained first.")
     except Exception as e:
-        print(f"\n❌ Error: {e}")
-        import traceback
-        traceback.print_exc()
+        import logging as _log
+        _log.getLogger("cooledai.rl_env_multi").error("RL env error: %s", e, exc_info=True)
+        print(f"\nError: {type(e).__name__}. Check logs for details.")

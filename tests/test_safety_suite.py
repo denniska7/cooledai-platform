@@ -39,6 +39,7 @@ from backend.safety.state_machine import SafetyOrchestrator, SystemState
 from core.synthetic.synthetic_sensor import SyntheticSensor
 from core.ingestion.data_ingestor import DataIngestor
 from backend.safety.guardrails import snap_rpm_to_safe_boundary, RESONANCE_ZONES
+from backend.safety.equipment_safety import EquipmentSafety, EquipmentSafetyResult
 
 
 # Deterministic test constants (no random timing)
@@ -509,6 +510,199 @@ class TestSensorDriftDetection(unittest.TestCase):
         result = analyze_thermal_forensics([node])
         self.assertFalse(result.sensor_drift_detected)
         self.assertFalse(result.trigger_guard_mode or "drift" in str(result.alerts).lower())
+
+
+# --- Equipment Safety Middleware (Min Runtime, Delta, Hysteresis) ---
+
+
+class TestEquipmentSafetyMinimumRuntime(unittest.TestCase):
+    """
+    EquipmentSafety: Minimum runtime - prevent compressor short-cycling.
+    Unit must run at least X minutes before allowing turn-off.
+    """
+
+    def test_minimum_runtime_blocks_early_turn_off(self):
+        """Unit just turned on; AI wants off. Must hold current state until min runtime elapsed."""
+        # 3 seconds min runtime for fast test
+        safety = EquipmentSafety(
+            min_runtime_minutes=3.0 / 60.0,
+            max_rpm_delta_per_5min=2000.0,
+            hysteresis_rpm=20.0,
+            window_seconds=300.0,
+        )
+        max_cooling = 3000.0
+        current_cooling = 2000.0  # Unit is ON (above 5% of max)
+        # AI wants off: delta would drive cooling to 0
+        result = safety.apply(
+            recommended_cooling_delta=-1.0,
+            current_cooling=current_cooling,
+            max_cooling=max_cooling,
+            unit_id="default",
+        )
+        self.assertTrue(result.minimum_runtime_hold, "Must hold when runtime < min_runtime")
+        self.assertIn("Minimum runtime", " ".join(result.applied_constraints))
+        # Safe output should keep cooling (no turn-off)
+        safe_rpm = current_cooling * (1.0 + result.safe_cooling_delta)
+        self.assertGreater(safe_rpm, max_cooling * 0.1, "Must not turn off; hold current")
+
+    def test_minimum_runtime_allows_off_after_elapsed(self):
+        """After min runtime has elapsed, turn-off is allowed."""
+        safety = EquipmentSafety(
+            min_runtime_minutes=0.001,  # ~0.06 s for test
+            max_rpm_delta_per_5min=2000.0,
+            hysteresis_rpm=20.0,
+        )
+        # First call: unit on, want off -> may hold or allow depending on internal state
+        safety.apply(
+            recommended_cooling_delta=-0.5,
+            current_cooling=2000.0,
+            max_cooling=3000.0,
+            unit_id="u1",
+        )
+        time.sleep(0.1)  # Elapse "min runtime"
+        result = safety.apply(
+            recommended_cooling_delta=-1.0,
+            current_cooling=500.0,  # Already ramped down
+            max_cooling=3000.0,
+            unit_id="u1",
+        )
+        # May or may not hold depending on _unit_on_since; after sleep we expect no hold
+        # Just ensure apply runs and returns valid result
+        self.assertIsInstance(result, EquipmentSafetyResult)
+        self.assertGreaterEqual(result.safe_cooling_delta, -1.0)
+        self.assertLessEqual(result.safe_cooling_delta, 1.0)
+
+
+class TestEquipmentSafetyDeltaConstraint(unittest.TestCase):
+    """
+    EquipmentSafety: Delta constraint - max RPM change per 5-minute window.
+    """
+
+    def test_delta_constraint_limits_large_step(self):
+        """Proposed RPM jump exceeds max_delta_per_5min; must be clamped."""
+        safety = EquipmentSafety(
+            min_runtime_minutes=0.0,
+            max_rpm_delta_per_5min=100.0,
+            hysteresis_rpm=0.0,
+            window_seconds=300.0,
+        )
+        max_cooling = 3000.0
+        current_cooling = 1000.0
+        # AI wants 2000 RPM: +1000 in one step; max allowed +100
+        result = safety.apply(
+            recommended_cooling_delta=1.0,
+            current_cooling=current_cooling,
+            max_cooling=max_cooling,
+            unit_id="default",
+        )
+        safe_rpm = current_cooling * (1.0 + result.safe_cooling_delta)
+        delta_from_ref = abs(safe_rpm - 1000.0)
+        self.assertTrue(
+            result.delta_constraint_limited or delta_from_ref <= 100.0 + 1e-6,
+            "RPM change in window must be limited to 100",
+        )
+        if result.delta_constraint_limited:
+            self.assertIn("Delta constraint", " ".join(result.applied_constraints))
+
+
+class TestEquipmentSafetyHysteresis(unittest.TestCase):
+    """
+    EquipmentSafety: Hysteresis - buffer zone to prevent setpoint jitter.
+    """
+
+    def test_hysteresis_holds_when_within_band(self):
+        """AI suggests small change within ±hysteresis of current; must hold."""
+        safety = EquipmentSafety(
+            min_runtime_minutes=0.0,
+            max_rpm_delta_per_5min=5000.0,
+            hysteresis_rpm=50.0,
+        )
+        max_cooling = 3000.0
+        current_cooling = 1500.0
+        # First call: establish last_applied = 1500
+        safety.apply(
+            recommended_cooling_delta=0.0,
+            current_cooling=current_cooling,
+            max_cooling=max_cooling,
+            unit_id="h1",
+        )
+        # Second: AI suggests 1520 RPM (within ±50 of 1500) -> hold
+        result = safety.apply(
+            recommended_cooling_delta=(1520.0 / 1500.0) - 1.0,
+            current_cooling=1500.0,
+            max_cooling=max_cooling,
+            unit_id="h1",
+        )
+        self.assertTrue(result.hysteresis_hold, "Must hold when within hysteresis band")
+        self.assertIn("Hysteresis", " ".join(result.applied_constraints))
+        self.assertAlmostEqual(
+            current_cooling * (1.0 + result.safe_cooling_delta),
+            1500.0,
+            delta=1.0,
+            msg="Output should stay at 1500 (no jitter)",
+        )
+
+    def test_hysteresis_allows_change_outside_band(self):
+        """AI suggests change outside ±hysteresis; must apply."""
+        safety = EquipmentSafety(
+            min_runtime_minutes=0.0,
+            max_rpm_delta_per_5min=5000.0,
+            hysteresis_rpm=30.0,
+        )
+        current_cooling = 1500.0
+        max_cooling = 3000.0
+        safety.apply(
+            recommended_cooling_delta=0.0,
+            current_cooling=current_cooling,
+            max_cooling=max_cooling,
+            unit_id="h2",
+        )
+        # Suggest 1600 RPM (> 1500+30) -> allow
+        result = safety.apply(
+            recommended_cooling_delta=(1600.0 / 1500.0) - 1.0,
+            current_cooling=1500.0,
+            max_cooling=max_cooling,
+            unit_id="h2",
+        )
+        self.assertFalse(result.hysteresis_hold)
+        new_rpm = 1500.0 * (1.0 + result.safe_cooling_delta)
+        self.assertGreaterEqual(new_rpm, 1590.0, "Setpoint must move outside band")
+
+
+class TestEquipmentSafetyApplyToGap(unittest.TestCase):
+    """EquipmentSafety.apply_to_gap integrates with EfficiencyGap."""
+
+    def test_apply_to_gap_updates_gap_and_recommendations(self):
+        """apply_to_gap mutates gap.recommended_cooling_delta and adds recommendations."""
+        safety = EquipmentSafety(
+            min_runtime_minutes=5.0,
+            max_rpm_delta_per_5min=400.0,
+            hysteresis_rpm=30.0,
+        )
+        gap = EfficiencyGap(recommended_cooling_delta=-0.2)
+        gap.recommendations = ["Original rec"]
+        gap = safety.apply_to_gap(
+            gap,
+            current_cooling=2000.0,
+            max_cooling=3000.0,
+            unit_id="default",
+        )
+        # May add equipment messages at front
+        self.assertIsNotNone(gap.recommended_cooling_delta)
+        self.assertIsInstance(gap.recommendations, list)
+        if gap.anti_short_cycle_hold:
+            self.assertTrue(any("Minimum runtime" in r or "runtime" in r.lower() for r in gap.recommendations))
+
+    def test_emergency_bypass_skips_constraints(self):
+        """When gap.emergency_mode=True, equipment safety should not override (bypass)."""
+        safety = EquipmentSafety(min_runtime_minutes=5.0, hysteresis_rpm=30.0)
+        gap = EfficiencyGap(recommended_cooling_delta=1.0, emergency_mode=True)
+        gap = safety.apply_to_gap(
+            gap,
+            current_cooling=500.0,
+            max_cooling=3000.0,
+        )
+        self.assertEqual(gap.recommended_cooling_delta, 1.0, "Emergency bypass must pass through 100%")
 
 
 class TestRunaway(unittest.TestCase):

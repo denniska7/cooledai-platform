@@ -131,12 +131,19 @@ class SNMPManager(BaseCollector):
         ))
         return objs
     
+    MAX_FAN_RPM = 3000  # Default max for REVERT_TO_DEFAULT (100% cooling)
+
     def write(self, target: str, value: Any, unit: str = "") -> bool:
-        """SNMP SET - called by ControlGate after safety check."""
+        """SNMP SET - called by ControlGate after safety check. Supports revert_to_default (100% = max RPM)."""
         if not self._session:
             return False
         try:
             from pysnmp.hlapi import setCmd, ObjectType, ObjectIdentity, Integer32
+            if target == "revert_to_default":
+                # Value is percent (e.g. 100); map to max RPM for fail-safe
+                pct = float(value) if value is not None else 100.0
+                value = int(self.MAX_FAN_RPM * min(1.0, max(0.0, pct / 100.0)))
+                target = self.FAN_SETPOINT_OID
             oid = target or self.FAN_SETPOINT_OID
             it = setCmd(
                 self._session["engine"],

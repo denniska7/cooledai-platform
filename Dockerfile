@@ -7,11 +7,14 @@ WORKDIR /app
 COPY requirements-railway.txt .
 RUN pip install --no-cache-dir -r requirements-railway.txt
 
-# Copy project (backend needs core/ from parent)
-COPY backend/ ./backend/
+# Copy project (modular structure: api, services, reports, core, backend)
+COPY api/ ./api/
+COPY services/ ./services/
+COPY reports/ ./reports/
 COPY core/ ./core/
+COPY backend/ ./backend/
 
-# Run FastAPI
-WORKDIR /app/backend
+# Run FastAPI (from project root so api.main is found)
+WORKDIR /app
 EXPOSE 8000
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

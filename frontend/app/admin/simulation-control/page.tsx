@@ -2,19 +2,13 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { api } from "@/lib/api";
 
 const CAUTION_ORANGE = "#d97706";
 const CAUTION_ORANGE_HOVER = "#f59e0b";
 
 async function triggerSimulation(mode: string): Promise<{ status: string; message?: string }> {
-  const url = process.env.NEXT_PUBLIC_API_URL;
-  if (!url) throw new Error("NEXT_PUBLIC_API_URL not set");
-  const base = url.replace(/\/$/, "");
-  const res = await fetch(`${base}/admin/simulation-control/trigger`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode }),
-  });
+  const res = await api.triggerSimulation(mode);
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err.detail || res.statusText);

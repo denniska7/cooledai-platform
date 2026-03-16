@@ -147,7 +147,7 @@ class CoolingControl1MWEnv(gym.Env):
             num_attention_heads=4
         ).to(device)
 
-        checkpoint = torch.load(model_path, map_location=device)
+        checkpoint = torch.load(model_path, map_location=device, weights_only=True)
         self.physics_model.load_state_dict(checkpoint['model_state_dict'])
         self.physics_model.eval()
         print(f"RecurrentPINN loaded successfully! Total capacity: {self.total_capacity_kw:.0f} kW")
@@ -516,26 +516,26 @@ class CoolingControl1MWEnv(gym.Env):
             - Coupling bonus: +2 if all pods within 10°C
         """
         reward = 0.0
+        T_warn = 65.0
+        target_temp = 60.0
 
         for i in range(self.num_pods):
             T = self.T_current_pods[i]
             dT = self.dT_dt_pods[i]
 
-            # Critical temperature violation
-            if T > 80.0:
-                reward -= 1000.0
+            # Thermal safety: exponential penalty approaching ASHRAE limit
+            if T > T_warn:
+                excess = T - T_warn
+                reward -= 0.15 * np.exp(0.6 * excess)
+            elif T < 40.0:
+                reward -= 0.5 * (40.0 - T)  # Over-cooling penalty
 
-            # Danger zone (gradual penalty)
-            if T > 75.0:
-                reward -= 10.0 * (T - 75.0) ** 2
+            # Target-tracking: Gaussian reward centered on target
+            dist = abs(T - target_temp)
+            reward += 2.0 * np.exp(-0.5 * (dist / 8.0) ** 2)
 
-            # Safe operating zone
-            if 50.0 < T < 70.0:
-                reward += 1.0
-
-            # Stable thermal state
-            if abs(dT) < 0.1:
-                reward += 0.5
+            # Stability: scaled, not binary
+            reward += 0.5 * np.exp(-10.0 * abs(dT))
 
         # Energy cost (cubic power law for fans)
         energy_cost = 0.1 * np.sum(self.u_flow_pods ** 3)

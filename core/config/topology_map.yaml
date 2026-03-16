@@ -1,0 +1,50 @@
+# CooledAI Topology Map - Plug-and-Play Facility Configuration
+#
+# Update this file to configure a new data center. No code changes required.
+# Restart the service after editing.
+#
+# node_to_rack:  Slurm/Kubernetes node names -> rack IDs
+# rack_to_cooling:  Rack IDs -> cooling units that serve them (CRACs, chillers)
+
+facility_id: default
+
+# Node names (e.g. Slurm compute nodes) -> rack IDs
+# Add your compute node hostnames as they appear in squeue/kubectl
+node_to_rack:
+  node1: rack_01
+  node2: rack_01
+  node3: rack_02
+  node4: rack_02
+  gpu-node-1: rack_03
+  gpu-node-2: rack_03
+  # Pattern fallback: node-rack-01 -> rack_01 (used when not in map)
+
+# Rack thermal mass (optional) - J/K, used for FOPDT. Self-calibrated if omitted.
+# thermal_mass: m*c_p; typical rack ~150,000 J/K
+rack_thermal_mass:
+  rack_01: 150000
+  rack_02: 150000
+  rack_03: 180000  # GPU-heavy rack
+  rack_04: 150000
+
+# Rack IDs -> cooling units that serve them
+# Used for pre-emptive cooling: which CRACs to ramp when a rack gets a job
+rack_to_cooling:
+  rack_01:
+    - CRAC-01
+    - CRAC-02
+  rack_02:
+    - CRAC-01
+    - CRAC-02
+  rack_03:
+    - CRAC-02
+  rack_04:
+    - CRAC-01
+
+# Slurm GPU partitions (optional override for job observer)
+gpu_partitions:
+  - gpu
+  - a100
+  - h100
+  - a100x
+  - gpu-t4

@@ -22,12 +22,15 @@ sys.path.insert(0, str(project_root))
 from gateway.collectors.bacnet_manager import BACnetManager
 from gateway.collectors.snmp_manager import SNMPManager
 from gateway.collectors.redfish_manager import RedfishManager
+from gateway.collectors.redfish_bridge_collector import RedfishBridgeCollector
 from gateway.collectors.base_collector import TelemetryObject
 from gateway.control_gate import ControlGate, CONTROL_MODE
 from gateway.telemetry_buffer import TelemetryBuffer
 from gateway.normalizer import Normalizer
 from gateway.heartbeat import get_agent_health, HEARTBEAT_INTERVAL_SEC
 from gateway.log_scrubber import scrub_log_message
+from gateway.cloud_heartbeat import mark_cloud_response_success
+from gateway.safety_watchdog import SafetyWatchdog, build_revert_callback
 
 try:
     import requests
@@ -43,8 +46,11 @@ if not _logger.handlers:
 
 
 BACKEND_URL = os.environ.get("COOLEDAI_BACKEND_URL", "https://api.cooledai.com")
+BACKEND_API_KEY = os.environ.get("COOLEDAI_API_KEY", "")
 COLLECT_INTERVAL_SEC = 10
 HEARTBEAT_INTERVAL = int(os.environ.get("HEARTBEAT_INTERVAL_SEC", str(HEARTBEAT_INTERVAL_SEC)))
+# SafetyWatchdog: trigger REVERT_TO_DEFAULT if no cloud response for this many seconds
+CLOUD_LOSS_TIMEOUT_SEC = int(os.environ.get("COOLEDAI_CLOUD_LOSS_TIMEOUT_SEC", "30"))
 
 
 class Gateway:
@@ -59,6 +65,7 @@ class Gateway:
         self._running = False
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._collect_thread: Optional[threading.Thread] = None
+        self._safety_watchdog: Optional[SafetyWatchdog] = None
 
     def add_collector(self, collector) -> None:
         """Register a protocol collector."""
@@ -76,16 +83,23 @@ class Gateway:
         return Normalizer.normalize_batch(objs)
 
     def _send_to_backend(self, payload: dict) -> bool:
-        """Send telemetry or heartbeat to backend. Returns True if success."""
+        """Send telemetry or heartbeat to backend. Returns True if success. Updates cloud heartbeat for SafetyWatchdog."""
         if not requests:
             return False
         try:
+            headers = {"Content-Type": "application/json"}
+            if BACKEND_API_KEY:
+                headers["X-API-Key"] = BACKEND_API_KEY
             r = requests.post(
                 f"{BACKEND_URL}/api/v1/telemetry",
                 json=payload,
+                headers=headers,
                 timeout=10,
             )
-            return r.status_code in (200, 201, 204)
+            ok = r.status_code in (200, 201, 204)
+            if ok:
+                mark_cloud_response_success()
+            return ok
         except Exception as e:
             _logger.debug("Gateway: Backend unreachable: %s", e)
             return False
@@ -141,8 +155,11 @@ class Gateway:
         )
 
     def stop(self) -> None:
-        """Stop the gateway."""
+        """Stop the gateway and SafetyWatchdog."""
         self._running = False
+        if self._safety_watchdog:
+            self._safety_watchdog.stop()
+            self._safety_watchdog = None
         if self._collect_thread:
             self._collect_thread.join(timeout=5)
         if self._heartbeat_thread:
@@ -154,7 +171,7 @@ def main() -> None:
     gw = Gateway()
     gw.add_collector(BACnetManager())
     gw.add_collector(SNMPManager())
-    gw.add_collector(RedfishManager())
+    gw.add_collector(RedfishBridgeCollector(RedfishManager()))
     gw.start()
     try:
         while True:

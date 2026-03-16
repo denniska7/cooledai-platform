@@ -9,6 +9,7 @@ from .base_collector import BaseCollector, TelemetryObject
 from .bacnet_manager import BACnetManager
 from .snmp_manager import SNMPManager
 from .redfish_manager import RedfishManager
+from .redfish_bridge_collector import RedfishBridgeCollector
 
 __all__ = [
     "BaseCollector",
@@ -16,4 +17,5 @@ __all__ = [
     "BACnetManager",
     "SNMPManager",
     "RedfishManager",
+    "RedfishBridgeCollector",
 ]

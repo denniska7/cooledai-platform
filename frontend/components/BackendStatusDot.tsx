@@ -1,15 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { api } from "@/lib/api";
 
 type Status = "loading" | "live" | "offline";
 
 async function checkHealth(): Promise<boolean> {
-  const url = process.env.NEXT_PUBLIC_API_URL;
-  if (!url) return false;
   try {
-    const base = url.replace(/\/$/, "");
-    const res = await fetch(`${base}/health`, { cache: "no-store" });
+    const res = await api.health();
     return res.ok;
   } catch {
     return false;

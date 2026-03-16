@@ -13,9 +13,10 @@ type AuthContextType = {
 type AuthContextFull = AuthContextType & { hydrated: boolean };
 const AuthContext = createContext<AuthContextFull | null>(null);
 
-// Demo access: username "demo" / password "demo"
-const DEMO_USER = "demo";
-const DEMO_PASS = "demo";
+// Demo access: credentials from environment variables (set in .env.local)
+// Defaults to "demo"/"cooledai2026" for local dev only. Override in production.
+const DEMO_USER = process.env.NEXT_PUBLIC_DEMO_USER || "demo";
+const DEMO_PASS = process.env.NEXT_PUBLIC_DEMO_PASS || "cooledai2026";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);

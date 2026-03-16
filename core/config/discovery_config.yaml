@@ -1,0 +1,70 @@
+# CooledAI Discovery Config - Network Scan & Thermal Ping
+#
+# Used by services/discovery/discovery_agent.py for:
+# - Network scanning (Redfish/SNMP port detection)
+# - Device query (Chassis, Model)
+# - Thermal Ping test (build Influence Map from fan↑ → temp↓ correlation)
+
+# IP ranges to scan (CIDR or start-end)
+# Examples: "192.168.1.0/24", "10.0.0.1-10.0.0.50"
+ip_ranges:
+  - "192.168.1.0/24"
+
+# Ports to probe (Redfish=443, SNMP=161)
+redfish_ports: [443]
+snmp_ports: [161]
+
+# Timeout for port probe (seconds)
+port_timeout: 2.0
+
+# Max concurrent scans (avoid overwhelming network)
+max_concurrent: 32
+
+# Redfish credentials (used for device query and thermal ping)
+redfish_user: ""
+redfish_password: ""
+redfish_verify_ssl: false
+
+# SNMP v3 credentials (optional; v2c community for discovery only)
+snmp_community: "public"
+snmp_user: ""
+snmp_auth_key: ""
+snmp_priv_key: ""
+
+# Thermal Ping: Cooling units we can control (boost fan)
+# Maps cooling_unit_id -> {ip, protocol, [credentials]}
+# protocol: redfish | snmp
+cooling_units:
+  CRAC-01:
+    ip: "192.168.1.10"
+    protocol: redfish
+  CRAC-02:
+    ip: "192.168.1.11"
+    protocol: redfish
+
+# Thermal Ping: Rack sensors (IPs we read temperature from)
+# Maps rack_id -> list of {ip, protocol}
+# Each rack can have multiple sensors; we use max temp or average
+rack_sensors:
+  rack_01:
+    - ip: "192.168.1.100"
+      protocol: redfish
+    - ip: "192.168.1.101"
+      protocol: redfish
+  rack_02:
+    - ip: "192.168.1.102"
+      protocol: redfish
+  rack_03:
+    - ip: "192.168.1.103"
+      protocol: redfish
+
+# Thermal Ping parameters
+thermal_ping:
+  fan_boost_percent: 20        # Increase fan by this % during test
+  baseline_percent: 50         # Baseline fan % before boost
+  restore_percent: 50          # Restore fan to this % after test
+  boost_duration_seconds: 15   # How long to hold boosted fan
+  settle_before_seconds: 5      # Wait before measuring baseline
+  settle_after_seconds: 10      # Wait after restoring fan
+  min_temp_drop_celsius: 0.3   # Min drop to count as "influenced"
+  influence_coefficient: 0.8   # Default coefficient when correlation found

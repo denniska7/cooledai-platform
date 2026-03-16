@@ -13,7 +13,16 @@ from typing import Optional
 
 @dataclass
 class RewardResult:
-    """Result of reward computation."""
+    """Result of multi-objective reward computation.
+
+    Attributes:
+        total_reward: Combined reward (energy + thermal - wear - guardrail).
+        energy_saved_component: Contribution from energy saved.
+        thermal_stability_component: Contribution from thermal stability.
+        mechanical_wear_penalty: Negative contribution from wear.
+        guardrail_penalty: -1000 if guardrail triggered.
+        raw_components: Input components for debugging.
+    """
     total_reward: float
     energy_saved_component: float
     thermal_stability_component: float
@@ -81,16 +90,38 @@ def thermal_stability_from_temp(
     target_temp: float,
     max_safe_temp: float = 80.0,
 ) -> float:
-    """
-    Thermal stability score 0-1.
-    1 = at target, 0 = at max_safe or far from target.
+    """Compute thermal stability score (0–1) with asymmetric penalties.
+
+    Physics:
+    - 1.0 = at target (perfect).
+    - ABOVE target: rapid linear decay to 0.0 at max_safe_temp.
+      Being hot is dangerous — approaches ASHRAE limit.
+    - BELOW target: gentle decay.  Over-cooling wastes energy but
+      is NOT a safety risk.  Score floors at 0.5 to avoid the reward
+      function treating 45°C the same as 80°C (old bug).
+    - AT or ABOVE max_safe_temp: 0.0 (hard failure).
+
+    Args:
+        current_temp: Current temperature (°C).
+        target_temp: Target temperature (°C).
+        max_safe_temp: Maximum safe temperature (°C).
+
+    Returns:
+        Score in [0, 1].
     """
     if current_temp >= max_safe_temp:
         return 0.0
-    dist_from_target = abs(current_temp - target_temp)
-    # Linear decay: 0°C from target = 1.0, 15°C = 0.0
-    margin = max_safe_temp - target_temp
-    return max(0, 1.0 - dist_from_target / max(margin * 0.5, 5.0))
+
+    if current_temp >= target_temp:
+        # ABOVE target — linear decay toward 0 at max_safe_temp
+        margin = max(max_safe_temp - target_temp, 1.0)
+        return max(0.0, 1.0 - (current_temp - target_temp) / margin)
+    else:
+        # BELOW target — gentle penalty, floor at 0.5
+        # 10°C below target → score ~0.5 (energy waste, but safe)
+        under_margin = max(target_temp - 20.0, 10.0)  # generous margin
+        dist_below = target_temp - current_temp
+        return max(0.5, 1.0 - 0.5 * dist_below / under_margin)
 
 
 def mechanical_wear_penalty(
@@ -98,7 +129,19 @@ def mechanical_wear_penalty(
     slew_rate_limited: bool,
     anti_short_cycle_hold: bool,
 ) -> float:
-    """Penalty 0-1 for mechanical wear (oscillation, slew, cycling)."""
+    """Compute mechanical wear penalty (0–1).
+
+    Combines oscillation (hunting), slew rate limiting, anti-short-cycle hold.
+    Used in reward function to discourage excessive control changes.
+
+    Args:
+        oscillation_ratio: Fraction of time in hunting behavior.
+        slew_rate_limited: True if delta was clamped.
+        anti_short_cycle_hold: True if anti-short-cycle forced hold.
+
+    Returns:
+        Penalty in [0, 1].
+    """
     penalty = oscillation_ratio * WEAR_OSCILLATION_WEIGHT / 100.0
     if slew_rate_limited:
         penalty += 0.1

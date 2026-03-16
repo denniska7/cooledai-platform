@@ -20,7 +20,11 @@ from core.hal.base_node import BaseNode
 
 @dataclass
 class SyntheticSensorConfig:
-    """Configuration for synthetic sensor estimation."""
+    """Configuration for physics-based synthetic sensor estimation.
+
+    Heuristic: cooling = base + power_coef*(power/100) + temp_coef*(temp - target).
+    Higher power and temp above target → more cooling needed.
+    """
     # Heuristic: cooling_rpm = base + power_coef * power + temp_coef * (temp - target)
     base_cooling: float = 800.0
     power_coef: float = 8.0   # RPM per Watt
@@ -54,19 +58,19 @@ class SyntheticSensor:
         thermal_input: float,
         utilization: float = 0.0,
     ) -> float:
-        """
-        Estimate cooling output (fan RPM) from power and temp.
-        
-        Heuristic: cooling = base + power_coef * power + temp_coef * (temp - target)
-        Higher power and higher temp -> more cooling needed.
-        
+        """Estimate cooling output from power and temperature.
+
+        Physics: cooling = base + power_coef*(power/100) + temp_coef*(temp - target).
+        Heat load (power) and temperature excess drive cooling demand.
+        Clamped to [min_cooling, max_cooling].
+
         Args:
-            power_draw: Power consumption (W)
-            thermal_input: Temperature (°C)
-            utilization: Optional utilization (0-100)
-            
+            power_draw: Power consumption (W).
+            thermal_input: Temperature (°C).
+            utilization: Optional utilization (0–100); reserved for future use.
+
         Returns:
-            Estimated cooling output (RPM or flow rate)
+            Estimated cooling output (RPM or flow rate).
         """
         # Physics-based: cooling scales with heat load (power) and temp excess
         temp_excess = max(0, thermal_input - self.config.target_temp)
@@ -108,17 +112,17 @@ class SyntheticSensor:
         return float(np.clip(thermal, 20, 95))
     
     def fill_missing_node(self, node: BaseNode) -> BaseNode:
-        """
-        Fill missing attributes in a BaseNode using synthetic estimation.
-        
-        If cooling_output is 0/missing but power and temp exist -> estimate cooling
-        If thermal_input is 0/missing but power and cooling exist -> estimate temp
-        
+        """Fill missing attributes in a BaseNode using synthetic estimation.
+
+        If cooling_output is 0/missing but power and temp exist → estimate cooling.
+        If thermal_input is 0/missing but power and cooling exist → estimate temp.
+        Sets raw_data["_synthetic_cooling"] or ["_synthetic_thermal"] when used.
+
         Args:
-            node: BaseNode with potentially missing attributes
-            
+            node: BaseNode with potentially missing attributes.
+
         Returns:
-            Node with estimated values filled in (mutates original)
+            Same node with estimated values filled (mutates in place).
         """
         # Estimate cooling if missing (0 or invalid)
         if node.cooling_output <= 0 and node.power_draw > 0 and node.thermal_input > 0:
@@ -155,18 +159,17 @@ class SyntheticSensor:
         return nodes
     
     def detect_physical_anomaly(self, nodes: list) -> Tuple[bool, str]:
-        """
-        Detect physical anomalies inconsistent with thermodynamics.
-        
-        Examples:
-        - Fan reports 0 RPM but temp is high and power/load present (temp would rise)
-        - Cooling=0, power>threshold, temp>threshold = impossible steady state
-        
+        """Detect physical anomalies inconsistent with thermodynamics.
+
+        Physics: With power and no cooling, temperature must rise. Flags:
+        (1) cooling < 50 RPM, power > 20 W, temp > 50 °C—impossible steady state;
+        (2) time series: cooling 0 for last 5 samples but temp rose 2+ °C.
+
         Args:
-            nodes: List of BaseNode instances (can be time series)
-            
+            nodes: List of BaseNode instances (can be time series).
+
         Returns:
-            (anomaly_detected: bool, reason: str)
+            Tuple of (anomaly_detected: bool, reason: str).
         """
         if not nodes:
             return False, ""

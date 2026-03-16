@@ -14,9 +14,9 @@ type EfficiencyReportModalProps = {
 
 // Derived values for the report
 function computeReportValues(metrics: EfficiencyReportModalProps["metrics"]) {
-  const efficiency = (metrics?.efficiency_score ?? 87) / 100;
-  const opexReclaimed = metrics?.opex_reclaimed_usd ?? 12400;
-  const carbonOffset = metrics?.carbon_offset_kg ?? 1240;
+  const efficiency = (metrics?.efficiency_score ?? 0) / 100;
+  const opexReclaimed = metrics?.opex_reclaimed_usd ?? 0;
+  const carbonOffset = metrics?.carbon_offset_kg ?? 0;
 
   // Traditional reactive cooling typically uses ~15% more power
   const traditionalMultiplier = 1.15;
