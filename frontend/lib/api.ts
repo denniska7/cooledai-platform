@@ -1,31 +1,24 @@
 /**
  * CooledAI API client
  *
- * All API calls use process.env.NEXT_PUBLIC_API_URL.
- * Authenticated endpoints receive the X-API-Key header from
- * process.env.NEXT_PUBLIC_COOLEDAI_API_KEY (set in .env.local).
+ * API URL resolved from NEXT_PUBLIC_API_URL env var with a hardcoded
+ * fallback to the Railway production deployment so the demo works even
+ * if Vercel env-var propagation is delayed.
  */
+
+const RAILWAY_API_URL = "https://proactive-creativity-production.up.railway.app";
+const FALLBACK_API_KEY = "Pilot_Demo_2026_Secure";
 
 const getApiUrl = (): string => {
   const url = process.env.NEXT_PUBLIC_API_URL;
-  if (!url) {
-    throw new Error("NEXT_PUBLIC_API_URL is not set");
-  }
-  return url.replace(/\/$/, ""); // strip trailing slash
+  return (url || RAILWAY_API_URL).replace(/\/$/, "");
 };
 
 export const apiUrl = (): string => getApiUrl();
 
-/**
- * Build default headers for API requests.
- * Includes X-API-Key when NEXT_PUBLIC_COOLEDAI_API_KEY is set.
- */
 const authHeaders = (): Record<string, string> => {
-  const key = process.env.NEXT_PUBLIC_COOLEDAI_API_KEY;
-  if (key) {
-    return { "X-API-Key": key };
-  }
-  return {};
+  const key = process.env.NEXT_PUBLIC_COOLEDAI_API_KEY || FALLBACK_API_KEY;
+  return { "X-API-Key": key };
 };
 
 /**

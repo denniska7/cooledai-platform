@@ -305,19 +305,20 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS - environment-based; restrict to production domains by default
+# CORS - environment-based; restrict to production domains by default.
+# Vercel preview deployments get wildcard-matched via allow_origin_regex.
 _cors_origins_env = os.environ.get("CORS_ORIGINS", "")
 _cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()] if _cors_origins_env else [
     "https://cooledai.com",
     "https://www.cooledai.com",
 ]
-# Only add localhost in development (explicitly opt-in)
 if os.environ.get("COOLEDAI_ENV", "production").lower() in ("dev", "development", "local"):
     _cors_origins += ["http://localhost:3000", "http://127.0.0.1:3000"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
+    allow_origin_regex=r"https://.*\.vercel\.app",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

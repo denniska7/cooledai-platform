@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useMemo, useEffect, useCallback } from "react";
+import { Suspense, useState, useEffect, useCallback } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -16,7 +16,8 @@ import {
 } from "recharts";
 import { api } from "@/lib/api";
 
-const STATS_POLL_MS = 30_000;
+const STATS_POLL_MS = 10_000;
+const MAX_PULSE_POINTS = 30;
 
 type LiveStats = {
   efficiency_gain_pct: number;
@@ -25,34 +26,15 @@ type LiveStats = {
   estimated_annual_savings_usd: number;
   has_live_data: boolean;
   uptime_hours: number;
-  pilot_node: { fan_rpm: number; fan_power_watts: number; temp_c: number | null; last_seen_s_ago: number | null };
-  baseline_node: { fan_rpm: number; fan_power_watts: number; source: string };
+  pilot_node: { node_id: string; fan_rpm: number; fan_power_watts: number; temp_c: number | null; last_seen_s_ago: number | null };
+  baseline_node: { node_id: string; fan_rpm: number; fan_power_watts: number; temp_c: number | null; source: string; last_seen_s_ago: number | null };
 };
 
-function useSimulatedPulse() {
-  const [now] = useState(() => Date.now());
-  const data = useMemo(() => {
-    const points = 24;
-    const d = [];
-    for (let i = 0; i < points; i++) {
-      const t = new Date(now - (points - 1 - i) * 60 * 1000);
-      const ambient = 22 + Math.sin(i * 0.4) * 2 + (i / points) * 0.5;
-      const chip = Math.min(72, 38 + Math.sin(i * 0.3) * 8 + (i / points) * 6 + (i % 3) * 1.2);
-      d.push({
-        time: t.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" }),
-        ambient: Math.round(ambient * 10) / 10,
-        chip: Math.round(chip * 10) / 10,
-      });
-    }
-    return d;
-  }, [now]);
-  return data;
-}
+type PulsePoint = { time: string; pilot: number; baseline: number };
 
 function PortalOverviewContent() {
   const searchParams = useSearchParams();
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
-  const pulseData = useSimulatedPulse();
 
   const [efficiencyGain, setEfficiencyGain] = useState(0);
   const [powerReclaimed, setPowerReclaimed] = useState(0);
@@ -60,6 +42,7 @@ function PortalOverviewContent() {
   const [hasLiveData, setHasLiveData] = useState(false);
   const [pilotWatts, setPilotWatts] = useState(0);
   const [baselineWatts, setBaselineWatts] = useState(0);
+  const [pulseData, setPulseData] = useState<PulsePoint[]>([]);
 
   const fetchStats = useCallback(async () => {
     try {
@@ -72,6 +55,16 @@ function PortalOverviewContent() {
       setHasLiveData(data.has_live_data);
       setPilotWatts(data.pilot_node.fan_power_watts);
       setBaselineWatts(data.baseline_node.fan_power_watts);
+
+      if (data.has_live_data && data.pilot_node.temp_c != null) {
+        const now = new Date();
+        const point: PulsePoint = {
+          time: now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
+          pilot: data.pilot_node.temp_c,
+          baseline: data.baseline_node.temp_c ?? 0,
+        };
+        setPulseData((prev) => [...prev.slice(-(MAX_PULSE_POINTS - 1)), point]);
+      }
     } catch {
       /* API unreachable — keep last known values */
     }
@@ -191,17 +184,22 @@ function PortalOverviewContent() {
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
           <div>
             <h2 className="text-base font-semibold text-white">Live System Pulse</h2>
-            <p className="text-sm text-white/50 mt-0.5">Ambient vs chip temperature (last 24 min)</p>
+            <p className="text-sm text-white/50 mt-0.5">Pilot (CooledAI) vs Baseline (BIOS Auto) — live</p>
           </div>
           <div className="flex gap-3">
             <span className="inline-flex items-center gap-2 text-xs text-white/60">
-              <span className="w-2 h-2 rounded-full bg-[#3b82f6]" /> Ambient
+              <span className="w-2 h-2 rounded-full bg-[#22c55e]" /> Pilot
             </span>
             <span className="inline-flex items-center gap-2 text-xs text-white/60">
-              <span className="w-2 h-2 rounded-full bg-[#22c55e]" /> Chip
+              <span className="w-2 h-2 rounded-full bg-[#ef4444]" /> Baseline
             </span>
           </div>
         </div>
+        {pulseData.length === 0 ? (
+          <div className="h-[320px] flex items-center justify-center text-white/40 text-sm">
+            Waiting for telemetry…
+          </div>
+        ) : (
         <div className="h-[320px] w-full">
           <ResponsiveContainer width="100%" height="100%">
             <LineChart
@@ -216,21 +214,10 @@ function PortalOverviewContent() {
                 tickLine={false}
               />
               <YAxis
-                yAxisId="ambient"
-                orientation="left"
                 tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 11 }}
                 axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
                 tickLine={false}
-                domain={["dataMin - 1", "dataMax + 1"]}
-                tickFormatter={(v) => `${v}°C`}
-              />
-              <YAxis
-                yAxisId="chip"
-                orientation="right"
-                tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 11 }}
-                axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
-                tickLine={false}
-                domain={[30, 85]}
+                domain={[0, "dataMax + 10"]}
                 tickFormatter={(v) => `${v}°C`}
               />
               <Tooltip
@@ -242,37 +229,36 @@ function PortalOverviewContent() {
                 labelStyle={{ color: "rgba(255,255,255,0.8)" }}
                 formatter={(value, name) => [
                   `${value != null ? value : 0}°C`,
-                  name === "ambient" ? "Ambient" : "Chip",
+                  name === "pilot" ? "Pilot (CooledAI)" : "Baseline (BIOS Auto)",
                 ]}
                 labelFormatter={(label) => `Time: ${label}`}
               />
-              <ReferenceLine yAxisId="chip" y={65} stroke="rgba(234,179,8,0.5)" strokeDasharray="4 4" />
-              <ReferenceLine yAxisId="chip" y={85} stroke="rgba(239,68,68,0.5)" strokeDasharray="4 4" />
+              <ReferenceLine y={65} stroke="rgba(234,179,8,0.5)" strokeDasharray="4 4" />
+              <ReferenceLine y={85} stroke="rgba(239,68,68,0.5)" strokeDasharray="4 4" />
               <Line
-                yAxisId="ambient"
                 type="monotone"
-                dataKey="ambient"
-                name="ambient"
-                stroke="#3b82f6"
+                dataKey="pilot"
+                name="pilot"
+                stroke="#22c55e"
                 strokeWidth={2}
                 dot={false}
               />
               <Line
-                yAxisId="chip"
                 type="monotone"
-                dataKey="chip"
-                name="chip"
-                stroke="#22c55e"
+                dataKey="baseline"
+                name="baseline"
+                stroke="#ef4444"
                 strokeWidth={2}
                 dot={false}
               />
               <Legend
                 wrapperStyle={{ fontSize: 12 }}
-                formatter={(value) => (value === "ambient" ? "Ambient Temp" : "Chip Temp")}
+                formatter={(value) => (value === "pilot" ? "Pilot (CooledAI)" : "Baseline (BIOS Auto)")}
               />
             </LineChart>
           </ResponsiveContainer>
         </div>
+        )}
         <p className="text-xs text-white/40 mt-3">
           Yellow line: warning (65°C). Red line: critical (85°C).
         </p>
