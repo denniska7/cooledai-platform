@@ -4,10 +4,13 @@
  * API URL resolved from NEXT_PUBLIC_API_URL env var with a hardcoded
  * fallback to the Railway production deployment so the demo works even
  * if Vercel env-var propagation is delayed.
+ *
+ * The master key is used as the default so the dashboard sees all
+ * tenants' telemetry (the agents post under the master key too).
  */
 
 const RAILWAY_API_URL = "https://proactive-creativity-production.up.railway.app";
-const FALLBACK_API_KEY = "***REDACTED_API_KEY***";
+const FALLBACK_API_KEY = "***REDACTED_MASTER_KEY***";
 
 const getApiUrl = (): string => {
   const url = process.env.NEXT_PUBLIC_API_URL;
@@ -54,10 +57,10 @@ export const apiFetch = async (
 ): Promise<Response> => {
   const base = getApiUrl();
   const url = path.startsWith("/") ? `${base}${path}` : `${base}/${path}`;
-  return fetch(url, {
-    ...options,
-    headers: mergeHeaders(options?.headers),
-  });
+  const hdrs = mergeHeaders(options?.headers);
+  console.log(`[CooledAI] ${options?.method ?? "GET"} ${url}  key=${hdrs["X-API-Key"]?.slice(0, 12)}…`);
+  const res = await fetch(url, { ...options, headers: hdrs });
+  return res;
 };
 
 // Convenience methods for CooledAI endpoints
