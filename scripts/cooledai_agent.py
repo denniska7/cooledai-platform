@@ -188,6 +188,7 @@ class ThermalSnapshot:
     gpu_power_w: List[float] = field(default_factory=list)
     chassis_temps: List[float] = field(default_factory=list)
     fan_rpms: Dict[str, int] = field(default_factory=dict)
+    fan_power_w: Optional[float] = None
     max_temp_c: float = 0.0
     source_of_max: str = ""
 
@@ -294,7 +295,8 @@ def read_sensors(caps: SensorCapabilities, dry_run: bool = False) -> ThermalSnap
         except Exception as exc:
             _log.debug("rocm-smi failed: %s", exc)
 
-    # IPMI chassis temps + fan RPMs
+    # IPMI chassis temps + fan RPMs + fan power
+    # ST550 labels: "Fan 1 Tach", "Fan 2 Tach", ..., "Sys Fan Pwr"
     if caps.ipmi:
         try:
             out = subprocess.check_output(
@@ -304,17 +306,28 @@ def read_sensors(caps: SensorCapabilities, dry_run: bool = False) -> ThermalSnap
                 parts = [p.strip() for p in line.split("|")]
                 if len(parts) < 2:
                     continue
-                name_lower = parts[0].lower()
+                name = parts[0].strip()
+                name_lower = name.lower()
+                value_str = parts[1].strip()
+
                 # Temps (ambient, inlet, exhaust)
                 if any(k in name_lower for k in ("ambient", "inlet", "exhaust", "temp")):
-                    m = re.search(r"([\d.]+)\s*degrees", parts[1], re.IGNORECASE)
+                    m = re.search(r"([\d.]+)\s*degrees", value_str, re.IGNORECASE)
                     if m:
                         snap.chassis_temps.append(float(m.group(1)))
-                # Fans
-                if "fan" in name_lower:
-                    m = re.search(r"(\d+)\s*RPM", parts[1], re.IGNORECASE)
+
+                # Sys Fan Pwr → wattage (not RPM)
+                if "sys fan pwr" in name_lower:
+                    m = re.search(r"([\d.]+)\s*[Ww]", value_str)
                     if m:
-                        snap.fan_rpms[parts[0].strip()] = int(m.group(1))
+                        snap.fan_power_w = float(m.group(1))
+                    continue
+
+                # Fan [N] Tach and other fan RPM sensors
+                if "fan" in name_lower:
+                    m = re.search(r"(\d+)\s*RPM", value_str, re.IGNORECASE)
+                    if m:
+                        snap.fan_rpms[name] = int(m.group(1))
         except Exception as exc:
             _log.debug("ipmitool sdr failed: %s", exc)
 
@@ -701,12 +714,18 @@ def run_agent(
                 "timestamp": now_iso,
                 "temperature_c": round(max(snap.chassis_temps), 1),
             })
-        if snap.fan_rpms:
-            records.append({
+        if snap.fan_rpms or snap.fan_power_w is not None:
+            tach_rpms = list(snap.fan_rpms.values())
+            avg_rpm = int(sum(tach_rpms) / len(tach_rpms)) if tach_rpms else 0
+            fan_rec: Dict[str, Any] = {
                 "node_id": f"{node_id}/fans",
                 "timestamp": now_iso,
                 "fan_rpms": snap.fan_rpms,
-            })
+                "fan_rpm": avg_rpm,
+            }
+            if snap.fan_power_w is not None:
+                fan_rec["raw_fan_wattage"] = round(snap.fan_power_w, 1)
+            records.append(fan_rec)
 
         payload = {"agent_id": node_id, "telemetry": records}
         ok = post_with_backoff(telemetry_url, payload, token, max_attempts=3)

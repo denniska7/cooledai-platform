@@ -1439,10 +1439,26 @@ async def receive_telemetry(request: Request):
             record["_received_at"] = now_ts
             _node_telemetry[node_id] = record  # TODO: Scope by owner_id
 
+            fan_rpm_direct = record.get("fan_rpm")
+            if fan_rpm_direct is not None:
+                consolidated["fan_rpm"] = int(fan_rpm_direct)
+
             fan_rpms = record.get("fan_rpms")
-            if fan_rpms and isinstance(fan_rpms, list):
-                consolidated["fan_rpm"] = max(fan_rpms)
+            if fan_rpms and "fan_rpm" not in consolidated:
+                if isinstance(fan_rpms, dict):
+                    rpms = list(fan_rpms.values())
+                elif isinstance(fan_rpms, list):
+                    rpms = list(fan_rpms)
+                else:
+                    rpms = []
+                if rpms:
+                    consolidated["fan_rpm"] = int(sum(rpms) / len(rpms))
+            if fan_rpms:
                 consolidated["fan_rpms"] = fan_rpms
+
+            raw_wattage = record.get("raw_fan_wattage")
+            if raw_wattage is not None:
+                consolidated["raw_fan_wattage"] = float(raw_wattage)
 
             temp_c = record.get("temperature_c")
             if temp_c is not None:
@@ -1524,6 +1540,7 @@ async def get_live_stats():
             "node_id": _PILOT_NODE_ID,
             "fan_rpm": pilot_rpm,
             "fan_power_watts": round(pilot_w, 1),
+            "raw_fan_wattage": pilot.get("raw_fan_wattage"),
             "temp_c": pilot.get("max_temp_c"),
             "last_seen_s_ago": round(pilot_age, 1) if pilot_age is not None else None,
         },
@@ -1531,6 +1548,7 @@ async def get_live_stats():
             "node_id": _BASELINE_NODE_ID,
             "fan_rpm": baseline_rpm,
             "fan_power_watts": round(baseline_w, 1),
+            "raw_fan_wattage": baseline.get("raw_fan_wattage"),
             "temp_c": baseline.get("max_temp_c"),
             "last_seen_s_ago": round(baseline_age, 1) if baseline_age is not None else None,
             "source": baseline_source,
