@@ -4,65 +4,39 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { api } from "@/lib/api";
 
-type Metrics = {
-  efficiency_score: number;
-  thermal_lag_seconds: number;
-  state: string;
-  nodes_active: number;
-  cooling_delta: number;
-} | null;
-
-async function fetchMetrics(): Promise<Metrics> {
-  try {
-    const res = await api.getSimulatedMetrics();
-    if (!res.ok) return null;
-    return res.json();
-  } catch {
-    return null;
-  }
-}
-
-function useSimulatedMetrics(): { temp: number; efficiency: number; powerSaved: number } {
-  const [metrics, setMetrics] = useState<Metrics>(null);
-  const [simulated, setSimulated] = useState({ temp: 42.3, efficiency: 87.2, powerSaved: 124 });
+export function LiveSystemPulse() {
+  const [temp, setTemp] = useState<number | null>(null);
+  const [powerSaved, setPowerSaved] = useState(0);
+  const [isLive, setIsLive] = useState(false);
 
   useEffect(() => {
     let mounted = true;
     const poll = async () => {
-      const data = await fetchMetrics();
-      if (mounted && data) {
-        setMetrics(data);
-        setSimulated({
-          temp: 38 + data.efficiency_score * 0.1 + Math.random() * 2,
-          efficiency: data.efficiency_score,
-          powerSaved: Math.round(100 + data.efficiency_score * 2 + Math.random() * 20),
-        });
-      } else if (mounted) {
-        setSimulated((s) => ({
-          temp: s.temp + (Math.random() - 0.5) * 0.5,
-          efficiency: Math.min(95, Math.max(80, s.efficiency + (Math.random() - 0.5) * 2)),
-          powerSaved: s.powerSaved + Math.round((Math.random() - 0.5) * 10),
-        }));
+      try {
+        const res = await api.getStats();
+        if (!res.ok || !mounted) return;
+        const data = await res.json();
+        if (data.has_live_data) {
+          setTemp(data.pilot_node?.temp_c ?? null);
+          setPowerSaved(Math.round(data.power_reclaimed_watts ?? 0));
+          setIsLive(true);
+        }
+      } catch {
+        /* keep last known values */
       }
     };
     poll();
-    const id = setInterval(poll, 1500);
+    const id = setInterval(poll, 5000);
     return () => {
       mounted = false;
       clearInterval(id);
     };
   }, []);
 
-  return simulated;
-}
-
-export function LiveSystemPulse() {
-  const { temp, efficiency, powerSaved } = useSimulatedMetrics();
-
   const items = [
-    { label: "Current Temp", value: `${temp.toFixed(1)}°C`, unit: "" },
-    { label: "Energy savings", value: "Active", unit: "" },
-    { label: "Power saved", value: powerSaved.toString(), unit: " kW" },
+    { label: "Current Temp", value: temp != null ? `${temp.toFixed(1)}°C` : "—", unit: "" },
+    { label: "Energy savings", value: isLive ? "Active" : "Connecting…", unit: "" },
+    { label: "Power saved", value: `${powerSaved}`, unit: " W" },
   ];
 
   return (
