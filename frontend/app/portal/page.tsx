@@ -47,8 +47,13 @@ function PortalOverviewContent() {
   const fetchStats = useCallback(async () => {
     try {
       const res = await api.getStats();
-      if (!res.ok) return;
+      if (!res.ok) {
+        console.warn("[CooledAI] /api/v1/stats returned", res.status);
+        return;
+      }
       const data: LiveStats = await res.json();
+      console.log("[CooledAI] stats response:", JSON.stringify(data, null, 2));
+
       setEfficiencyGain(data.efficiency_gain_pct);
       setPowerReclaimed(data.power_reclaimed_kwh);
       setAnnualSavings(data.estimated_annual_savings_usd);
@@ -56,17 +61,20 @@ function PortalOverviewContent() {
       setPilotWatts(data.pilot_node.fan_power_watts);
       setBaselineWatts(data.baseline_node.fan_power_watts);
 
-      if (data.has_live_data && data.pilot_node.temp_c != null) {
+      const pilotTemp = data.pilot_node.temp_c;
+      const baselineTemp = data.baseline_node.temp_c;
+
+      if (pilotTemp != null || baselineTemp != null) {
         const now = new Date();
         const point: PulsePoint = {
           time: now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
-          pilot: data.pilot_node.temp_c,
-          baseline: data.baseline_node.temp_c ?? 0,
+          pilot: pilotTemp ?? 0,
+          baseline: baselineTemp ?? 0,
         };
         setPulseData((prev) => [...prev.slice(-(MAX_PULSE_POINTS - 1)), point]);
       }
-    } catch {
-      /* API unreachable — keep last known values */
+    } catch (err) {
+      console.error("[CooledAI] stats fetch failed:", err);
     }
   }, []);
 

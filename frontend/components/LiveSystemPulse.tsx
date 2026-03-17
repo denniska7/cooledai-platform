@@ -16,13 +16,15 @@ export function LiveSystemPulse() {
         const res = await api.getStats();
         if (!res.ok || !mounted) return;
         const data = await res.json();
-        if (data.has_live_data) {
-          setTemp(data.pilot_node?.temp_c ?? null);
+        console.log("[CooledAI Pulse] stats:", data.has_live_data, "pilot_temp:", data.pilot_node?.temp_c, "watts:", data.power_reclaimed_watts);
+        const t = data.pilot_node?.temp_c;
+        if (t != null) {
+          setTemp(t);
           setPowerSaved(Math.round(data.power_reclaimed_watts ?? 0));
           setIsLive(true);
         }
-      } catch {
-        /* keep last known values */
+      } catch (err) {
+        console.error("[CooledAI Pulse] fetch failed:", err);
       }
     };
     poll();
