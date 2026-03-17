@@ -10,7 +10,7 @@
  */
 
 const RAILWAY_API_URL = "https://proactive-creativity-production.up.railway.app";
-const FALLBACK_API_KEY = "***REDACTED_MASTER_KEY***";
+const FALLBACK_API_KEY = "***REDACTED_API_KEY***";
 
 const getApiUrl = (): string => {
   const url = process.env.NEXT_PUBLIC_API_URL;
