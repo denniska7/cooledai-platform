@@ -20,6 +20,7 @@ Endpoints:
 """
 
 import os
+import secrets
 import sys
 import json
 import logging
@@ -42,13 +43,66 @@ from pydantic import BaseModel, validator
 
 
 # --- Security: API Key Authentication ---
-# Set COOLEDAI_API_KEY in environment to require authentication on control endpoints.
-# Set COOLEDAI_ADMIN_KEY for admin-only endpoints (simulation control, shadow mode, test-email).
-# Set COOLEDAI_MASTER_KEY for a single key that unlocks all endpoints (pilot / lab use).
-# If not set, endpoints are open (development mode).
+# Legacy env-var keys still honoured for backward compatibility.
+# New multi-tenant model: keys stored in data/api_keys.json, each mapped to
+# an owner_id.  On first startup an admin key is auto-generated and logged.
 _API_KEY = os.environ.get("COOLEDAI_API_KEY", "")
 _ADMIN_KEY = os.environ.get("COOLEDAI_ADMIN_KEY", "")
 _MASTER_KEY = os.environ.get("COOLEDAI_MASTER_KEY", "")
+
+
+# --- Multi-Tenant API Key Registry ---
+_KEYS_FILE = project_root / "data" / "api_keys.json"
+_api_key_registry: Dict[str, dict] = {}
+
+
+def _load_key_registry() -> None:
+    global _api_key_registry
+    try:
+        if _KEYS_FILE.exists():
+            _api_key_registry = json.loads(_KEYS_FILE.read_text())
+    except Exception:
+        _api_key_registry = {}
+
+
+def _save_key_registry() -> None:
+    try:
+        _KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _KEYS_FILE.write_text(json.dumps(_api_key_registry, indent=2))
+    except Exception as exc:
+        logging.getLogger("api.main").warning("Failed to save key registry: %s", exc)
+
+
+def _generate_api_key() -> str:
+    return "sk-" + secrets.token_urlsafe(32)
+
+
+_load_key_registry()
+
+
+def _ensure_admin_key_exists() -> None:
+    """On first startup, auto-generate an admin API key and persist it."""
+    if _api_key_registry:
+        return
+    key = _generate_api_key()
+    _api_key_registry[key] = {
+        "owner_id": "admin",
+        "label": "Admin (auto-generated on first startup)",
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    _save_key_registry()
+    logging.getLogger("api.main").info(
+        "\n============================================================\n"
+        "  FIRST RUN — Admin API Key Generated\n"
+        "  Key:   %s\n"
+        "  Owner: admin\n"
+        "  Save this key now; it will NOT be shown again.\n"
+        "============================================================",
+        key,
+    )
+
+
+_ensure_admin_key_exists()
 
 
 def _is_master(key: str) -> bool:
@@ -56,22 +110,47 @@ def _is_master(key: str) -> bool:
 
 
 def _require_api_key(x_api_key: str = Header(default="", alias="X-API-Key")) -> str:
-    """Dependency: require valid API key for control endpoints."""
+    """Dependency: require valid API key (legacy env-var OR registered key)."""
     if _is_master(x_api_key):
         return x_api_key
-    if _API_KEY and x_api_key != _API_KEY:
+    if x_api_key in _api_key_registry:
+        return x_api_key
+    if _API_KEY and x_api_key == _API_KEY:
+        return x_api_key
+    if _API_KEY or _api_key_registry or _MASTER_KEY:
         raise HTTPException(status_code=401, detail="Invalid or missing API key (X-API-Key header).")
     return x_api_key
 
 
 def _require_admin_key(x_api_key: str = Header(default="", alias="X-API-Key")) -> str:
-    """Dependency: require admin API key for privileged endpoints."""
+    """Dependency: require admin-level API key."""
     if _is_master(x_api_key):
         return x_api_key
-    key = _ADMIN_KEY or _API_KEY  # Admin key falls back to API key
-    if key and x_api_key != key:
+    if x_api_key in _api_key_registry:
+        if _api_key_registry[x_api_key].get("owner_id") == "admin":
+            return x_api_key
+    legacy = _ADMIN_KEY or _API_KEY
+    if legacy and x_api_key == legacy:
+        return x_api_key
+    if legacy or _api_key_registry or _MASTER_KEY:
         raise HTTPException(status_code=403, detail="Admin access required (X-API-Key header).")
     return x_api_key
+
+
+def _resolve_owner(x_api_key: str = Header(default="", alias="X-API-Key")) -> str:
+    """Authenticate and return the owner_id for tenant-scoped endpoints.
+
+    Priority: master key → registered key → legacy env-var key → dev mode.
+    """
+    if _is_master(x_api_key):
+        return "master"
+    if x_api_key in _api_key_registry:
+        return _api_key_registry[x_api_key]["owner_id"]
+    if _API_KEY and x_api_key == _API_KEY:
+        return "default"
+    if not _API_KEY and not _api_key_registry and not _MASTER_KEY:
+        return "default"
+    raise HTTPException(status_code=401, detail="Invalid or missing API key (X-API-Key header).")
 
 
 # --- File upload limits ---
@@ -1352,20 +1431,16 @@ def _send_beta_email(beta: BetaSignupInput) -> bool:
         return False
 
 
-# --- Live Telemetry Store & Power Stats --------------------------------
+# --- Live Telemetry Store & Power Stats (Multi-Tenant) ------------------
 #
-# Per-node latest telemetry snapshot (updated by POST /api/v1/telemetry).
-# The accumulator integrates the wattage delta between the pilot node and
-# the baseline so GET /api/v1/stats returns live, non-placeholder numbers.
+# Per-owner, per-node latest telemetry snapshot.  Each tenant's nodes and
+# power-savings accumulator are fully isolated.
 #
-# TODO: Scope by owner_id — these globals are shared across all clients.
-#       When multi-tenancy lands, key everything by (owner_id, node_id)
-#       and isolate accumulators per tenant.
+# _tenant_telemetry:   { owner_id: { node_id: {...telemetry...} } }
+# _tenant_accumulators: { owner_id: { power_reclaimed_wh, started_at, last_ts } }
 
-_node_telemetry: Dict[str, dict] = {}  # TODO: Scope by owner_id
-_power_reclaimed_wh: float = 0.0  # TODO: Scope by owner_id
-_stats_started_at: Optional[float] = None
-_last_accumulation_ts: Optional[float] = None
+_tenant_telemetry: Dict[str, Dict[str, dict]] = {}
+_tenant_accumulators: Dict[str, dict] = {}
 
 # Fan power estimation — Fan Affinity Law: P ∝ RPM³
 _RATED_FAN_WATTS = float(os.environ.get("COOLEDAI_RATED_FAN_WATTS", "12"))
@@ -1384,60 +1459,66 @@ def _fan_power_watts(rpm: float) -> float:
     return (frac ** 3) * _RATED_FAN_WATTS * _NUM_FANS
 
 
-def _accumulate_savings(pilot_rpm: float) -> None:
+def _accumulate_savings(owner_id: str, pilot_rpm: float) -> None:
     """Called on each pilot telemetry update to integrate watt-hours saved."""
-    global _power_reclaimed_wh, _stats_started_at, _last_accumulation_ts
     now = time.time()
-    if _stats_started_at is None:
-        _stats_started_at = now
-        _last_accumulation_ts = now
+    acc = _tenant_accumulators.get(owner_id)
+    if acc is None:
+        _tenant_accumulators[owner_id] = {
+            "power_reclaimed_wh": 0.0,
+            "stats_started_at": now,
+            "last_accumulation_ts": now,
+        }
         return
-    dt_hours = (now - _last_accumulation_ts) / 3600.0
-    _last_accumulation_ts = now
+    dt_hours = (now - acc["last_accumulation_ts"]) / 3600.0
+    acc["last_accumulation_ts"] = now
+
+    baseline_rpm = _MAX_FAN_RPM
     if _BASELINE_FAN_RPM > 0:
         baseline_rpm = _BASELINE_FAN_RPM
-    elif _BASELINE_NODE_ID in _node_telemetry:
-        baseline_rpm = float(_node_telemetry[_BASELINE_NODE_ID].get("fan_rpm", _MAX_FAN_RPM))
     else:
-        baseline_rpm = _MAX_FAN_RPM
+        tenant_data = _tenant_telemetry.get(owner_id, {})
+        for nid, data in tenant_data.items():
+            if "/" not in nid and ("shadow" in nid.lower() or "baseline" in nid.lower()):
+                baseline_rpm = float(data.get("fan_rpm", _MAX_FAN_RPM))
+                break
+
     delta_w = max(0.0, _fan_power_watts(baseline_rpm) - _fan_power_watts(pilot_rpm))
-    _power_reclaimed_wh += delta_w * dt_hours
+    acc["power_reclaimed_wh"] += delta_w * dt_hours
 
 
-@app.post("/api/v1/telemetry", dependencies=[Depends(_require_api_key)])
-async def receive_telemetry(request: Request):
+@app.post("/api/v1/telemetry")
+async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_owner)):
     """
     Receive telemetry from Universal Protocol Gateway (edge agent).
     Accepts: {"telemetry": [...], "agent_id": "..."} or {"heartbeat": {...}}
-    Requires API key (X-API-Key header). Gateway must set COOLEDAI_API_KEY.
 
-    Each record is stored per-node. When the pilot node reports fan_rpm,
-    the power savings accumulator integrates the wattage delta against the
-    baseline node (or a configured baseline RPM).
+    The X-API-Key header determines which tenant (owner_id) owns these
+    nodes.  All records are stored under that owner's isolated namespace.
     """
     payload = await request.json()
     if "heartbeat" in payload:
         hb = payload["heartbeat"]
         agent_id = hb.get("agent_id", "unknown")
-        logging.debug("[CooledAI Gateway] Heartbeat from %s", agent_id)
+        logging.debug("[CooledAI] Heartbeat from %s (owner=%s)", agent_id, owner_id)
         return {"status": "ok"}
     if "telemetry" in payload:
         telemetry = payload["telemetry"]
         agent_id = payload.get("agent_id", "unknown")
-        logging.debug("[CooledAI Gateway] Telemetry from %s: %d records", agent_id, len(telemetry))
+        logging.debug("[CooledAI] Telemetry from %s (owner=%s): %d records", agent_id, owner_id, len(telemetry))
         now_ts = time.time()
 
-        # Build a consolidated record per agent_id so the stats endpoint
-        # can look up a single key (e.g. "ST550-Pilot-Node") instead of
-        # the sub-records ("/cpu", "/gpu0", "/fans").
-        consolidated = dict(_node_telemetry.get(agent_id, {}))
+        tenant = _tenant_telemetry.setdefault(owner_id, {})
+        consolidated = dict(tenant.get(agent_id, {}))
         consolidated["_received_at"] = now_ts
         consolidated["agent_id"] = agent_id
+        consolidated["_owner_id"] = owner_id
 
         for record in telemetry:
             node_id = record.get("node_id", agent_id)
             record["_received_at"] = now_ts
-            _node_telemetry[node_id] = record  # TODO: Scope by owner_id
+            record["_owner_id"] = owner_id
+            tenant[node_id] = record
 
             fan_rpm_direct = record.get("fan_rpm")
             if fan_rpm_direct is not None:
@@ -1472,34 +1553,54 @@ async def receive_telemetry(request: Request):
                     consolidated.get("max_temp_c", 0), temp_c,
                 )
 
-        _node_telemetry[agent_id] = consolidated  # TODO: Scope by owner_id
+        tenant[agent_id] = consolidated
 
-        if agent_id == _PILOT_NODE_ID and "fan_rpm" in consolidated:
-            _accumulate_savings(float(consolidated["fan_rpm"]))
+        if "fan_rpm" in consolidated and "pilot" in agent_id.lower():
+            _accumulate_savings(owner_id, float(consolidated["fan_rpm"]))
 
         return {"status": "ok", "received": len(telemetry)}
     return {"status": "error", "message": "Expected telemetry or heartbeat"}
 
 
 @app.get("/api/v1/stats")
-async def get_live_stats():
-    # TODO: Scope by owner_id — accept owner_id param or derive from API key,
-    #       then read only that tenant's telemetry and accumulator.
-    """Live power-savings stats: pilot node vs baseline.
+async def get_live_stats(owner_id: str = Depends(_resolve_owner)):
+    """Live power-savings stats scoped to the authenticated owner's nodes.
 
-    Uses Fan Affinity Law to estimate wattage from RPM when no power
-    meter is available.  Accumulates kWh over time and projects annual
-    savings using the configurable USD_PER_KWH (env COOLEDAI_UTILITY_RATE).
+    Uses Fan Affinity Law to estimate wattage from RPM.  Accumulates kWh
+    per-tenant and projects annual savings via USD_PER_KWH.
 
-    Baseline RPM priority:
-      1. COOLEDAI_BASELINE_FAN_RPM env var (fixed value)
-      2. Live telemetry from the shadow node
-      3. MAX_FAN_RPM (worst-case / BIOS Auto at 100%)
+    The master key sees aggregated data across all tenants.
     """
     now = time.time()
 
-    pilot = _node_telemetry.get(_PILOT_NODE_ID, {})
-    baseline = _node_telemetry.get(_BASELINE_NODE_ID, {})
+    if owner_id == "master":
+        all_nodes: Dict[str, dict] = {}
+        for tenant_nodes in _tenant_telemetry.values():
+            all_nodes.update(tenant_nodes)
+    else:
+        all_nodes = _tenant_telemetry.get(owner_id, {})
+
+    agent_keys = [k for k in all_nodes if "/" not in k]
+    pilot: dict = {}
+    baseline: dict = {}
+    pilot_id = ""
+    baseline_id = ""
+    for nid in agent_keys:
+        nid_lower = nid.lower()
+        if "pilot" in nid_lower and not pilot_id:
+            pilot = all_nodes[nid]
+            pilot_id = nid
+        elif ("shadow" in nid_lower or "baseline" in nid_lower) and not baseline_id:
+            baseline = all_nodes[nid]
+            baseline_id = nid
+    if not pilot_id and agent_keys:
+        pilot_id = agent_keys[0]
+        pilot = all_nodes[pilot_id]
+    if not baseline_id and len(agent_keys) > 1:
+        remaining = [k for k in agent_keys if k != pilot_id]
+        if remaining:
+            baseline_id = remaining[0]
+            baseline = all_nodes[baseline_id]
 
     pilot_rpm = float(pilot.get("fan_rpm", 0))
     baseline_source = "default_max"
@@ -1518,8 +1619,17 @@ async def get_live_stats():
 
     efficiency_pct = (delta_w / baseline_w * 100.0) if baseline_w > 0 else 0.0
 
-    uptime_h = (now - _stats_started_at) / 3600.0 if _stats_started_at else 0.0
-    reclaimed_kwh = _power_reclaimed_wh / 1000.0
+    if owner_id == "master":
+        total_wh = sum(a.get("power_reclaimed_wh", 0.0) for a in _tenant_accumulators.values())
+        earliest = min((a.get("stats_started_at", now) for a in _tenant_accumulators.values()), default=now)
+        acc: dict = {"power_reclaimed_wh": total_wh, "stats_started_at": earliest}
+    else:
+        acc = _tenant_accumulators.get(owner_id, {})
+
+    power_wh = acc.get("power_reclaimed_wh", 0.0)
+    started = acc.get("stats_started_at")
+    uptime_h = (now - started) / 3600.0 if started else 0.0
+    reclaimed_kwh = power_wh / 1000.0
 
     annual_kwh = (reclaimed_kwh / uptime_h * 8760.0) if uptime_h > 0.1 else 0.0
     annual_savings = annual_kwh * _USD_PER_KWH
@@ -1529,6 +1639,7 @@ async def get_live_stats():
     baseline_age = (now - baseline["_received_at"]) if baseline.get("_received_at") else None
 
     return {
+        "owner_id": owner_id,
         "efficiency_gain_pct": round(efficiency_pct, 1),
         "power_reclaimed_kwh": round(reclaimed_kwh, 3),
         "power_reclaimed_watts": round(delta_w, 1),
@@ -1537,7 +1648,7 @@ async def get_live_stats():
         "uptime_hours": round(uptime_h, 2),
         "has_live_data": has_live,
         "pilot_node": {
-            "node_id": _PILOT_NODE_ID,
+            "node_id": pilot_id or "none",
             "fan_rpm": pilot_rpm,
             "fan_power_watts": round(pilot_w, 1),
             "raw_fan_wattage": pilot.get("raw_fan_wattage"),
@@ -1545,7 +1656,7 @@ async def get_live_stats():
             "last_seen_s_ago": round(pilot_age, 1) if pilot_age is not None else None,
         },
         "baseline_node": {
-            "node_id": _BASELINE_NODE_ID,
+            "node_id": baseline_id or "none",
             "fan_rpm": baseline_rpm,
             "fan_power_watts": round(baseline_w, 1),
             "raw_fan_wattage": baseline.get("raw_fan_wattage"),
@@ -1989,6 +2100,64 @@ async def discovery_clear():
     if _discovery_agent is not None:
         _discovery_agent.clear()
     return {"status": "ok", "message": "Window cleared."}
+
+
+# --- Admin: API Key Management (Multi-Tenant) ---
+
+
+class CreateKeyInput(BaseModel):
+    """Body for POST /admin/api-keys."""
+    owner_id: Optional[str] = None
+    label: str = ""
+
+
+@app.post("/admin/api-keys", dependencies=[Depends(_require_admin_key)])
+async def admin_create_api_key(body: CreateKeyInput):
+    """Generate a new API key for a tenant.
+
+    The full key is shown exactly once in the response — store it
+    securely because it cannot be retrieved later.
+    """
+    key = _generate_api_key()
+    oid = body.owner_id or ("owner_" + secrets.token_hex(4))
+    _api_key_registry[key] = {
+        "owner_id": oid,
+        "label": body.label,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+    }
+    _save_key_registry()
+    return {
+        "api_key": key,
+        "owner_id": oid,
+        "label": body.label,
+        "message": "Store this key securely — it cannot be retrieved later.",
+    }
+
+
+@app.get("/admin/api-keys", dependencies=[Depends(_require_admin_key)])
+async def admin_list_api_keys():
+    """List registered API keys (prefixes only — full keys are never shown)."""
+    keys = []
+    for k, meta in _api_key_registry.items():
+        keys.append({
+            "key_prefix": k[:10] + "...",
+            "owner_id": meta["owner_id"],
+            "label": meta.get("label", ""),
+            "created_at": meta.get("created_at", ""),
+        })
+    return {"keys": keys, "count": len(keys)}
+
+
+@app.delete("/admin/api-keys/{key_prefix}", dependencies=[Depends(_require_admin_key)])
+async def admin_revoke_api_key(key_prefix: str):
+    """Revoke all keys whose full value starts with *key_prefix*."""
+    to_delete = [k for k in _api_key_registry if k.startswith(key_prefix)]
+    if not to_delete:
+        raise HTTPException(status_code=404, detail="No key matching that prefix.")
+    for k in to_delete:
+        del _api_key_registry[k]
+    _save_key_registry()
+    return {"revoked": len(to_delete), "message": "Key(s) revoked."}
 
 
 # --- Static script downloads (install.sh, cooledai_agent.py) ---
