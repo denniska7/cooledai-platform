@@ -1821,6 +1821,7 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
     # Formula: (Baseline_Temp - Pilot_Temp) / Baseline_Temp * 100
     pilot_temp = pilot.get("max_temp_c")
     baseline_temp = baseline.get("max_temp_c")
+    pilot_fan_estimated = False  # True when we show pilot W derived from temp (no fan_rpm from agent)
     if (
         pilot_temp is not None
         and baseline_temp is not None
@@ -1828,6 +1829,12 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
     ):
         efficiency_pct = ((baseline_temp - pilot_temp) / baseline_temp) * 100.0
         efficiency_pct = max(0.0, min(100.0, efficiency_pct))
+        # ST550 agents send only GPU temps, not fan_rpm — so pilot_w is 0 and "0W CooledAI" is misleading.
+        # Derive pilot display watts from temp-based efficiency so the UI shows e.g. "44W vs 72W".
+        if pilot_rpm == 0 and baseline_w > 0:
+            pilot_w = baseline_w * (1.0 - efficiency_pct / 100.0)
+            delta_w = baseline_w - pilot_w
+            pilot_fan_estimated = True
     else:
         efficiency_pct = (delta_w / baseline_w * 100.0) if baseline_w > 0 else 0.0
 
@@ -1868,6 +1875,7 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
             "node_id": pilot_id or "none",
             "fan_rpm": pilot_rpm,
             "fan_power_watts": round(pilot_w, 1),
+            "fan_power_estimated_from_temp": pilot_fan_estimated,
             "raw_fan_wattage": pilot.get("raw_fan_wattage"),
             "temp_c": pilot.get("max_temp_c"),
             "last_seen_s_ago": round(pilot_age, 1) if pilot_age is not None else None,
