@@ -1,0 +1,24 @@
+#!/usr/bin/expect -f
+# Check that telemetry and workload scheduler are logging on both nodes.
+# Usage: cd /path/to/coolingai_simulator && expect scripts/check_node_logs.exp
+#
+# When you're NOT on the same network: use the remote API instead:
+#   curl -s -H "X-API-Key: YOUR_API_KEY" https://proactive-creativity-production.up.railway.app/api/v1/nodes/status
+# See scripts/REMOTE_CHECK.md for details.
+
+set timeout 25
+
+proc check_node {host pass name} {
+    puts "\n========== $name ($host) =========="
+    spawn ssh -o StrictHostKeyChecking=no $host "echo '--- Telemetry log (last 15 lines) ---'; tail -15 /var/log/cooledai_telemetry.log 2>/dev/null || tail -15 /tmp/cooledai_telemetry.log 2>/dev/null || echo 'No telemetry log found'; echo ''; echo '--- Workload scheduler log (last 15 lines) ---'; tail -15 /tmp/cooledai_llama_workload.log 2>/dev/null || echo 'No workload log found'"
+    expect "password:"
+    send "$pass\r"
+    expect eof
+    catch wait result
+    return [lindex $result 3]
+}
+
+puts "Checking Node .100 (Pilot) and Node .101 (Control)..."
+check_node "cooledaiadmin@192.168.12.100" "***REDACTED_SSH_PASS***" "Node .100 (Pilot)"
+check_node "cooledaiadmin@192.168.12.101" "***REDACTED_SSH_PASS***" "Node .101 (Control)"
+puts "\nDone. If you see recent timestamps and POST/Status lines, both nodes are logging."
