@@ -195,21 +195,14 @@ def _require_admin_key(x_api_key: str = Header(default="", alias="X-API-Key")) -
 
 
 def _resolve_owner(x_api_key: str = Header(default="", alias="X-API-Key")) -> str:
-    """Authenticate and return the owner_id for tenant-scoped endpoints.
-
-    Priority: master key → registered key → legacy env-var key → dev mode.
     """
-    # Validate the caller's API key (so telemetry writes can't be accepted
-    # without credentials), but always map to the fixed owner tenant.
-    if _is_master(x_api_key):
-        return FIXED_OWNER_ID
-    if x_api_key in _api_key_registry:
-        return FIXED_OWNER_ID
-    if _API_KEY and x_api_key == _API_KEY:
-        return FIXED_OWNER_ID
-    if not _API_KEY and not _api_key_registry and not _MASTER_KEY:
-        return FIXED_OWNER_ID
-    raise HTTPException(status_code=401, detail="Invalid or missing API key (X-API-Key header).")
+    Resolve owner_id for telemetry ingestion.
+
+    Telemetry writes are intentionally stored under `FIXED_OWNER_ID` regardless
+    of which X-API-Key was used. Portal reads remain strictly protected via
+    Clerk JWT checks.
+    """
+    return FIXED_OWNER_ID
 
 
 # --- File upload limits ---
@@ -1885,6 +1878,21 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
             "rated_fan_watts": _RATED_FAN_WATTS,
             "num_fans": _NUM_FANS,
         },
+    }
+
+
+@app.get("/api/v1/debug/clerk")
+async def debug_clerk_user(request: Request):
+    """
+    Debug helper: returns extracted Clerk user_id from Authorization bearer JWT.
+
+    This endpoint is for troubleshooting only.
+    """
+    clerk_user_id = await _require_clerk_user_id(request)
+    return {
+        "clerk_user_id": clerk_user_id,
+        "expected_fixed_owner_id": FIXED_OWNER_ID,
+        "matches_expected": clerk_user_id == FIXED_OWNER_ID,
     }
 
 

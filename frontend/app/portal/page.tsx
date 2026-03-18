@@ -110,7 +110,14 @@ function PortalOverviewContent() {
       const res = await api.getStats(token);
       if (!res.ok) {
         if (res.status === 401) {
-          setAuthError("Sign in required.");
+          let detail: string | null = null;
+          try {
+            const body = await res.json();
+            detail = typeof body?.detail === "string" ? body.detail : null;
+          } catch {
+            // ignore
+          }
+          setAuthError(detail ? `Sign in required. ${detail}` : "Sign in required.");
           setEfficiencyLoading(false);
           setEfficiencyGain(null);
           setHasLiveData(false);
@@ -200,6 +207,16 @@ function PortalOverviewContent() {
 
       const res = await api.getThermalHistory(hours, token);
       if (!res.ok) {
+        if (res.status === 401) {
+          let detail: string | null = null;
+          try {
+            const body = await res.json();
+            detail = typeof body?.detail === "string" ? body.detail : null;
+          } catch {
+            // ignore
+          }
+          setAuthError(detail ? `Sign in required. ${detail}` : "Sign in required.");
+        }
         setAggregatedData([]);
         setAggregatedLoading(false);
         return;
