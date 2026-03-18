@@ -1,16 +1,4 @@
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
-
-function passthrough(_req: NextRequest) {
-  return NextResponse.next();
-}
-
-// NOTE: Clerk middleware removed to bypass auth entirely.
-// This is intentionally a total passthrough so we can confirm
-// the rest of the app (including the dashboard data flow).
-export default function middleware(_req: NextRequest) {
-  return passthrough(_req);
-}
+import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 
 export const config = {
   matcher: [
@@ -18,3 +6,12 @@ export const config = {
     "/(api|trpc)(.*)",
   ],
 };
+
+// Protect all `/portal*` routes. Unauthenticated users get redirected to Clerk sign-in.
+const isPortalRoute = createRouteMatcher(["/portal", "/portal/(.*)"]);
+
+export default clerkMiddleware(async (auth, req) => {
+  if (isPortalRoute(req)) {
+    await auth.protect();
+  }
+}, { signInUrl: "/sign-in" });

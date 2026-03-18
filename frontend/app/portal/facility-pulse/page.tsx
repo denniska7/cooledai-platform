@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
+import { useAuth } from "@clerk/nextjs";
 
 function LeafIcon({ className }: { className?: string }) {
   return (
@@ -16,10 +17,21 @@ export default function FacilityPulsePage() {
   const [efficiencyDelta, setEfficiencyDelta] = useState<number | null>(null);
   const [efficiencyGain, setEfficiencyGain] = useState<number | null>(null);
 
+  const { getToken } = useAuth();
+
   const fetchStats = useCallback(async () => {
     try {
-      const res = await api.getStats();
-      if (!res.ok) return;
+      const token = await getToken();
+      if (!token) return;
+
+      const res = await api.getStats(token);
+      if (!res.ok) {
+        if (res.status === 401) {
+          setEfficiencyDelta(null);
+          setEfficiencyGain(null);
+        }
+        return;
+      }
       const data = await res.json();
       const pilotTemp = data.pilot_node?.temp_c;
       const baselineTemp = data.baseline_node?.temp_c;
@@ -30,7 +42,7 @@ export default function FacilityPulsePage() {
     } catch {
       // ignore
     }
-  }, []);
+  }, [getToken]);
 
   useEffect(() => {
     fetchStats();

@@ -15,6 +15,7 @@ import {
   ReferenceLine,
 } from "recharts";
 import { api } from "@/lib/api";
+import { useAuth } from "@clerk/nextjs";
 
 // Match telemetry heartbeat (5s) so UI refreshes on each new packet
 const STATS_POLL_MS = 5_000;
@@ -48,6 +49,9 @@ type PulsePoint = { time: string; pilot: number; baseline: number; delta?: numbe
 function PortalOverviewContent() {
   const searchParams = useSearchParams();
   const [showSuccessBanner, setShowSuccessBanner] = useState(false);
+
+  const { getToken } = useAuth();
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const [efficiencyGain, setEfficiencyGain] = useState<number | null>(null);
   const [efficiencyLoading, setEfficiencyLoading] = useState(true);
@@ -86,12 +90,28 @@ function PortalOverviewContent() {
       localStorage.removeItem(PULSE_STORAGE_KEY);
       setPulseData([]);
     }
-  }, []);
+  }, [getToken]);
 
   const fetchStats = useCallback(async () => {
     try {
-      const res = await api.getStats();
+      setAuthError(null);
+      const token = await getToken();
+      if (!token) {
+        setAuthError("Sign in required.");
+        setEfficiencyLoading(false);
+        setEfficiencyGain(null);
+        setHasLiveData(false);
+        return;
+      }
+
+      const res = await api.getStats(token);
       if (!res.ok) {
+        if (res.status === 401) {
+          setAuthError("Sign in required.");
+          setEfficiencyLoading(false);
+          setEfficiencyGain(null);
+          setHasLiveData(false);
+        }
         console.warn("[CooledAI] /api/v1/stats returned", res.status);
         return;
       }
@@ -135,8 +155,12 @@ function PortalOverviewContent() {
       }
     } catch (err) {
       console.error("[CooledAI] stats fetch failed:", err);
+      setAuthError("Sign in required.");
+      setEfficiencyLoading(false);
+      setEfficiencyGain(null);
+      setHasLiveData(false);
     }
-  }, []);
+  }, [getToken]);
 
   useEffect(() => {
     fetchStats();
@@ -148,7 +172,15 @@ function PortalOverviewContent() {
   const fetchAggregated = useCallback(async (hours: 6 | 24) => {
     setAggregatedLoading(true);
     try {
-      const res = await api.getThermalHistory(hours);
+      const token = await getToken();
+      if (!token) {
+        setAuthError("Sign in required.");
+        setAggregatedData([]);
+        setAggregatedLoading(false);
+        return;
+      }
+
+      const res = await api.getThermalHistory(hours, token);
       if (!res.ok) {
         setAggregatedData([]);
         setAggregatedLoading(false);
@@ -166,11 +198,12 @@ function PortalOverviewContent() {
         }))
       );
     } catch {
+      setAuthError("Sign in required.");
       setAggregatedData([]);
     } finally {
       setAggregatedLoading(false);
     }
-  }, []);
+  }, [getToken]);
 
   useEffect(() => {
     if (pulseRange === "6h") fetchAggregated(6);
@@ -249,7 +282,9 @@ function PortalOverviewContent() {
             Live Efficiency Gain
           </p>
           <p className="text-3xl font-bold text-[#22c55e] tabular-nums">
-            {efficiencyLoading ? (
+            {authError ? (
+              authError
+            ) : efficiencyLoading ? (
               <span className="inline-flex items-center gap-2 text-white/70">
                 <svg className="animate-spin h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
                   <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />

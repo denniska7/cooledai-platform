@@ -3,18 +3,31 @@
 import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { api } from "@/lib/api";
+import { useAuth } from "@clerk/nextjs";
 
 export function LiveSystemPulse() {
   const [temp, setTemp] = useState<number | null>(null);
   const [powerSaved, setPowerSaved] = useState(0);
   const [isLive, setIsLive] = useState(false);
 
+  const { getToken } = useAuth();
+
   useEffect(() => {
     let mounted = true;
     const poll = async () => {
       try {
-        const res = await api.getStats();
-        if (!res.ok || !mounted) return;
+        const token = await getToken();
+        if (!token) return;
+
+        const res = await api.getStats(token);
+        if (!res.ok || !mounted) {
+          if (res.status === 401) {
+            setIsLive(false);
+            setTemp(null);
+            setPowerSaved(0);
+          }
+          return;
+        }
         const data = await res.json();
         console.log("[CooledAI Pulse] stats:", data.has_live_data, "pilot_temp:", data.pilot_node?.temp_c, "watts:", data.power_reclaimed_watts);
         const t = data.pilot_node?.temp_c;
@@ -33,7 +46,7 @@ export function LiveSystemPulse() {
       mounted = false;
       clearInterval(id);
     };
-  }, []);
+  }, [getToken]);
 
   const items = [
     { label: "Current Temp", value: temp != null ? `${temp.toFixed(1)}°C` : "—", unit: "" },
