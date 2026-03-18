@@ -1668,10 +1668,17 @@ async def get_thermal_history(
     """Aggregated hourly thermal averages for 6H/24H charts.
     Returns buckets: [{ hour_ts, hour_label, pilot_avg, baseline_avg }, ...]
     """
-    history = list(_thermal_history.get(owner_id, []))
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
     now = time.time()
     cutoff = now - (hours * 3600)
     points = [(ts, pt, bt) for ts, pt, bt in history if ts >= cutoff]
+
+    # If there is no data in the last 6 hours, tell the dashboard explicitly
+    # (otherwise the UI can show "Calculating…" even when the backend is healthy).
+    recent_cutoff = now - (6 * 3600)
+    recent_points = [(ts, pt, bt) for ts, pt, bt in history if ts >= recent_cutoff]
+    if not recent_points:
+        return {"buckets": [], "hours": hours, "message": "No recent data"}
     if not points:
         return {"buckets": [], "hours": hours}
 
@@ -1707,6 +1714,48 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
     The master key sees aggregated data across all tenants.
     """
     now = time.time()
+
+    # If there is no thermal history in the last 6 hours, return a clear
+    # message so the frontend doesn't get stuck on "Calculating…".
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    recent_cutoff = now - (6 * 3600)
+    recent_points = [(ts, pt, bt) for ts, pt, bt in history if ts >= recent_cutoff]
+    if not recent_points:
+        return {
+            "owner_id": owner_id,
+            "efficiency_gain_pct": 0.0,
+            "last_telemetry_at": None,
+            "power_reclaimed_kwh": 0.0,
+            "power_reclaimed_watts": 0.0,
+            "estimated_annual_savings_usd": 0.0,
+            "usd_per_kwh": _USD_PER_KWH,
+            "uptime_hours": 0.0,
+            "has_live_data": False,
+            "message": "No recent data",
+            "pilot_node": {
+                "node_id": "none",
+                "fan_rpm": 0.0,
+                "fan_power_watts": 0.0,
+                "raw_fan_wattage": None,
+                "temp_c": None,
+                "last_seen_s_ago": None,
+            },
+            "baseline_node": {
+                "node_id": "none",
+                "fan_rpm": 0.0,
+                "fan_power_watts": 0.0,
+                "raw_fan_wattage": None,
+                "temp_c": None,
+                "last_seen_s_ago": None,
+                "source": "unknown",
+            },
+            "formula": "Power = (Fan_RPM / Max_RPM)^3 * Rated_Fan_Watts * Num_Fans",
+            "config": {
+                "max_fan_rpm": _MAX_FAN_RPM,
+                "rated_fan_watts": _RATED_FAN_WATTS,
+                "num_fans": _NUM_FANS,
+            },
+        }
 
     all_nodes = _tenant_telemetry.get(owner_id, {})
 

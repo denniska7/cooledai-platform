@@ -40,6 +40,7 @@ type LiveStats = {
   estimated_annual_savings_usd: number;
   has_live_data: boolean;
   uptime_hours: number;
+  message?: string;
   pilot_node: { node_id: string; fan_rpm: number; fan_power_watts: number; temp_c: number | null; last_seen_s_ago: number | null };
   baseline_node: { node_id: string; fan_rpm: number; fan_power_watts: number; temp_c: number | null; source: string; last_seen_s_ago: number | null };
 };
@@ -66,6 +67,7 @@ function PortalOverviewContent() {
   const [aggregatedData, setAggregatedData] = useState<PulsePoint[]>([]);
   const [aggregatedLoading, setAggregatedLoading] = useState(false);
   const [pulseData, setPulseData] = useState<PulsePoint[]>([]);
+  const [serverMessage, setServerMessage] = useState<string | null>(null);
 
   // Force fresh data on mount: clear stale localStorage (82.1%, 0, old versions)
   useEffect(() => {
@@ -95,6 +97,7 @@ function PortalOverviewContent() {
   const fetchStats = useCallback(async () => {
     try {
       setAuthError(null);
+      setServerMessage(null);
       const token = await getToken();
       if (!token) {
         setAuthError("Sign in required.");
@@ -117,6 +120,21 @@ function PortalOverviewContent() {
       }
       const data: LiveStats = await res.json();
       console.log("[CooledAI] stats response:", JSON.stringify(data, null, 2));
+
+      if (data.message === "No recent data") {
+        setServerMessage("No recent data");
+        setEfficiencyLoading(false);
+        setEfficiencyGain(null);
+        setHasLiveData(false);
+        setPowerReclaimed(0);
+        setAnnualSavings(0);
+        setPilotWatts(0);
+        setBaselineWatts(0);
+        setPilotNodeId("");
+        setBaselineNodeId("");
+        setPulseData([]);
+        return;
+      }
 
       // Efficiency: (Baseline_Temp - Pilot_Temp) / Baseline_Temp * 100 from live ST550 data
       const pilotTemp = data.pilot_node.temp_c;
@@ -284,6 +302,8 @@ function PortalOverviewContent() {
           <p className="text-3xl font-bold text-[#22c55e] tabular-nums">
             {authError ? (
               authError
+            ) : serverMessage ? (
+              serverMessage
             ) : efficiencyLoading ? (
               <span className="inline-flex items-center gap-2 text-white/70">
                 <svg className="animate-spin h-6 w-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" aria-hidden="true">
@@ -297,9 +317,11 @@ function PortalOverviewContent() {
             )}
           </p>
           <p className="text-xs text-white/40 mt-1">
-            {hasLiveData
-              ? `${pilotWatts.toFixed(0)}W CooledAI vs ${baselineWatts.toFixed(0)}W Control`
-              : "awaiting telemetry…"}
+            {serverMessage
+              ? serverMessage
+              : hasLiveData
+                ? `${pilotWatts.toFixed(0)}W CooledAI vs ${baselineWatts.toFixed(0)}W Control`
+                : "awaiting telemetry…"}
           </p>
         </motion.div>
         <motion.div
