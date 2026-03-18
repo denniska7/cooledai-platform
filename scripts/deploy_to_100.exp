@@ -9,6 +9,7 @@ set script_dir [file dirname [info script]]
 set project_root [file dirname $script_dir]
 
 spawn scp -o StrictHostKeyChecking=no $project_root/scripts/st550_telemetry.py $project_root/scripts/start_telemetry.sh $host:~/
+spawn scp -o StrictHostKeyChecking=no $project_root/scripts/llama_workload_scheduler.py $project_root/scripts/predictive_engine.py $host:~/
 expect "password:"
 send "$pass\r"
 expect eof
@@ -17,7 +18,7 @@ spawn ssh -o StrictHostKeyChecking=no $host
 expect "password:"
 send "$pass\r"
 expect -re {\$ |# }
-send "sudo apt-get update -qq && sudo apt-get install -y -qq python3-pynvml 2>/dev/null; sudo apt-get install -y -qq python3-pip 2>/dev/null; sudo python3 -m pip install --break-system-packages -q nvidia-ml-py3 requests 2>/dev/null; echo deps_done\r"
+send "sudo apt-get update -qq && sudo apt-get install -y -qq python3-pynvml 2>/dev/null; sudo apt-get install -y -qq python3-pip 2>/dev/null; sudo python3 -m pip install --break-system-packages -q nvidia-ml-py3 requests psutil 2>/dev/null; echo deps_done\r"
 expect {
     "password for" { send "$pass\r"; exp_continue }
     -re {\$ |# } { }
@@ -30,7 +31,13 @@ expect {
     timeout { puts "Timeout"; exit 1 }
 }
 expect -re {\$ |# }
-send "sleep 12 && tail -15 /var/log/cooledai_telemetry.log 2>/dev/null || tail -15 /tmp/cooledai_telemetry.log\r"
+send "pkill -f workload_sim.py 2>/dev/null || true; pkill -f llama_workload_scheduler.py 2>/dev/null || true; pkill -f predictive_engine.py 2>/dev/null || true\r"
+expect -re {\$ |# }
+send "nohup python3 ~/predictive_engine.py > /tmp/cooledai_predictive_engine.log 2>&1 &\r"
+expect -re {\$ |# }
+send "nohup python3 ~/llama_workload_scheduler.py > /tmp/cooledai_llama_workload.log 2>&1 &\r"
+expect -re {\$ |# }
+send "sleep 12 && tail -30 /var/log/cooledai_telemetry.log 2>/dev/null || tail -30 /tmp/cooledai_telemetry.log\r"
 expect -re {\$ |# }
 send "exit\r"
 expect eof
