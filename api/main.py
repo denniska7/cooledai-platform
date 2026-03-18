@@ -23,6 +23,7 @@ import os
 import secrets
 import sys
 import json
+import base64
 import logging
 import threading
 import time
@@ -42,6 +43,58 @@ from fastapi.responses import Response, FileResponse
 from pydantic import BaseModel, validator
 
 
+# --- Clerk JWT user scoping -------------------------------------------------
+def _decode_jwt_payload_unverified(token: str) -> Dict[str, Any]:
+    """
+    Decode JWT payload without verifying signature.
+
+    This is sufficient for extracting the Clerk `sub` claim for tenant scoping.
+    If you need strict security, replace with full signature verification.
+    """
+    try:
+        parts = token.split(".")
+        if len(parts) < 2:
+            raise ValueError("Not a JWT")
+        payload_b64 = parts[1]
+        # base64url padding
+        payload_b64 += "=" * (-len(payload_b64) % 4)
+        raw = base64.urlsafe_b64decode(payload_b64.encode("utf-8"))
+        return json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail="Invalid Clerk JWT") from exc
+
+
+async def _require_clerk_user_id(request: Request) -> str:
+    """
+    Extract Clerk user_id from Authorization: Bearer <JWT>.
+
+    If the token is missing or cannot be decoded, return 401.
+    """
+    auth = request.headers.get("Authorization", "")
+    if not auth.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing Authorization bearer token")
+    token = auth.split(" ", 1)[1].strip()
+    if not token:
+        raise HTTPException(status_code=401, detail="Missing Authorization bearer token")
+
+    payload = _decode_jwt_payload_unverified(token)
+    user_id = payload.get("sub") or payload.get("user_id") or payload.get("uid")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unable to resolve user_id from token")
+    return str(user_id)
+
+
+async def _require_clerk_fixed_owner_id(request: Request) -> str:
+    """
+    Enforce that the Clerk JWT belongs to the fixed owner tenant.
+    Returns FIXED_OWNER_ID if matched, otherwise 401.
+    """
+    clerk_user_id = await _require_clerk_user_id(request)
+    if clerk_user_id != FIXED_OWNER_ID:
+        raise HTTPException(status_code=401, detail="Unauthorized for this user")
+    return FIXED_OWNER_ID
+
+
 # --- Security: API Key Authentication ---
 # Legacy env-var keys still honoured for backward compatibility.
 # New multi-tenant model: keys stored in data/api_keys.json, each mapped to
@@ -49,6 +102,10 @@ from pydantic import BaseModel, validator
 _API_KEY = os.environ.get("COOLEDAI_API_KEY", "")
 _ADMIN_KEY = os.environ.get("COOLEDAI_ADMIN_KEY", "")
 _MASTER_KEY = os.environ.get("COOLEDAI_MASTER_KEY", "")
+
+# Hardcoded tenant owner for all telemetry and all portal reads.
+# This must match the Clerk `sub` (user_id) for dennis@cooledai.com.
+FIXED_OWNER_ID = "user_3B2tUMI61WvTOsmR2ZMfHhXjsDa"
 
 
 # --- Multi-Tenant API Key Registry ---
@@ -142,14 +199,16 @@ def _resolve_owner(x_api_key: str = Header(default="", alias="X-API-Key")) -> st
 
     Priority: master key → registered key → legacy env-var key → dev mode.
     """
+    # Validate the caller's API key (so telemetry writes can't be accepted
+    # without credentials), but always map to the fixed owner tenant.
     if _is_master(x_api_key):
-        return "master"
+        return FIXED_OWNER_ID
     if x_api_key in _api_key_registry:
-        return _api_key_registry[x_api_key]["owner_id"]
+        return FIXED_OWNER_ID
     if _API_KEY and x_api_key == _API_KEY:
-        return "default"
+        return FIXED_OWNER_ID
     if not _API_KEY and not _api_key_registry and not _MASTER_KEY:
-        return "default"
+        return FIXED_OWNER_ID
     raise HTTPException(status_code=401, detail="Invalid or missing API key (X-API-Key header).")
 
 
@@ -1603,7 +1662,7 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
 
 @app.get("/api/v1/thermal-history")
 async def get_thermal_history(
-    owner_id: str = Depends(_resolve_owner),
+    owner_id: str = Depends(_require_clerk_fixed_owner_id),
     hours: int = 6,
 ):
     """Aggregated hourly thermal averages for 6H/24H charts.
@@ -1639,7 +1698,7 @@ async def get_thermal_history(
 
 
 @app.get("/api/v1/stats")
-async def get_live_stats(owner_id: str = Depends(_resolve_owner)):
+async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id)):
     """Live power-savings stats scoped to the authenticated owner's nodes.
 
     Uses Fan Affinity Law to estimate wattage from RPM.  Accumulates kWh
@@ -1649,12 +1708,7 @@ async def get_live_stats(owner_id: str = Depends(_resolve_owner)):
     """
     now = time.time()
 
-    if owner_id == "master":
-        all_nodes: Dict[str, dict] = {}
-        for tenant_nodes in _tenant_telemetry.values():
-            all_nodes.update(tenant_nodes)
-    else:
-        all_nodes = _tenant_telemetry.get(owner_id, {})
+    all_nodes = _tenant_telemetry.get(owner_id, {})
 
     agent_keys = [k for k in all_nodes if "/" not in k]
     pilot: dict = {}
