@@ -15,7 +15,11 @@ export default function PortalLayout({
 
   useEffect(() => {
     if (!isLoaded) return;
-    if (!userId) router.replace("/sign-in");
+    if (!userId) {
+      // Debounce to prevent a brief `userId === null` flicker right after sign-in.
+      const t = setTimeout(() => router.replace("/sign-in"), 400);
+      return () => clearTimeout(t);
+    }
   }, [isLoaded, userId, router]);
 
   if (!isLoaded) {
@@ -29,7 +33,7 @@ export default function PortalLayout({
   if (!userId) {
     return (
       <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center text-white/70">
-        Redirecting to sign-in…
+        Sign in required.
       </div>
     );
   }
