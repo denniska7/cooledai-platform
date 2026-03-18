@@ -2,11 +2,9 @@
 """
 ST550 Comparative Demo — Llama Workload Scheduler
 
-Runs on BOTH servers (.100 Pilot and .101 Control) and continuously applies
-three workload tiers on a fixed cadence:
-  - Light:     every 5 minutes
-  - Heavier:   every 30 minutes
-  - Difficult: every 60 minutes
+Runs on BOTH servers (.100 Pilot and .101 Control) with IDENTICAL workload:
+  - Wall-clock aligned: LIGHT at :00, :05, :10... HEAVIER at :00, :30 DIFFICULT at :00 (UTC)
+  - Same prompt every run: cycle index derived from timestamp so both nodes pick the same prompt
 
 Each tier runs 2 concurrent Ollama generate requests (assumes 2 GPUs / can
 utilize both P2000s with parallel inference).
@@ -25,11 +23,10 @@ Ollama contract:
 from __future__ import annotations
 
 import os
-import random
 import threading
 import time
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import psutil  # used only for "CPU pressure" logging / sanity fallback
 import requests
@@ -115,28 +112,37 @@ def _ollama_generate(
         return None
 
 
+def _prompts_for_cycle(prompts: List[str], cycle: int, k: int) -> List[str]:
+    """Deterministic prompt selection so both nodes run the same prompts. k = THREADS_PER_BATCH."""
+    n = len(prompts)
+    if not n or k <= 0:
+        return []
+    return [prompts[(cycle + i) % n] for i in range(min(k, n))]
+
+
 def _run_tier(
     session: requests.Session,
     tier_name: str,
-    prompts: list[str],
+    prompts: List[str],
+    run_ts: float,
+    interval_sec: float,
     *,
     num_predict: int,
     temperature: float,
 ) -> None:
     """
-    Run one tier execution:
-      - choose prompts
-      - launch THREADS_PER_BATCH concurrent generations
-      - wait for all
+    Run one tier execution with deterministic prompts (same on both nodes).
+    run_ts = wall-clock boundary time for this run; cycle = run_ts // interval_sec.
     """
-    chosen = random.sample(prompts, k=min(len(prompts), THREADS_PER_BATCH))
+    cycle = int(run_ts // interval_sec)
+    chosen = _prompts_for_cycle(prompts, cycle, THREADS_PER_BATCH)
     if not chosen:
         return
 
     cpu_pct = psutil.cpu_percent(interval=0.1)
     print(
         f"[{tier_name}] starting at {datetime.utcnow().isoformat()}Z "
-        f"threads={len(chosen)} model={OLLAMA_MODEL} cpu%~{cpu_pct:.0f}"
+        f"cycle={cycle} threads={len(chosen)} model={OLLAMA_MODEL} cpu%~{cpu_pct:.0f}"
     )
 
     _write_load(1.0)
@@ -170,35 +176,40 @@ def _run_tier(
         _write_load(0.0)
 
 
+def _next_aligned(now: float, interval_sec: float) -> float:
+    """Next wall-clock boundary (epoch-aligned) so both nodes run at the same time."""
+    return (int(now // interval_sec) + 1) * interval_sec
+
+
 def main() -> None:
     print(
-        "[scheduler] starting. "
+        "[scheduler] starting (identical workload: wall-clock aligned + deterministic prompts). "
         f"OLLAMA_URL={OLLAMA_URL} OLLAMA_MODEL={OLLAMA_MODEL} "
         f"THREADS_PER_BATCH={THREADS_PER_BATCH} "
         f"intervals: light={LIGHT_EVERY_SEC}s heavier={HEAVIER_EVERY_SEC}s difficult={DIFFICULT_EVERY_SEC}s"
     )
 
-    next_light = time.time()
-    next_heavier = time.time()
-    next_difficult = time.time()
-
-    # If you want an immediate "warm start" rather than waiting a full interval,
-    # set next_* = time.time().
+    now = time.time()
+    next_light = _next_aligned(now, LIGHT_EVERY_SEC)
+    next_heavier = _next_aligned(now, HEAVIER_EVERY_SEC)
+    next_difficult = _next_aligned(now, DIFFICULT_EVERY_SEC)
 
     with requests.Session() as session:
         while True:
             now = time.time()
 
-            # Run tiers in priority order if multiple are due.
+            # Run tiers in priority order if multiple are due (same order on both nodes).
             if now >= next_difficult:
                 _run_tier(
                     session,
                     "DIFFICULT",
                     DIFFICULT_PROMPTS,
+                    next_difficult,
+                    DIFFICULT_EVERY_SEC,
                     num_predict=450,
                     temperature=0.7,
                 )
-                next_difficult = now + DIFFICULT_EVERY_SEC
+                next_difficult = _next_aligned(now, DIFFICULT_EVERY_SEC)
                 continue
 
             if now >= next_heavier:
@@ -206,10 +217,12 @@ def main() -> None:
                     session,
                     "HEAVIER",
                     HEAVIER_PROMPTS,
+                    next_heavier,
+                    HEAVIER_EVERY_SEC,
                     num_predict=220,
                     temperature=0.55,
                 )
-                next_heavier = now + HEAVIER_EVERY_SEC
+                next_heavier = _next_aligned(now, HEAVIER_EVERY_SEC)
                 continue
 
             if now >= next_light:
@@ -217,10 +230,12 @@ def main() -> None:
                     session,
                     "LIGHT",
                     LIGHT_PROMPTS,
+                    next_light,
+                    LIGHT_EVERY_SEC,
                     num_predict=80,
                     temperature=0.25,
                 )
-                next_light = now + LIGHT_EVERY_SEC
+                next_light = _next_aligned(now, LIGHT_EVERY_SEC)
                 continue
 
             time.sleep(POLL_INTERVAL_SEC)
