@@ -133,8 +133,9 @@ ExecStart=/usr/bin/python3 /opt/cooledai/cooledai_agent.py \
     --node-id ${COOLEDAI_NODE_ID} \
     --api-url ${COOLEDAI_API_URL}
 Restart=always
-RestartSec=10
-WatchdogSec=300
+RestartSec=30
+WatchdogSec=600
+StartLimitIntervalSec=0
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=cooledai-agent

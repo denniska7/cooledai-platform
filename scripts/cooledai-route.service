@@ -1,0 +1,12 @@
+[Unit]
+Description=CooledAI ST550 — Lock default route to data port (eno1np0)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/cooledai/enforce_st550_route.sh
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

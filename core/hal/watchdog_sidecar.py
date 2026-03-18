@@ -11,7 +11,7 @@ Behavior:
 - Runs indefinitely; suitable for systemd/supervisor.
 
 Environment:
-  COOLEDAI_API_URL        - API base URL (default: http://localhost:8000)
+  COOLEDAI_API_URL        - API base URL (default: https://proactive-creativity-production.up.railway.app)
   COOLEDAI_API_TIMEOUT    - Seconds until takeover (default: 30)
   COOLEDAI_REDFISH_URLS   - Comma-separated Redfish base URLs (e.g. https://192.168.1.10)
   COOLEDAI_REDFISH_USER   - Redfish username
@@ -103,7 +103,10 @@ def _redfish_patch_cooling(
 # --- Main Loop ---
 
 def main() -> int:
-    api_url = _env("COOLEDAI_API_URL", "http://localhost:8000")
+    api_url = _env(
+        "COOLEDAI_API_URL",
+        "https://proactive-creativity-production.up.railway.app",
+    )
     health_path = _env("COOLEDAI_HEALTH_PATH", "/health")
     api_timeout_sec = _env_int("COOLEDAI_API_TIMEOUT", 30)
     redfish_urls_str = _env("COOLEDAI_REDFISH_URLS", "")

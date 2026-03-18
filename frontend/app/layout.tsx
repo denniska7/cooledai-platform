@@ -59,13 +59,30 @@ export default function RootLayout({
             if(!setup()) var id=setInterval(function(){ if(setup()) clearInterval(id); }, 100);
           })();`}
         </Script>
-        <ClerkProvider
-          publishableKey={process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY!}
-          appearance={{ baseTheme: dark }}
-          signInUrl="/portal/login"
-        >
-          {content}
-        </ClerkProvider>
+        {(() => {
+          const key = process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+
+          const isBypass = !key || key === "pk_test_cooledai_bypass";
+          if (isBypass) {
+            return content;
+          }
+
+          // If the key is explicitly the literal string "invalid", avoid
+          // crashing the app. This allows /portal/login to render and show
+          // Clerk's UI/error handling.
+          const publishableKey =
+            key === "invalid" ? "pk_test_cooledai_bypass" : key;
+
+          return (
+            <ClerkProvider
+              publishableKey={publishableKey}
+              appearance={{ baseTheme: dark }}
+              signInUrl="/portal/login"
+            >
+              {content}
+            </ClerkProvider>
+          );
+        })()}
       </body>
     </html>
   );

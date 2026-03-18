@@ -3,7 +3,21 @@
 import { useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { UserButton, OrganizationSwitcher } from "@clerk/nextjs";
+import dynamic from "next/dynamic";
+
+const HAS_CLERK =
+  !!(
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY &&
+    process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY !==
+      "pk_test_cooledai_bypass"
+  );
+
+const UserButton = HAS_CLERK
+  ? dynamic(() => import("@clerk/nextjs").then((m) => m.UserButton), { ssr: false })
+  : () => null;
+const OrganizationSwitcher = HAS_CLERK
+  ? dynamic(() => import("@clerk/nextjs").then((m) => m.OrganizationSwitcher), { ssr: false })
+  : () => null;
 
 const navItems = [
   { href: "/portal", label: "Overview" },
@@ -49,21 +63,29 @@ export function PortalSidebar() {
         })}
       </nav>
       <div className="p-4 border-t border-white/10 space-y-2">
-        <OrganizationSwitcher
-          hidePersonal
-          afterCreateOrganizationUrl="/portal"
-          afterSelectOrganizationUrl="/portal"
-          appearance={{
-            elements: {
-              rootBox: "w-full",
-              organizationSwitcherTrigger: "w-full justify-between rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-white/80 hover:bg-white/10",
-            },
-          }}
-        />
-        <div className="flex items-center justify-between gap-2">
-          <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: "w-8 h-8" } }} />
-          <span className="text-xs text-white/50 truncate">Account</span>
-        </div>
+        {HAS_CLERK ? (
+          <>
+            <OrganizationSwitcher
+              hidePersonal
+              afterCreateOrganizationUrl="/portal"
+              afterSelectOrganizationUrl="/portal"
+              appearance={{
+                elements: {
+                  rootBox: "w-full",
+                  organizationSwitcherTrigger: "w-full justify-between rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-white/80 hover:bg-white/10",
+                },
+              }}
+            />
+            <div className="flex items-center justify-between gap-2">
+              <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: "w-8 h-8" } }} />
+              <span className="text-xs text-white/50 truncate">Account</span>
+            </div>
+          </>
+        ) : (
+          <div className="rounded-lg border border-white/20 bg-white/5 px-3 py-2 text-xs text-white/50">
+            Demo Mode — no login
+          </div>
+        )}
       </div>
     </>
   );
@@ -86,7 +108,11 @@ export function PortalSidebar() {
           <img src="/logo.png" alt="CooledAI Logo" style={{ height: "32px", width: "auto" }} className="block" />
           CooledAI
         </Link>
-        <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: "w-8 h-8" } }} />
+        {HAS_CLERK ? (
+          <UserButton afterSignOutUrl="/" appearance={{ elements: { avatarBox: "w-8 h-8" } }} />
+        ) : (
+          <span className="text-xs text-white/50">Demo Mode</span>
+        )}
       </header>
 
       {mobileOpen && (
