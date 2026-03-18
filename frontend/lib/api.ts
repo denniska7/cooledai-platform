@@ -75,9 +75,14 @@ export const api = {
   // --- Read (API key sent but not required by server for GET) ---
   getOptimize: () => apiFetch("/optimize"),
   getState: () => apiFetch("/state"),
-  getStats: () => apiFetch("/api/v1/stats"),
-  getThermalHistory: (hours: number) =>
-    apiFetch(`/api/v1/thermal-history?hours=${hours}`),
+  getStats: (token?: string | null) =>
+    apiFetch("/api/v1/stats", {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    }),
+  getThermalHistory: (hours: number, token?: string | null) =>
+    apiFetch(`/api/v1/thermal-history?hours=${hours}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    }),
 
   // --- Write (API key required) ---
   postOptimize: (body: unknown) =>
