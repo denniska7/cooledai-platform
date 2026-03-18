@@ -361,9 +361,11 @@ app = FastAPI(
 # Explicit allowlist for frontend origins. If allow_credentials=True, we must
 # not use allow_origins=["*"].
 _cors_allowed_origins = [
-    "https://cooledai.vercel.app",
+    "https://www.cooledai.com",
+    "https://cooledai.com",
+    "https://api.cooledai.com",
     "https://app.cooledai.com",
-    "http://localhost:3000",
+    "https://cooledai-platform.vercel.app",
 ]
 app.add_middleware(
     CORSMiddleware,
