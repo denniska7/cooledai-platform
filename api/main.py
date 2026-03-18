@@ -306,19 +306,17 @@ app = FastAPI(
 )
 
 # CORS
-# By default we keep permissive CORS for robustness, but you can restrict it in
-# production by setting COOLEDAI_CORS_ORIGINS (comma-separated), e.g.
-#   COOLEDAI_CORS_ORIGINS="https://your-app.vercel.app,https://www.your-domain.com"
-_cors_origins_raw = os.environ.get("COOLEDAI_CORS_ORIGINS", "*").strip()
-_cors_allowed_origins = (
-    ["*"]
-    if _cors_origins_raw == "*" or not _cors_origins_raw
-    else [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
-)
+# Explicit allowlist for frontend origins. If allow_credentials=True, we must
+# not use allow_origins=["*"].
+_cors_allowed_origins = [
+    "https://cooledai.vercel.app",
+    "https://app.cooledai.com",
+    "http://localhost:3000",
+]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_allowed_origins,
-    allow_credentials=False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
