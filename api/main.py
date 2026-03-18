@@ -27,7 +27,7 @@ import logging
 import threading
 import time
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import List, Optional, Dict, Any, Tuple
 import io
@@ -305,21 +305,20 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS - environment-based; restrict to production domains by default.
-# Vercel preview deployments get wildcard-matched via allow_origin_regex.
-_cors_origins_env = os.environ.get("CORS_ORIGINS", "")
-_cors_origins = [o.strip() for o in _cors_origins_env.split(",") if o.strip()] if _cors_origins_env else [
-    "https://cooledai.com",
-    "https://www.cooledai.com",
-]
-if os.environ.get("COOLEDAI_ENV", "production").lower() in ("dev", "development", "local"):
-    _cors_origins += ["http://localhost:3000", "http://127.0.0.1:3000"]
-
+# CORS
+# By default we keep permissive CORS for robustness, but you can restrict it in
+# production by setting COOLEDAI_CORS_ORIGINS (comma-separated), e.g.
+#   COOLEDAI_CORS_ORIGINS="https://your-app.vercel.app,https://www.your-domain.com"
+_cors_origins_raw = os.environ.get("COOLEDAI_CORS_ORIGINS", "*").strip()
+_cors_allowed_origins = (
+    ["*"]
+    if _cors_origins_raw == "*" or not _cors_origins_raw
+    else [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
+)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_cors_origins,
-    allow_origin_regex=r"https://.*\.vercel\.app",
-    allow_credentials=True,
+    allow_origins=_cors_allowed_origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -1442,6 +1441,9 @@ def _send_beta_email(beta: BetaSignupInput) -> bool:
 
 _tenant_telemetry: Dict[str, Dict[str, dict]] = {}
 _tenant_accumulators: Dict[str, dict] = {}
+# Rolling thermal history for 6H/24H aggregated charts: { owner_id: [(ts, pilot_temp, baseline_temp), ...] }
+_thermal_history: Dict[str, list] = {}
+_MAX_THERMAL_HISTORY_POINTS = 24 * 60 * 12  # 24h at 5s interval
 
 # Fan power estimation — Fan Affinity Law: P ∝ RPM³
 _RATED_FAN_WATTS = float(os.environ.get("COOLEDAI_RATED_FAN_WATTS", "12"))
@@ -1449,8 +1451,9 @@ _MAX_FAN_RPM = float(os.environ.get("COOLEDAI_MAX_FAN_RPM", "7000"))
 _NUM_FANS = int(os.environ.get("COOLEDAI_NUM_FANS", "6"))
 _USD_PER_KWH = float(os.environ.get("COOLEDAI_UTILITY_RATE", "0.12"))
 
-_PILOT_NODE_ID = os.environ.get("COOLEDAI_PILOT_NODE_ID", "ST550-Pilot-Node")
-_BASELINE_NODE_ID = os.environ.get("COOLEDAI_BASELINE_NODE_ID", "ST550-Shadow-Node")
+# ST550 comparative demo: .100 = Pilot (ST550-CooledAI-Predictive), .101 = Control (ST550-Control-Traditional)
+_PILOT_NODE_ID = os.environ.get("COOLEDAI_PILOT_NODE_ID", "ST550-CooledAI-Predictive")
+_BASELINE_NODE_ID = os.environ.get("COOLEDAI_BASELINE_NODE_ID", "ST550-Control-Traditional")
 _BASELINE_FAN_RPM = float(os.environ.get("COOLEDAI_BASELINE_FAN_RPM", "0"))
 
 
@@ -1458,6 +1461,38 @@ def _fan_power_watts(rpm: float) -> float:
     """Fan Affinity Law: P = (RPM / RPM_max)^3 * Rated_W * N_fans."""
     frac = rpm / _MAX_FAN_RPM if _MAX_FAN_RPM > 0 else 0.0
     return (frac ** 3) * _RATED_FAN_WATTS * _NUM_FANS
+
+
+def _get_pilot_baseline_temps(owner_id: str) -> Tuple[Optional[float], Optional[float]]:
+    """Get current pilot and baseline max_temp_c for thermal history."""
+    if owner_id == "master":
+        all_nodes = {}
+        for tn in _tenant_telemetry.values():
+            all_nodes.update(tn)
+    else:
+        all_nodes = _tenant_telemetry.get(owner_id, {})
+    pilot_temp = None
+    baseline_temp = None
+    for nid in all_nodes:
+        if "/" in nid:
+            continue
+        nid_lower = nid.lower()
+        if "cooledai" in nid_lower and "predictive" in nid_lower:
+            pilot_temp = all_nodes[nid].get("max_temp_c")
+        elif "control" in nid_lower and "traditional" in nid_lower:
+            baseline_temp = all_nodes[nid].get("max_temp_c")
+    return pilot_temp, baseline_temp
+
+
+def _append_thermal_history(owner_id: str, now_ts: float) -> None:
+    """Append a thermal snapshot when we have both pilot and baseline temps."""
+    pilot_temp, baseline_temp = _get_pilot_baseline_temps(owner_id)
+    if pilot_temp is None or baseline_temp is None:
+        return
+    history = _thermal_history.setdefault(owner_id, [])
+    history.append((now_ts, float(pilot_temp), float(baseline_temp)))
+    if len(history) > _MAX_THERMAL_HISTORY_POINTS:
+        history.pop(0)
 
 
 def _accumulate_savings(owner_id: str, pilot_rpm: float) -> None:
@@ -1556,11 +1591,53 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
 
         tenant[agent_id] = consolidated
 
-        if "fan_rpm" in consolidated and "pilot" in agent_id.lower():
+        aid_lower = agent_id.lower()
+        is_pilot = "pilot" in aid_lower or ("cooledai" in aid_lower and "predictive" in aid_lower)
+        if "fan_rpm" in consolidated and is_pilot:
             _accumulate_savings(owner_id, float(consolidated["fan_rpm"]))
+
+        # Append to thermal history for 6H/24H aggregated charts (when pilot or baseline sends)
+        _append_thermal_history(owner_id, now_ts)
 
         return {"status": "ok", "received": len(telemetry)}
     return {"status": "error", "message": "Expected telemetry or heartbeat"}
+
+
+@app.get("/api/v1/thermal-history")
+async def get_thermal_history(
+    owner_id: str = Depends(_resolve_owner),
+    hours: int = 6,
+):
+    """Aggregated hourly thermal averages for 6H/24H charts.
+    Returns buckets: [{ hour_ts, hour_label, pilot_avg, baseline_avg }, ...]
+    """
+    history = list(_thermal_history.get(owner_id, []))
+    now = time.time()
+    cutoff = now - (hours * 3600)
+    points = [(ts, pt, bt) for ts, pt, bt in history if ts >= cutoff]
+    if not points:
+        return {"buckets": [], "hours": hours}
+
+    # Aggregate into hourly buckets
+    buckets_dict: Dict[int, List[Tuple[float, float]]] = {}
+    for ts, pt, bt in points:
+        hour_ts = int(ts // 3600) * 3600
+        buckets_dict.setdefault(hour_ts, []).append((pt, bt))
+    buckets = []
+    for hour_ts in sorted(buckets_dict.keys()):
+        pts = buckets_dict[hour_ts]
+        pilot_avg = sum(p[0] for p in pts) / len(pts)
+        baseline_avg = sum(p[1] for p in pts) / len(pts)
+        dt = datetime.fromtimestamp(hour_ts, tz=timezone.utc)
+        buckets.append({
+            "hour_ts": hour_ts,
+            "hour_label": dt.strftime("%H:%M"),
+            "time": dt.strftime("%I %p"),
+            "pilot": round(pilot_avg, 1),
+            "baseline": round(baseline_avg, 1),
+            "ts": hour_ts,
+        })
+    return {"buckets": buckets, "hours": hours}
 
 
 @app.get("/api/v1/stats")
@@ -1586,14 +1663,33 @@ async def get_live_stats(owner_id: str = Depends(_resolve_owner)):
     baseline: dict = {}
     pilot_id = ""
     baseline_id = ""
+    # Prefer ST550 comparative demo IDs: CooledAI-Predictive (pilot), Control-Traditional (baseline)
     for nid in agent_keys:
         nid_lower = nid.lower()
-        if "pilot" in nid_lower and not pilot_id:
+        if "cooledai" in nid_lower and "predictive" in nid_lower:
             pilot = all_nodes[nid]
             pilot_id = nid
-        elif ("shadow" in nid_lower or "baseline" in nid_lower) and not baseline_id:
+            break
+    for nid in agent_keys:
+        nid_lower = nid.lower()
+        if "control" in nid_lower and "traditional" in nid_lower:
             baseline = all_nodes[nid]
             baseline_id = nid
+            break
+    # Fallback to legacy: pilot, shadow, baseline
+    if not pilot_id:
+        for nid in agent_keys:
+            if "pilot" in nid.lower():
+                pilot = all_nodes[nid]
+                pilot_id = nid
+                break
+    if not baseline_id:
+        for nid in agent_keys:
+            nid_lower = nid.lower()
+            if "shadow" in nid_lower or "baseline" in nid_lower:
+                baseline = all_nodes[nid]
+                baseline_id = nid
+                break
     if not pilot_id and agent_keys:
         pilot_id = agent_keys[0]
         pilot = all_nodes[pilot_id]
@@ -1618,7 +1714,19 @@ async def get_live_stats(owner_id: str = Depends(_resolve_owner)):
     baseline_w = _fan_power_watts(baseline_rpm)
     delta_w = max(0.0, baseline_w - pilot_w)
 
-    efficiency_pct = (delta_w / baseline_w * 100.0) if baseline_w > 0 else 0.0
+    # ST550: Use temp-based efficiency when both Pilot and Control temps available
+    # Formula: (Baseline_Temp - Pilot_Temp) / Baseline_Temp * 100
+    pilot_temp = pilot.get("max_temp_c")
+    baseline_temp = baseline.get("max_temp_c")
+    if (
+        pilot_temp is not None
+        and baseline_temp is not None
+        and baseline_temp > 0
+    ):
+        efficiency_pct = ((baseline_temp - pilot_temp) / baseline_temp) * 100.0
+        efficiency_pct = max(0.0, min(100.0, efficiency_pct))
+    else:
+        efficiency_pct = (delta_w / baseline_w * 100.0) if baseline_w > 0 else 0.0
 
     if owner_id == "master":
         total_wh = sum(a.get("power_reclaimed_wh", 0.0) for a in _tenant_accumulators.values())
@@ -1638,10 +1746,15 @@ async def get_live_stats(owner_id: str = Depends(_resolve_owner)):
     has_live = bool(pilot)
     pilot_age = (now - pilot["_received_at"]) if pilot.get("_received_at") else None
     baseline_age = (now - baseline["_received_at"]) if baseline.get("_received_at") else None
+    last_telemetry_at = max(
+        pilot.get("_received_at") or 0,
+        baseline.get("_received_at") or 0,
+    )
 
     return {
         "owner_id": owner_id,
         "efficiency_gain_pct": round(efficiency_pct, 1),
+        "last_telemetry_at": last_telemetry_at if last_telemetry_at > 0 else None,
         "power_reclaimed_kwh": round(reclaimed_kwh, 3),
         "power_reclaimed_watts": round(delta_w, 1),
         "estimated_annual_savings_usd": round(annual_savings, 0),

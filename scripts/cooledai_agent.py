@@ -40,6 +40,7 @@ import os
 import random
 import re
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -68,6 +69,29 @@ BACKOFF_CAP_S = 60.0
 WARN_AFTER_FAILURES = 3
 
 _running = True
+
+
+# ===================================================================
+# systemd Watchdog (sd_notify)
+# ===================================================================
+# When WatchdogSec is set, systemd provides NOTIFY_SOCKET.  The agent
+# must send WATCHDOG=1 periodically or systemd will restart it.
+# We only arm the watchdog AFTER the first successful telemetry POST,
+# so slow NVML/driver init during boot does not trigger a false restart.
+
+
+def _sd_notify_watchdog() -> bool:
+    """Send WATCHDOG=1 to systemd.  No-op if NOTIFY_SOCKET unset."""
+    sock_path = os.environ.get("NOTIFY_SOCKET")
+    if not sock_path:
+        return False
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+            addr = ("\0" + sock_path[1:]) if sock_path.startswith("@") else sock_path
+            s.sendto(b"WATCHDOG=1", addr)
+        return True
+    except Exception:
+        return False
 
 
 # ===================================================================
@@ -655,6 +679,7 @@ def run_agent(
 
     last_config_fetch = 0.0
     consecutive_post_failures = 0
+    watchdog_armed = False  # Only after first successful telemetry
 
     while _running:
         loop_start = time.monotonic()
@@ -731,6 +756,9 @@ def run_agent(
         ok = post_with_backoff(telemetry_url, payload, token, max_attempts=3)
         if ok:
             consecutive_post_failures = 0
+            if not watchdog_armed:
+                watchdog_armed = True
+                _log.info("First telemetry sent — systemd watchdog armed")
         else:
             consecutive_post_failures += 1
             if consecutive_post_failures == WARN_AFTER_FAILURES:
@@ -752,6 +780,10 @@ def run_agent(
                     )
                 cfg = remote_cfg
             last_config_fetch = now_mono
+
+        # --- systemd watchdog heartbeat (only after first successful POST) ---
+        if watchdog_armed:
+            _sd_notify_watchdog()
 
         # --- Pace ---
         elapsed = time.monotonic() - loop_start

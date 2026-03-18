@@ -166,10 +166,10 @@ cd coolingai_simulator
 uvicorn api.main:app --reload --port 8000
 
 # Ingest CSV
-curl -X POST -F "file=@Log-013026.csv" http://localhost:8000/ingest/csv
+curl -X POST -F "file=@Log-013026.csv" https://proactive-creativity-production.up.railway.app/ingest/csv
 
 # Get optimization
-curl http://localhost:8000/optimize
+curl https://proactive-creativity-production.up.railway.app/optimize
 ```
 
 ---

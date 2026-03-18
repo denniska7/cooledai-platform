@@ -9,11 +9,11 @@ Demonstrates the full predictive pipeline:
   4. Compares recommended power vs. 100% Emergency Blast
 
 Usage:
-    # With running backend (default http://localhost:8000):
+    # With running backend (default Railway deployment):
     python scripts/inference_demo.py
 
     # Override URL or key:
-    COOLEDAI_API_URL=http://localhost:8000 COOLEDAI_API_KEY=mykey python scripts/inference_demo.py
+    COOLEDAI_API_URL=https://proactive-creativity-production.up.railway.app COOLEDAI_API_KEY=mykey python scripts/inference_demo.py
 """
 
 import json
@@ -33,7 +33,9 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-API_URL = os.environ.get("COOLEDAI_API_URL", "http://localhost:8000")
+API_URL = os.environ.get(
+    "COOLEDAI_API_URL", "https://proactive-creativity-production.up.railway.app"
+)
 API_KEY = os.environ.get("COOLEDAI_API_KEY", "")
 
 # Try loading from backend/.env or root .env if key not in environment

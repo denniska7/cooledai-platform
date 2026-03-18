@@ -14,7 +14,10 @@ const FALLBACK_API_KEY = "sk-osfrVz48r7DCsPwXeAYR4nCF7vhkaRYrN2ahX_2EKgo";
 
 const getApiUrl = (): string => {
   const url = process.env.NEXT_PUBLIC_API_URL;
-  return (url || RAILWAY_API_URL).replace(/\/$/, "");
+  // Never fall back to localhost. If NEXT_PUBLIC_API_URL isn't set yet,
+  // fall back to the known Railway deployment.
+  const resolved = url || RAILWAY_API_URL;
+  return resolved.replace(/\/$/, "");
 };
 
 export const apiUrl = (): string => getApiUrl();
@@ -59,7 +62,7 @@ export const apiFetch = async (
   const url = path.startsWith("/") ? `${base}${path}` : `${base}/${path}`;
   const hdrs = mergeHeaders(options?.headers);
   console.log(`[CooledAI] ${options?.method ?? "GET"} ${url}  key=${hdrs["X-API-Key"]?.slice(0, 12)}…`);
-  const res = await fetch(url, { ...options, headers: hdrs });
+  const res = await fetch(url, { ...options, headers: hdrs, cache: "no-store" });
   return res;
 };
 
@@ -73,6 +76,8 @@ export const api = {
   getOptimize: () => apiFetch("/optimize"),
   getState: () => apiFetch("/state"),
   getStats: () => apiFetch("/api/v1/stats"),
+  getThermalHistory: (hours: number) =>
+    apiFetch(`/api/v1/thermal-history?hours=${hours}`),
 
   // --- Write (API key required) ---
   postOptimize: (body: unknown) =>

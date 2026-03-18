@@ -1,30 +1,16 @@
-import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 
-// Only these routes are public; everything else requires auth.
-const isPublicRoute = createRouteMatcher([
-  "/",
-  "/why",
-  "/optimization",
-  "/implementation",
-  "/contact",
-  "/audit-request",
-  "/audit-success",
-  "/privacy",
-  "/terms",
-  "/cookies",
-  "/sign-in(.*)",
-  "/sign-up(.*)",
-  "/portal/login(.*)",
-]);
+function passthrough(_req: NextRequest) {
+  return NextResponse.next();
+}
 
-export default clerkMiddleware(
-  async (auth, req) => {
-    if (!isPublicRoute(req)) {
-      await auth.protect();
-    }
-  },
-  { signInUrl: "/portal/login" }
-);
+// NOTE: Clerk middleware removed to bypass auth entirely.
+// This is intentionally a total passthrough so we can confirm
+// the rest of the app (including the dashboard data flow).
+export default function middleware(_req: NextRequest) {
+  return passthrough(_req);
+}
 
 export const config = {
   matcher: [

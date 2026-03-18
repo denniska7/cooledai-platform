@@ -1,0 +1,11 @@
+[Unit]
+Description=CooledAI ST550 — Re-enforce data port route every 30s
+Documentation=Prevents Wrench port from hijacking default route when plugged in
+
+[Timer]
+OnBootSec=10
+OnUnitActiveSec=30
+AccuracySec=5
+
+[Install]
+WantedBy=timers.target

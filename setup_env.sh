@@ -98,7 +98,7 @@ LEAD_EMAIL_TO=dennis@cooledai.com
 # --- Gateway (Edge Agent) ---
 # Set these when running gateway/main.py on the edge device.
 # The gateway authenticates to the backend using COOLEDAI_API_KEY above.
-COOLEDAI_BACKEND_URL=http://localhost:8000
+COOLEDAI_BACKEND_URL=https://proactive-creativity-production.up.railway.app
 COOLEDAI_AGENT_ID=default
 HEARTBEAT_INTERVAL_SEC=10
 COOLEDAI_CLOUD_LOSS_TIMEOUT_SEC=30
@@ -108,7 +108,7 @@ CONTROL_MODE=SHADOW
 # The sidecar hits /health (unauthenticated) to check API liveness.
 # If the API is unreachable for COOLEDAI_API_TIMEOUT seconds, it forces
 # fans to fail-safe via Redfish.
-COOLEDAI_API_URL=http://localhost:8000
+COOLEDAI_API_URL=https://proactive-creativity-production.up.railway.app
 COOLEDAI_API_TIMEOUT=30
 COOLEDAI_REDFISH_URLS=
 COOLEDAI_REDFISH_USER=
@@ -137,8 +137,8 @@ else
 # NEVER commit real keys. This file is in .gitignore.
 # =============================================================================
 
-# Backend API URL (local dev)
-NEXT_PUBLIC_API_URL=http://localhost:8000
+# Backend API URL (production)
+NEXT_PUBLIC_API_URL=https://proactive-creativity-production.up.railway.app
 
 # API Key for authenticated backend endpoints (must match COOLEDAI_API_KEY in .env)
 # This is auto-populated from the backend key generated above.
