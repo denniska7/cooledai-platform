@@ -87,6 +87,26 @@ export const api = {
     apiFetch(`/api/v1/thermal-history?hours=${hours}&mode=raw`, {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     }),
+  getNodesList: (token?: string | null) =>
+    apiFetch("/api/v1/nodes/list", {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    }),
+  getHourlyFacilityMetrics: (token?: string | null) =>
+    apiFetch("/api/v1/facility/hourly-metrics", {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    }),
+  getThermalExport: (
+    params: { start_date?: string; end_date?: string; days?: number },
+    token?: string | null
+  ) => {
+    const sp = new URLSearchParams();
+    if (params.start_date) sp.set("start_date", params.start_date);
+    if (params.end_date) sp.set("end_date", params.end_date);
+    if (params.days != null) sp.set("days", String(params.days));
+    return apiFetch(`/api/v1/thermal-history/export?${sp}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    });
+  },
 
   // --- Write (API key required) ---
   postOptimize: (body: unknown) =>

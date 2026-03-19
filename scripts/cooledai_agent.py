@@ -57,7 +57,7 @@ _log = logging.getLogger("cooledai-agent")
 # Configuration (overridden by CLI / env / remote config)
 # ===================================================================
 DEFAULT_API_URL = "https://api.cooledai.com"
-REPORT_INTERVAL_S = 10
+REPORT_INTERVAL_S = 5  # Match st550_telemetry for consistent GPU power reporting
 CONFIG_INTERVAL_S = 60
 DEFAULT_TARGET_TEMP = 65.0
 DEFAULT_CRITICAL_TEMP = 90.0
@@ -139,14 +139,14 @@ def _cmd_available(cmd: List[str], timeout: float = 5) -> bool:
         return False
 
 
-def discover_sensors(dry_run: bool = False) -> SensorCapabilities:
+def discover_sensors(dry_run: bool = False, ipmi_variant: Optional[str] = None) -> SensorCapabilities:
     caps = SensorCapabilities()
 
     if dry_run:
         caps.cpu_sysfs_zones = ["thermal_zone0", "thermal_zone1"]
         caps.nvidia_gpu = True
         caps.ipmi = True
-        caps.ipmi_variant = "dell"
+        caps.ipmi_variant = ipmi_variant or "dell"
         return caps
 
     # CPU sysfs
@@ -171,24 +171,27 @@ def discover_sensors(dry_run: bool = False) -> SensorCapabilities:
     # AMD GPU
     caps.amd_gpu = _cmd_available(["rocm-smi", "--showtemp", "--csv"])
 
-    # IPMI (probe Dell/generic first, then Lenovo)
+    # IPMI (forced variant, or probe Dell then Lenovo)
     if _cmd_available(["ipmitool", "sdr"]):
         caps.ipmi = True
-        try:
-            subprocess.check_output(
-                ["ipmitool", "raw", "0x30", "0x30", "0x01", "0x00"],
-                timeout=5, stderr=subprocess.DEVNULL,
-            )
-            caps.ipmi_variant = "dell"
-        except Exception:
+        if ipmi_variant:
+            caps.ipmi_variant = ipmi_variant
+        else:
             try:
                 subprocess.check_output(
-                    ["ipmitool", "raw", "0x32", "0x9b", "0x00"],
+                    ["ipmitool", "raw", "0x30", "0x30", "0x01", "0x00"],
                     timeout=5, stderr=subprocess.DEVNULL,
                 )
-                caps.ipmi_variant = "lenovo"
+                caps.ipmi_variant = "dell"
             except Exception:
-                caps.ipmi_variant = "generic"
+                try:
+                    subprocess.check_output(
+                        ["ipmitool", "raw", "0x32", "0x9b", "0x00"],
+                        timeout=5, stderr=subprocess.DEVNULL,
+                    )
+                    caps.ipmi_variant = "lenovo"
+                except Exception:
+                    caps.ipmi_variant = "generic"
 
     # PWM
     for pwm_path in sorted(glob.glob("/sys/class/hwmon/hwmon*/pwm[0-9]*")):
@@ -646,12 +649,14 @@ def run_agent(
     token: str,
     node_id: str,
     dry_run: bool = False,
+    ipmi_variant: Optional[str] = None,
+    shutdown_on_critical: bool = False,
 ) -> None:
     global _running, _manual_control_active, _dry_run_flag
     _dry_run_flag = dry_run
 
     # --- Discover ---
-    caps = discover_sensors(dry_run)
+    caps = discover_sensors(dry_run, ipmi_variant=ipmi_variant)
     _cleanup._caps = caps  # type: ignore[attr-defined]
     _log.info(caps.summary())
 
@@ -670,9 +675,9 @@ def run_agent(
 
     _log.info(
         "Agent started — node=%s  api=%s  target=%.0f°C  critical=%.0f°C  "
-        "control=%s  dry_run=%s",
+        "control=%s  dry_run=%s  shutdown_on_critical=%s",
         node_id, api_url, cfg.target_temp, cfg.critical_temp_c,
-        has_control, dry_run,
+        has_control, dry_run, shutdown_on_critical,
     )
     if not token:
         _log.warning("API key is empty — telemetry POSTs will likely be rejected.")
@@ -697,6 +702,13 @@ def run_agent(
             )
             revert_fans_to_auto(caps, dry_run)
             _manual_control_active = False
+            if shutdown_on_critical and not dry_run:
+                _log.critical(
+                    "WATCHDOG: shutdown_on_critical enabled — initiating host shutdown."
+                )
+                _emergency_shutdown(
+                    f"CooledAI critical temp {snap.max_temp_c:.1f}C >= {cfg.critical_temp_c:.0f}C"
+                )
             sys.exit(1)
 
         # --- Control ---
@@ -797,6 +809,26 @@ def _shutdown_signal(signum: int, _frame: Any) -> None:
     _running = False
 
 
+def _bool_from_env(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _emergency_shutdown(reason: str) -> None:
+    """Best-effort immediate host shutdown (requires root)."""
+    for cmd in (
+        ["/sbin/shutdown", "-h", "now", reason],
+        ["shutdown", "-h", "now", reason],
+    ):
+        try:
+            subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return
+        except Exception:
+            continue
+
+
 # ===================================================================
 # CLI
 # ===================================================================
@@ -810,6 +842,15 @@ def main() -> None:
     parser.add_argument("--node-id", default=os.environ.get("COOLEDAI_NODE_ID", "node-01"))
     parser.add_argument("--dry-run", action="store_true",
                         help="Fake sensors, no fan writes.")
+    parser.add_argument("--ipmi-variant", default=os.environ.get("COOLEDAI_IPMI_VARIANT", ""),
+                        choices=["", "dell", "lenovo", "generic"],
+                        help="Force IPMI fan variant (dell/lenovo/generic). Default: auto-detect.")
+    parser.add_argument(
+        "--shutdown-on-critical",
+        action="store_true",
+        default=_bool_from_env("COOLEDAI_SHUTDOWN_ON_CRITICAL", False),
+        help="Shutdown host if critical temp is reached.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -824,6 +865,8 @@ def main() -> None:
         token=args.api_key,
         node_id=args.node_id,
         dry_run=args.dry_run,
+        ipmi_variant=args.ipmi_variant.strip() or None,
+        shutdown_on_critical=args.shutdown_on_critical,
     )
     _log.info("Agent stopped.")
 
