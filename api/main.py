@@ -1536,7 +1536,7 @@ _tenant_telemetry: Dict[str, Dict[str, dict]] = {}
 _tenant_accumulators: Dict[str, dict] = {}
 # Rolling thermal history for 6H/24H aggregated charts: { owner_id: [(ts, pilot_temp, baseline_temp), ...] }
 _thermal_history: Dict[str, list] = {}
-_MAX_THERMAL_HISTORY_POINTS = 24 * 60 * 12  # 24h at 5s interval
+_MAX_THERMAL_HISTORY_POINTS = 7 * 24 * 60 * 12  # 7 days at 5s interval
 
 # Fan power estimation — Fan Affinity Law: P ∝ RPM³
 _RATED_FAN_WATTS = float(os.environ.get("COOLEDAI_RATED_FAN_WATTS", "12"))
@@ -1556,8 +1556,10 @@ def _fan_power_watts(rpm: float) -> float:
     return (frac ** 3) * _RATED_FAN_WATTS * _NUM_FANS
 
 
-def _get_pilot_baseline_temps(owner_id: str) -> Tuple[Optional[float], Optional[float]]:
-    """Get current pilot and baseline max_temp_c for thermal history."""
+def _get_pilot_baseline_snapshot(
+    owner_id: str,
+) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
+    """Get current pilot/control temps and fan RPM for history snapshots."""
     if owner_id == "master":
         all_nodes = {}
         for tn in _tenant_telemetry.values():
@@ -1566,26 +1568,48 @@ def _get_pilot_baseline_temps(owner_id: str) -> Tuple[Optional[float], Optional[
         all_nodes = _tenant_telemetry.get(owner_id, {})
     pilot_temp = None
     baseline_temp = None
+    pilot_rpm = None
+    baseline_rpm = None
     for nid in all_nodes:
         if "/" in nid:
             continue
         nid_lower = nid.lower()
         if "cooledai" in nid_lower and "predictive" in nid_lower:
             pilot_temp = all_nodes[nid].get("max_temp_c")
+            pilot_rpm = all_nodes[nid].get("fan_rpm")
         elif "control" in nid_lower and "traditional" in nid_lower:
             baseline_temp = all_nodes[nid].get("max_temp_c")
-    return pilot_temp, baseline_temp
+            baseline_rpm = all_nodes[nid].get("fan_rpm")
+    return pilot_temp, baseline_temp, pilot_rpm, baseline_rpm
 
 
 def _append_thermal_history(owner_id: str, now_ts: float) -> None:
     """Append a thermal snapshot when we have both pilot and baseline temps."""
-    pilot_temp, baseline_temp = _get_pilot_baseline_temps(owner_id)
+    pilot_temp, baseline_temp, pilot_rpm, baseline_rpm = _get_pilot_baseline_snapshot(owner_id)
     if pilot_temp is None or baseline_temp is None:
         return
     history = _thermal_history.setdefault(owner_id, [])
-    history.append((now_ts, float(pilot_temp), float(baseline_temp)))
+    history.append(
+        (
+            now_ts,
+            float(pilot_temp),
+            float(baseline_temp),
+            float(pilot_rpm) if pilot_rpm is not None else None,
+            float(baseline_rpm) if baseline_rpm is not None else None,
+        )
+    )
     if len(history) > _MAX_THERMAL_HISTORY_POINTS:
         history.pop(0)
+
+
+def _history_row(row: tuple) -> Tuple[float, float, float, Optional[float], Optional[float]]:
+    """Normalize thermal history row across legacy/new formats."""
+    ts = float(row[0])
+    pilot = float(row[1])
+    baseline = float(row[2])
+    pilot_rpm = float(row[3]) if len(row) > 3 and row[3] is not None else None
+    baseline_rpm = float(row[4]) if len(row) > 4 and row[4] is not None else None
+    return ts, pilot, baseline, pilot_rpm, baseline_rpm
 
 
 def _accumulate_savings(owner_id: str, pilot_rpm: float) -> None:
@@ -1700,27 +1724,49 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
 async def get_thermal_history(
     owner_id: str = Depends(_require_clerk_fixed_owner_id),
     hours: int = 6,
+    mode: str = "aggregated",
 ):
-    """Aggregated hourly thermal averages for 6H/24H charts.
-    Returns buckets: [{ hour_ts, hour_label, pilot_avg, baseline_avg }, ...]
+    """Thermal history.
+
+    mode=raw        -> raw points for live/volatility charts
+    mode=aggregated -> hourly averages (legacy)
     """
     history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
     now = time.time()
     cutoff = now - (hours * 3600)
-    points = [(ts, pt, bt) for ts, pt, bt in history if ts >= cutoff]
+    points = [row for row in history if _history_row(row)[0] >= cutoff]
 
     # If there is no data in the last 6 hours, tell the dashboard explicitly
     # (otherwise the UI can show "Calculating…" even when the backend is healthy).
     recent_cutoff = now - (6 * 3600)
-    recent_points = [(ts, pt, bt) for ts, pt, bt in history if ts >= recent_cutoff]
+    recent_points = [row for row in history if _history_row(row)[0] >= recent_cutoff]
     if not recent_points:
-        return {"buckets": [], "hours": hours, "message": "No recent data"}
+        if mode == "raw":
+            return {"points": [], "hours": hours, "mode": "raw", "message": "No recent data"}
+        return {"buckets": [], "hours": hours, "mode": "aggregated", "message": "No recent data"}
     if not points:
-        return {"buckets": [], "hours": hours}
+        if mode == "raw":
+            return {"points": [], "hours": hours, "mode": "raw"}
+        return {"buckets": [], "hours": hours, "mode": "aggregated"}
+
+    if mode == "raw":
+        raw_points = []
+        for row in points:
+            ts, pt, bt, _pr, br = _history_row(row)
+            dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+            raw_points.append({
+                "ts": ts,
+                "time": dt.strftime("%H:%M:%S"),
+                "pilot": round(pt, 2),
+                "baseline": round(bt, 2),
+                "control_fan_rpm": round(br, 1) if br is not None else None,
+            })
+        return {"points": raw_points, "hours": hours, "mode": "raw"}
 
     # Aggregate into hourly buckets
     buckets_dict: Dict[int, List[Tuple[float, float]]] = {}
-    for ts, pt, bt in points:
+    for row in points:
+        ts, pt, bt, _pr, _br = _history_row(row)
         hour_ts = int(ts // 3600) * 3600
         buckets_dict.setdefault(hour_ts, []).append((pt, bt))
     buckets = []
@@ -1755,7 +1801,7 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
     # message so the frontend doesn't get stuck on "Calculating…".
     history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
     recent_cutoff = now - (6 * 3600)
-    recent_points = [(ts, pt, bt) for ts, pt, bt in history if ts >= recent_cutoff]
+    recent_points = [row for row in history if _history_row(row)[0] >= recent_cutoff]
     if not recent_points:
         return {
             "owner_id": owner_id,

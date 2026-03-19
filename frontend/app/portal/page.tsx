@@ -24,12 +24,12 @@ const PULSE_STORAGE_VERSION = 3; // bump to invalidate stale data
 const MAX_STORED_POINTS = 60_480; // 7 days at 10s interval
 const EFFICIENCY_DELTA_WINDOW_MS = 30_000; // Instantaneous: last 30 seconds
 
-type PulseRange = "1h" | "6h" | "24h";
+type PulseRange = "1h" | "24h" | "7d";
 
 const RANGE_MS: Record<PulseRange, number> = {
   "1h": 60 * 60 * 1000,
-  "6h": 6 * 60 * 60 * 1000,
   "24h": 24 * 60 * 60 * 1000,
+  "7d": 7 * 24 * 60 * 60 * 1000,
 };
 
 type LiveStats = {
@@ -45,7 +45,14 @@ type LiveStats = {
   baseline_node: { node_id: string; fan_rpm: number; fan_power_watts: number; temp_c: number | null; source: string; last_seen_s_ago: number | null };
 };
 
-type PulsePoint = { time: string; pilot: number; baseline: number; delta?: number; ts: number };
+type PulsePoint = {
+  time: string;
+  pilot: number;
+  baseline: number;
+  controlFanRpm?: number;
+  delta?: number;
+  ts: number;
+};
 
 function PortalOverviewContent() {
   const searchParams = useSearchParams();
@@ -64,8 +71,8 @@ function PortalOverviewContent() {
   const [pilotNodeId, setPilotNodeId] = useState("");
   const [baselineNodeId, setBaselineNodeId] = useState("");
   const [pulseRange, setPulseRange] = useState<PulseRange>("1h");
-  const [aggregatedData, setAggregatedData] = useState<PulsePoint[]>([]);
-  const [aggregatedLoading, setAggregatedLoading] = useState(false);
+  const [rangeData, setRangeData] = useState<PulsePoint[]>([]);
+  const [rangeLoading, setRangeLoading] = useState(false);
   const [pulseData, setPulseData] = useState<PulsePoint[]>([]);
   const [serverMessage, setServerMessage] = useState<string | null>(null);
 
@@ -164,6 +171,7 @@ function PortalOverviewContent() {
           time: new Date(now).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
           pilot: pilotTemp,
           baseline: baselineTemp,
+          controlFanRpm: data.baseline_node.fan_rpm ?? undefined,
           delta: baselineTemp - pilotTemp,
           ts: now,
         };
@@ -193,19 +201,19 @@ function PortalOverviewContent() {
     return () => clearInterval(id);
   }, [fetchStats]);
 
-  // Fetch aggregated hourly data when 6H or 24H selected
-  const fetchAggregated = useCallback(async (hours: 6 | 24) => {
-    setAggregatedLoading(true);
+  // Fetch RAW thermal history for selected range (no averaging).
+  const fetchRangeRaw = useCallback(async (hours: 1 | 24 | 168) => {
+    setRangeLoading(true);
     try {
       const token = await getToken();
       if (!token) {
         setAuthError("Sign in required.");
-        setAggregatedData([]);
-        setAggregatedLoading(false);
+        setRangeData([]);
+        setRangeLoading(false);
         return;
       }
 
-      const res = await api.getThermalHistory(hours, token);
+      const res = await api.getThermalHistoryRaw(hours, token);
       if (!res.ok) {
         if (res.status === 401) {
           let detail: string | null = null;
@@ -217,33 +225,50 @@ function PortalOverviewContent() {
           }
           setAuthError(detail ? `Sign in required. ${detail}` : "Sign in required.");
         }
-        setAggregatedData([]);
-        setAggregatedLoading(false);
+        setRangeData([]);
+        setRangeLoading(false);
         return;
       }
       const data = await res.json();
-      const buckets = (data.buckets || []) as { ts: number; hour_label: string; pilot: number; baseline: number }[];
-      setAggregatedData(
-        buckets.map((b) => ({
-          time: b.hour_label,
-          pilot: b.pilot,
-          baseline: b.baseline,
-          delta: b.baseline - b.pilot,
-          ts: b.ts,
+      const points = (data.points || []) as {
+        ts: number;
+        time: string;
+        pilot: number;
+        baseline: number;
+        control_fan_rpm?: number | null;
+      }[];
+      setRangeData(
+        points.map((p) => ({
+          time: p.time,
+          pilot: p.pilot,
+          baseline: p.baseline,
+          controlFanRpm: p.control_fan_rpm ?? undefined,
+          delta: p.baseline - p.pilot,
+          ts: Math.round(p.ts * 1000),
         }))
       );
     } catch {
       setAuthError("Sign in required.");
-      setAggregatedData([]);
+      setRangeData([]);
     } finally {
-      setAggregatedLoading(false);
+      setRangeLoading(false);
     }
   }, [getToken]);
 
   useEffect(() => {
-    if (pulseRange === "6h") fetchAggregated(6);
-    else if (pulseRange === "24h") fetchAggregated(24);
-  }, [pulseRange, fetchAggregated]);
+    if (pulseRange === "1h") fetchRangeRaw(1);
+    else if (pulseRange === "24h") fetchRangeRaw(24);
+    else if (pulseRange === "7d") fetchRangeRaw(168);
+  }, [pulseRange, fetchRangeRaw]);
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      if (pulseRange === "1h") fetchRangeRaw(1);
+      else if (pulseRange === "24h") fetchRangeRaw(24);
+      else fetchRangeRaw(168);
+    }, STATS_POLL_MS);
+    return () => clearInterval(id);
+  }, [pulseRange, fetchRangeRaw]);
 
   useEffect(() => {
     if (searchParams.get("success") === "true") {
@@ -255,10 +280,9 @@ function PortalOverviewContent() {
 
   const now = Date.now();
   const rangeMs = RANGE_MS[pulseRange];
-  const displayedPulseData =
-    pulseRange === "1h"
-      ? pulseData.filter((p) => now - p.ts <= rangeMs)
-      : aggregatedData;
+  const displayedPulseData = rangeData.length
+    ? rangeData.filter((p) => now - p.ts <= rangeMs)
+    : pulseData.filter((p) => now - p.ts <= rangeMs);
 
   // Efficiency Delta: same pulseData as Chart, last 30s window, most recent point
   const efficiencyDeltaC = useMemo(() => {
@@ -397,7 +421,7 @@ function PortalOverviewContent() {
         </motion.div>
       </div>
 
-      {/* Thermal Chart — 1H Live Pulse, 6H/24H aggregated hourly */}
+      {/* Thermal Chart — raw telemetry for 1H / 24H / 7D */}
       <motion.section
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
@@ -413,7 +437,7 @@ function PortalOverviewContent() {
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <div className="flex gap-1 rounded-lg border border-white/10 bg-white/5 p-1">
-              {(["1h", "6h", "24h"] as const).map((r) => (
+              {(["1h", "24h", "7d"] as const).map((r) => (
                 <button
                   key={r}
                   type="button"
@@ -422,7 +446,7 @@ function PortalOverviewContent() {
                     pulseRange === r ? "bg-accent-cyan/20 text-accent-cyan" : "text-white/60 hover:text-white/80"
                   }`}
                 >
-                  {r === "1h" ? "1H" : r === "6h" ? "6H" : "24H"}
+                  {r === "1h" ? "1H" : r === "24h" ? "24H" : "7D"}
                 </button>
               ))}
             </div>
@@ -444,21 +468,19 @@ function PortalOverviewContent() {
             </span>
           </div>
         </div>
-        {aggregatedLoading && pulseRange !== "1h" ? (
+        {rangeLoading ? (
           <div className="h-[320px] flex items-center justify-center text-white/40 text-sm">
             <span className="inline-flex items-center gap-2">
               <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
               </svg>
-              Loading aggregated data…
+              Loading raw data…
             </span>
           </div>
         ) : displayedPulseData.length === 0 ? (
           <div className="h-[320px] flex items-center justify-center text-white/40 text-sm">
-            {pulseRange === "1h"
-              ? (pulseData.length === 0 ? "Waiting for telemetry…" : "No data in selected range. Try a shorter range.")
-              : "No aggregated data yet. Telemetry will build history over time."}
+            {pulseData.length === 0 ? "Waiting for telemetry…" : "No raw data in selected range yet."}
           </div>
         ) : (
         <div className="h-[320px] w-full">
@@ -481,6 +503,17 @@ function PortalOverviewContent() {
                 domain={[0, "dataMax + 10"]}
                 tickFormatter={(v) => `${v}°C`}
               />
+              {pulseRange === "1h" && (
+                <YAxis
+                  yAxisId="rpm"
+                  orientation="right"
+                  tick={{ fill: "rgba(255,255,255,0.45)", fontSize: 11 }}
+                  axisLine={{ stroke: "rgba(255,255,255,0.08)" }}
+                  tickLine={false}
+                  width={46}
+                  tickFormatter={(v) => `${v}`}
+                />
+              )}
               <Tooltip
                 contentStyle={{
                   backgroundColor: "#1a1a1a",
@@ -490,6 +523,7 @@ function PortalOverviewContent() {
                 labelStyle={{ color: "rgba(255,255,255,0.8)" }}
                 formatter={(value, name) => {
                   if (name === "delta") return [`${value != null ? value : 0}°C Δ`, "Efficiency Delta"];
+                  if (name === "controlFanRpm") return [`${value != null ? value : 0} RPM`, "Control Fan RPM (Live)"];
                   return [
                     `${value != null ? value : 0}°C`,
                     name === "pilot" ? "CooledAI (Predictive)" : "Control (Traditional)",
@@ -500,7 +534,7 @@ function PortalOverviewContent() {
               <ReferenceLine y={65} stroke="rgba(234,179,8,0.5)" strokeDasharray="4 4" />
               <ReferenceLine y={85} stroke="rgba(239,68,68,0.5)" strokeDasharray="4 4" />
               <Line
-                type="monotone"
+                type="linear"
                 dataKey="pilot"
                 name="pilot"
                 stroke="#22c55e"
@@ -508,23 +542,41 @@ function PortalOverviewContent() {
                 dot={false}
               />
               <Line
-                type="monotone"
+                type="linear"
                 dataKey="baseline"
                 name="baseline"
                 stroke="#ef4444"
                 strokeWidth={2}
                 dot={false}
               />
+              {pulseRange === "1h" && (
+                <Line
+                  yAxisId="rpm"
+                  type="linear"
+                  dataKey="controlFanRpm"
+                  name="controlFanRpm"
+                  stroke="#f59e0b"
+                  strokeWidth={1.5}
+                  strokeDasharray="5 3"
+                  dot={false}
+                  connectNulls={false}
+                />
+              )}
               <Legend
                 wrapperStyle={{ fontSize: 12 }}
-                formatter={(value) => (value === "pilot" ? "CooledAI (Predictive)" : "Control (Traditional)")}
+                formatter={(value) => {
+                  if (value === "pilot") return "CooledAI (Predictive Temp)";
+                  if (value === "baseline") return "Control (Traditional Temp)";
+                  if (value === "controlFanRpm") return "Control Fan RPM (Live)";
+                  return value;
+                }}
               />
             </LineChart>
           </ResponsiveContainer>
         </div>
         )}
         <p className="text-xs text-white/40 mt-3">
-          Yellow line: warning (65°C). Red line: critical (85°C).
+          Yellow line: warning (65°C). Red line: critical (85°C). On 1H view, dashed orange shows live control fan RPM.
         </p>
       </motion.section>
     </div>
