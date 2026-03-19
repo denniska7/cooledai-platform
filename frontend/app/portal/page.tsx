@@ -83,6 +83,7 @@ function PortalOverviewContent() {
   const [showGpuPower, setShowGpuPower] = useState(false);
   const [showFanSpeed, setShowFanSpeed] = useState(false);
   const [showCpuTemp, setShowCpuTemp] = useState(false);
+  const [dataSource, setDataSource] = useState<Record<string, string> | null>(null);
   const [pulseData, setPulseData] = useState<PulsePoint[]>([]);
   const [serverMessage, setServerMessage] = useState<string | null>(null);
 
@@ -443,80 +444,73 @@ function PortalOverviewContent() {
         </motion.div>
       </div>
 
-      {/* Thermal Chart — raw telemetry for 1H / 24H / 7D */}
+      {/* Thermal Chart — live raw telemetry for 1H / 24H / 7D */}
       <motion.section
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.3, delay: 0.2 }}
         className="rounded-xl border border-white/10 bg-[#141414] p-6"
       >
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
-          <div>
-            <h2 className="text-base font-semibold text-white">Thermal Chart</h2>
-            <p className="text-sm text-white/50 mt-0.5">
-              {pilotNodeId || "CooledAI (Predictive)"} vs {baselineNodeId || "Control (Traditional)"}
-            </p>
-          </div>
-          <div className="flex flex-wrap items-center gap-3">
-            <div className="flex gap-1 rounded-lg border border-white/10 bg-white/5 p-1">
-              {(["1h", "24h", "7d"] as const).map((r) => (
-                <button
-                  key={r}
-                  type="button"
-                  onClick={() => setPulseRange(r)}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                    pulseRange === r ? "bg-accent-cyan/20 text-accent-cyan" : "text-white/60 hover:text-white/80"
-                  }`}
-                >
-                  {r === "1h" ? "1H" : r === "24h" ? "24H" : "7D"}
-                </button>
-              ))}
+        <div className="flex flex-col gap-4 mb-6">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h2 className="text-base font-semibold text-white">Live Comparison</h2>
+              <p className="text-sm text-white/50 mt-0.5">
+                {pilotNodeId || "CooledAI"} vs {baselineNodeId || "Control"} · Raw telemetry
+              </p>
             </div>
-            <div className="flex flex-wrap items-center gap-4 text-xs">
-              <label className="inline-flex items-center gap-2 cursor-pointer text-white/70 hover:text-white/90">
-                <input
-                  type="checkbox"
-                  checked={showGpuPower}
-                  onChange={(e) => setShowGpuPower(e.target.checked)}
-                  className="rounded border-white/30 bg-white/5 text-accent-cyan focus:ring-accent-cyan"
-                />
-                GPU Power
-              </label>
-              <label className="inline-flex items-center gap-2 cursor-pointer text-white/70 hover:text-white/90">
-                <input
-                  type="checkbox"
-                  checked={showFanSpeed}
-                  onChange={(e) => setShowFanSpeed(e.target.checked)}
-                  className="rounded border-white/30 bg-white/5 text-accent-cyan focus:ring-accent-cyan"
-                />
-                Fan Speed
-              </label>
-              <label className="inline-flex items-center gap-2 cursor-pointer text-white/70 hover:text-white/90">
-                <input
-                  type="checkbox"
-                  checked={showCpuTemp}
-                  onChange={(e) => setShowCpuTemp(e.target.checked)}
-                  className="rounded border-white/30 bg-white/5 text-accent-cyan focus:ring-accent-cyan"
-                />
-                CPU Temp
-              </label>
-            </div>
-            <span className="inline-flex items-center gap-2 text-xs text-white/60">
-              <span className="w-2 h-2 rounded-full bg-[#22c55e]" />
+            <div className="flex items-center gap-2">
               {hasLiveData && (
-                <span className="inline-flex items-center gap-1.5">
-                  <span className="relative flex h-2 w-2">
+                <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-md bg-[#22c55e]/15 text-[#22c55e] text-xs font-medium">
+                  <span className="relative flex h-1.5 w-1.5">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#22c55e] opacity-75" />
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-[#22c55e]" />
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-[#22c55e]" />
                   </span>
-                  <span className="text-[#22c55e]/90 font-medium">Active</span>
+                  Live
                 </span>
               )}
-              CooledAI (Predictive)
-            </span>
-            <span className="inline-flex items-center gap-2 text-xs text-white/60">
-              <span className="w-2 h-2 rounded-full bg-[#ef4444]" /> Control (Traditional)
-            </span>
+              <span className="text-xs text-white/40">Green = CooledAI · Red = Control</span>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-4">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-white/50">Time range</span>
+              <div className="flex gap-0.5 rounded-lg border border-white/10 bg-white/5 p-0.5">
+                {(["1h", "24h", "7d"] as const).map((r) => (
+                  <button
+                    key={r}
+                    type="button"
+                    onClick={() => setPulseRange(r)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      pulseRange === r ? "bg-accent-cyan/20 text-accent-cyan" : "text-white/60 hover:text-white/90"
+                    }`}
+                  >
+                    {r === "1h" ? "1H" : r === "24h" ? "24H" : "7D"}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="h-px w-px bg-white/20 sm:hidden" />
+            <div className="flex items-center gap-3">
+              <span className="text-xs text-white/50">Add to chart</span>
+              <div className="flex flex-wrap gap-3">
+                {[
+                  { key: "showCpuTemp", checked: showCpuTemp, set: setShowCpuTemp, label: "CPU Temp" },
+                  { key: "showFanSpeed", checked: showFanSpeed, set: setShowFanSpeed, label: "Fan Speed" },
+                  { key: "showGpuPower", checked: showGpuPower, set: setShowGpuPower, label: "GPU Power" },
+                ].map(({ key, checked, set, label }) => (
+                  <label key={key} className="inline-flex items-center gap-2 cursor-pointer group">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(e) => set(e.target.checked)}
+                      className="rounded border-white/30 bg-white/5 text-accent-cyan focus:ring-accent-cyan focus:ring-offset-0 focus:ring-2"
+                    />
+                    <span className="text-xs text-white/70 group-hover:text-white">{label}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
         {rangeLoading ? (
@@ -580,24 +574,23 @@ function PortalOverviewContent() {
               <Tooltip
                 contentStyle={{
                   backgroundColor: "#1a1a1a",
-                  border: "1px solid rgba(255,255,255,0.1)",
+                  border: "1px solid rgba(255,255,255,0.12)",
                   borderRadius: "8px",
+                  padding: "12px 16px",
                 }}
-                labelStyle={{ color: "rgba(255,255,255,0.8)" }}
+                labelStyle={{ color: "rgba(255,255,255,0.9)", marginBottom: 8 }}
                 formatter={(value, name) => {
-                  if (name === "delta") return [`${value != null ? value : 0}°C Δ`, "Efficiency Delta"];
-                  if (name === "controlFanRpm") return [`${value != null ? value : 0} RPM`, "Control Fan RPM"];
-                  if (name === "pilotFanRpm") return [`${value != null ? value : 0} RPM`, "CooledAI Fan RPM"];
-                  if (name === "pilotGpuPowerW") return [`${value != null ? value : 0} W`, "CooledAI GPU Power"];
-                  if (name === "baselineGpuPowerW") return [`${value != null ? value : 0} W`, "Control GPU Power"];
-                  if (name === "pilotCpuTemp") return [`${value != null ? value : 0}°C`, "CooledAI CPU Temp"];
-                  if (name === "baselineCpuTemp") return [`${value != null ? value : 0}°C`, "Control CPU Temp"];
-                  return [
-                    `${value != null ? value : 0}°C`,
-                    name === "pilot" ? "CooledAI (Predictive Temp)" : "Control (Traditional Temp)",
-                  ];
+                  const v = value != null ? value : 0;
+                  if (name === "delta") return [`${v}°C`, "Δ (Control − CooledAI)"];
+                  if (name === "controlFanRpm") return [`${v} RPM`, "Control"];
+                  if (name === "pilotFanRpm") return [`${v} RPM`, "CooledAI"];
+                  if (name === "pilotGpuPowerW") return [`${v} W`, "CooledAI"];
+                  if (name === "baselineGpuPowerW") return [`${v} W`, "Control"];
+                  if (name === "pilotCpuTemp") return [`${v}°C`, "CooledAI"];
+                  if (name === "baselineCpuTemp") return [`${v}°C`, "Control"];
+                  return [`${v}°C`, name === "pilot" ? "CooledAI" : "Control"];
                 }}
-                labelFormatter={(label) => `Time: ${label}`}
+                labelFormatter={(label) => label}
               />
               <ReferenceLine yAxisId="temp" y={65} stroke="rgba(234,179,8,0.5)" strokeDasharray="4 4" />
               <ReferenceLine yAxisId="temp" y={85} stroke="rgba(239,68,68,0.5)" strokeDasharray="4 4" />
@@ -698,16 +691,18 @@ function PortalOverviewContent() {
                 </>
               )}
               <Legend
-                wrapperStyle={{ fontSize: 12 }}
+                wrapperStyle={{ fontSize: 11 }}
+                iconType="line"
+                iconSize={10}
                 formatter={(value) => {
-                  if (value === "pilot") return "CooledAI GPU Temp";
-                  if (value === "baseline") return "Control GPU Temp";
-                  if (value === "pilotCpuTemp") return "CooledAI CPU Temp";
-                  if (value === "baselineCpuTemp") return "Control CPU Temp";
-                  if (value === "pilotFanRpm") return "CooledAI Fan RPM";
-                  if (value === "controlFanRpm") return "Control Fan RPM";
-                  if (value === "pilotGpuPowerW") return "CooledAI GPU Power";
-                  if (value === "baselineGpuPowerW") return "Control GPU Power";
+                  if (value === "pilot") return "GPU temp (CooledAI)";
+                  if (value === "baseline") return "GPU temp (Control)";
+                  if (value === "pilotCpuTemp") return "CPU temp (CooledAI)";
+                  if (value === "baselineCpuTemp") return "CPU temp (Control)";
+                  if (value === "pilotFanRpm") return "Fan RPM (CooledAI)";
+                  if (value === "controlFanRpm") return "Fan RPM (Control)";
+                  if (value === "pilotGpuPowerW") return "GPU power (CooledAI)";
+                  if (value === "baselineGpuPowerW") return "GPU power (Control)";
                   return value;
                 }}
               />
@@ -715,8 +710,10 @@ function PortalOverviewContent() {
           </ResponsiveContainer>
         </div>
         )}
-        <p className="text-xs text-white/40 mt-3">
-          GPU temps always shown. Use checkboxes to add GPU Power, Fan Speed, or CPU Temp (CooledAI vs Control). Yellow: 65°C warning. Red: 85°C critical.
+        <p className="text-xs text-white/40 mt-4 flex flex-wrap gap-x-4 gap-y-1">
+          <span>GPU temp: avg of all GPUs per node</span>
+          <span>CPU temp, fan RPM, GPU power: from cooledai_agent telemetry</span>
+          <span>Yellow line: 65°C · Red line: 85°C</span>
         </p>
       </motion.section>
     </div>
