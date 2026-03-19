@@ -404,6 +404,32 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 
+@app.on_event("startup")
+async def _start_digest_worker() -> None:
+    """Start background digest worker (3-hour predictive-vs-control email)."""
+    global _report_thread
+    if not _REPORT_EMAIL_ENABLED:
+        logging.getLogger("api.main").info("[Digest] Disabled by COOLEDAI_REPORT_EMAIL_ENABLED.")
+        return
+    if _report_thread is not None and _report_thread.is_alive():
+        return
+    _report_stop_event.clear()
+    _report_thread = threading.Thread(
+        target=_digest_worker_loop,
+        name="cooledai-efficiency-digest",
+        daemon=True,
+    )
+    _report_thread.start()
+
+
+@app.on_event("shutdown")
+async def _stop_digest_worker() -> None:
+    """Stop background digest worker."""
+    _report_stop_event.set()
+    if _report_thread is not None and _report_thread.is_alive():
+        _report_thread.join(timeout=2.0)
+
+
 # --- System State Machine ---
 
 class SystemState(str, Enum):
@@ -1490,6 +1516,14 @@ def _send_beta_email(beta: BetaSignupInput) -> bool:
         return False
 
 
+# --- Periodic efficiency digest email (Predictive vs Traditional) ---
+_REPORT_EMAIL_ENABLED = os.environ.get("COOLEDAI_REPORT_EMAIL_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+_REPORT_EMAIL_INTERVAL_SEC = int(os.environ.get("COOLEDAI_REPORT_EMAIL_INTERVAL_SEC", str(3 * 60 * 60)))  # 3 hours
+_REPORT_EMAIL_TO = os.environ.get("COOLEDAI_REPORT_EMAIL_TO", "dennis@cooledai.com")
+_report_stop_event = threading.Event()
+_report_thread: Optional[threading.Thread] = None
+
+
 # --- Live Telemetry Store & Power Stats (Multi-Tenant) ------------------
 #
 # Per-owner, per-node latest telemetry snapshot.  Each tenant's nodes and
@@ -1898,6 +1932,147 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
     }
 
 
+def _build_email_comparison_snapshot(owner_id: str = FIXED_OWNER_ID) -> Dict[str, Any]:
+    """Build a simplified predictive-vs-control snapshot for digest emails."""
+    now = time.time()
+    all_nodes = _tenant_telemetry.get(owner_id, {})
+    agent_keys = [k for k in all_nodes if "/" not in k]
+
+    pilot: dict = {}
+    baseline: dict = {}
+    pilot_id = ""
+    baseline_id = ""
+    for nid in agent_keys:
+        nid_lower = nid.lower()
+        if "cooledai" in nid_lower and "predictive" in nid_lower:
+            pilot = all_nodes[nid]
+            pilot_id = nid
+            break
+    for nid in agent_keys:
+        nid_lower = nid.lower()
+        if "control" in nid_lower and "traditional" in nid_lower:
+            baseline = all_nodes[nid]
+            baseline_id = nid
+            break
+    if not pilot_id and agent_keys:
+        pilot_id = agent_keys[0]
+        pilot = all_nodes[pilot_id]
+    if not baseline_id and len(agent_keys) > 1:
+        remaining = [k for k in agent_keys if k != pilot_id]
+        if remaining:
+            baseline_id = remaining[0]
+            baseline = all_nodes[baseline_id]
+
+    pilot_rpm = float(pilot.get("fan_rpm", 0))
+    baseline_rpm = float(baseline.get("fan_rpm", _MAX_FAN_RPM)) if baseline else _MAX_FAN_RPM
+    pilot_w = _fan_power_watts(pilot_rpm)
+    baseline_w = _fan_power_watts(baseline_rpm)
+    delta_w = max(0.0, baseline_w - pilot_w)
+
+    pilot_temp = pilot.get("max_temp_c")
+    baseline_temp = baseline.get("max_temp_c")
+    efficiency_pct = 0.0
+    pilot_estimated_from_temp = False
+    if (
+        pilot_temp is not None
+        and baseline_temp is not None
+        and baseline_temp > 0
+    ):
+        efficiency_pct = ((baseline_temp - pilot_temp) / baseline_temp) * 100.0
+        efficiency_pct = max(0.0, min(100.0, efficiency_pct))
+        if pilot_rpm == 0 and baseline_w > 0:
+            pilot_w = baseline_w * (1.0 - efficiency_pct / 100.0)
+            delta_w = baseline_w - pilot_w
+            pilot_estimated_from_temp = True
+    elif baseline_w > 0:
+        efficiency_pct = (delta_w / baseline_w) * 100.0
+
+    acc = _tenant_accumulators.get(owner_id, {})
+    power_wh = acc.get("power_reclaimed_wh", 0.0)
+    started = acc.get("stats_started_at")
+    uptime_h = (now - started) / 3600.0 if started else 0.0
+    reclaimed_kwh = power_wh / 1000.0
+    annual_kwh = (reclaimed_kwh / uptime_h * 8760.0) if uptime_h > 0.1 else 0.0
+    annual_savings = annual_kwh * _USD_PER_KWH
+
+    return {
+        "owner_id": owner_id,
+        "checked_at_iso": datetime.now(timezone.utc).isoformat(),
+        "has_live_data": bool(pilot),
+        "efficiency_gain_pct": round(efficiency_pct, 1),
+        "power_reclaimed_watts": round(delta_w, 1),
+        "power_reclaimed_kwh": round(reclaimed_kwh, 3),
+        "estimated_annual_savings_usd": round(annual_savings, 0),
+        "pilot_node": {
+            "node_id": pilot_id or "none",
+            "temp_c": pilot_temp,
+            "fan_rpm": pilot_rpm,
+            "fan_power_watts": round(pilot_w, 1),
+            "fan_power_estimated_from_temp": pilot_estimated_from_temp,
+            "last_seen_s_ago": round(now - pilot.get("_received_at"), 1) if pilot.get("_received_at") else None,
+        },
+        "baseline_node": {
+            "node_id": baseline_id or "none",
+            "temp_c": baseline_temp,
+            "fan_rpm": baseline_rpm,
+            "fan_power_watts": round(baseline_w, 1),
+            "last_seen_s_ago": round(now - baseline.get("_received_at"), 1) if baseline.get("_received_at") else None,
+        },
+    }
+
+
+def _send_efficiency_digest_email(owner_id: str = FIXED_OWNER_ID) -> bool:
+    """Send simplified predictive-vs-traditional efficiency report email."""
+    api_key = os.environ.get("RESEND_API_KEY")
+    if not api_key:
+        logging.getLogger("api.main").warning("[Digest] RESEND_API_KEY not set; digest skipped.")
+        return False
+    try:
+        import resend
+        resend.api_key = api_key
+        snap = _build_email_comparison_snapshot(owner_id)
+        pilot = snap["pilot_node"]
+        baseline = snap["baseline_node"]
+        mode_note = " (pilot watts estimated from temperature delta)" if pilot.get("fan_power_estimated_from_temp") else ""
+        html = f"""
+        <h2>CooledAI 3-Hour Efficiency Digest</h2>
+        <p><strong>Time:</strong> {snap["checked_at_iso"]}</p>
+        <p><strong>Comparison:</strong> Predictive (Pilot) vs Traditional (Control)</p>
+        <ul>
+          <li><strong>Efficiency Gain:</strong> {snap["efficiency_gain_pct"]}%</li>
+          <li><strong>Power Reclaimed:</strong> {snap["power_reclaimed_watts"]} W</li>
+          <li><strong>Pilot:</strong> {pilot["fan_power_watts"]} W at {pilot.get("temp_c")}°C{mode_note}</li>
+          <li><strong>Control:</strong> {baseline["fan_power_watts"]} W at {baseline.get("temp_c")}°C</li>
+          <li><strong>Reclaimed Energy (since T0):</strong> {snap["power_reclaimed_kwh"]} kWh</li>
+          <li><strong>Estimated Annual Savings:</strong> ${snap["estimated_annual_savings_usd"]}</li>
+        </ul>
+        <p><em>This report is auto-generated every 3 hours.</em></p>
+        """
+        params = {
+            "from": os.environ.get("LEAD_EMAIL_FROM", "CooledAI <onboarding@resend.dev>"),
+            "to": [_REPORT_EMAIL_TO],
+            "subject": f"CooledAI 3-Hour Digest: {snap['efficiency_gain_pct']}% better vs control",
+            "html": html,
+        }
+        resend.Emails.send(params)
+        logging.getLogger("api.main").info("[Digest] Sent efficiency digest to %s", _REPORT_EMAIL_TO)
+        return True
+    except Exception as exc:
+        logging.getLogger("api.main").warning("[Digest] Email failed: %s", exc)
+        return False
+
+
+def _digest_worker_loop() -> None:
+    """Background worker to send digest emails every N seconds."""
+    log = logging.getLogger("api.main")
+    if _REPORT_EMAIL_INTERVAL_SEC < 300:
+        log.warning("[Digest] Interval too low (%ss), forcing 300s minimum.", _REPORT_EMAIL_INTERVAL_SEC)
+    interval = max(300, _REPORT_EMAIL_INTERVAL_SEC)
+    log.info("[Digest] Worker started. interval=%ss to=%s", interval, _REPORT_EMAIL_TO)
+    while not _report_stop_event.wait(interval):
+        _send_efficiency_digest_email(FIXED_OWNER_ID)
+
+
 @app.get("/api/v1/debug/clerk")
 async def debug_clerk_user(request: Request):
     """
@@ -2048,6 +2223,18 @@ async def test_email():
         return {"ok": True, "message": f"Test email sent to {to_email}"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+@app.post("/api/v1/reports/efficiency/send-now", dependencies=[Depends(_require_admin_key)])
+async def send_efficiency_report_now():
+    """Send the simplified predictive-vs-traditional efficiency digest immediately."""
+    ok = _send_efficiency_digest_email(FIXED_OWNER_ID)
+    return {
+        "ok": ok,
+        "to": _REPORT_EMAIL_TO,
+        "interval_seconds": _REPORT_EMAIL_INTERVAL_SEC,
+        "message": "Efficiency digest sent." if ok else "Efficiency digest failed (check RESEND_API_KEY/logs).",
+    }
 
 
 @app.post("/api/v1/beta")
