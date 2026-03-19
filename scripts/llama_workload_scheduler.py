@@ -240,7 +240,7 @@ def main() -> None:
                     DIFFICULT_PROMPTS,
                     next_difficult,
                     DIFFICULT_EVERY_SEC,
-                    num_predict=450,
+                    num_predict=750,
                     temperature=0.7,
                 )
                 next_difficult = _next_aligned(now, DIFFICULT_EVERY_SEC)
@@ -253,7 +253,7 @@ def main() -> None:
                     HEAVIER_PROMPTS,
                     next_heavier,
                     HEAVIER_EVERY_SEC,
-                    num_predict=220,
+                    num_predict=350,
                     temperature=0.55,
                 )
                 next_heavier = _next_aligned(now, HEAVIER_EVERY_SEC)
@@ -266,7 +266,7 @@ def main() -> None:
                     LIGHT_PROMPTS,
                     next_light,
                     LIGHT_EVERY_SEC,
-                    num_predict=80,
+                    num_predict=125,
                     temperature=0.25,
                 )
                 next_light = _next_aligned(now, LIGHT_EVERY_SEC)

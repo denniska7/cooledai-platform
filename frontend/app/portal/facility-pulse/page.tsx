@@ -13,7 +13,18 @@ function LeafIcon({ className }: { className?: string }) {
   );
 }
 
-type TrackedNode = { node_id: string; predictive: boolean; status: string; last_seen_s_ago: number | null; temp_c: number | null };
+type TrackedNode = {
+  node_id: string;
+  predictive: boolean;
+  status: string;
+  last_seen_s_ago: number | null;
+  temp_c: number | null;
+  gpu_temps_c?: number[];
+  gpu_power_w?: number | number[];
+  cpu_temp_c?: number | null;
+  fan_rpm?: number | null;
+  gpu_count?: number;
+};
 
 export default function FacilityPulsePage() {
   const [efficiencyDelta, setEfficiencyDelta] = useState<number | null>(null);
@@ -26,6 +37,7 @@ export default function FacilityPulsePage() {
     control_acoustic_db?: number | null;
   } | null>(null);
   const [showServers, setShowServers] = useState(false);
+  const [expandedNode, setExpandedNode] = useState<string | null>(null);
 
   const { getToken } = useAuth();
 
@@ -191,20 +203,58 @@ export default function FacilityPulsePage() {
             {nodes.length === 0 ? (
               <p className="text-sm text-white/50">No servers reporting yet.</p>
             ) : (
-              nodes.map((n) => (
-                <div
-                  key={n.node_id}
-                  className="flex items-center justify-between rounded-lg border border-white/10 bg-white/5 px-4 py-2"
-                >
-                  <span className="text-sm text-white">{n.node_id}</span>
-                  <span className={`text-xs font-medium px-2 py-0.5 rounded ${n.predictive ? "bg-[#22c55e]/20 text-[#22c55e]" : "bg-[#ef4444]/20 text-[#ef4444]"}`}>
-                    {n.predictive ? "Predictive" : "Traditional"}
-                  </span>
-                  <span className={`text-xs ${n.status === "ok" ? "text-[#22c55e]" : "text-white/50"}`}>
-                    {n.status === "ok" ? "Live" : "Stale"}
-                  </span>
-                </div>
-              ))
+              nodes.map((n) => {
+                const isExpanded = expandedNode === n.node_id;
+                const totalGpuPower = Array.isArray(n.gpu_power_w)
+                  ? n.gpu_power_w.reduce((a, b) => a + b, 0)
+                  : (n.gpu_power_w ?? null);
+                return (
+                  <div
+                    key={n.node_id}
+                    className="rounded-lg border border-white/10 bg-white/5 overflow-hidden"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setExpandedNode(isExpanded ? null : n.node_id)}
+                      className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-white/5 transition-colors"
+                    >
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-medium text-white">{n.node_id}</span>
+                        <span className={`text-xs font-medium px-2 py-0.5 rounded ${n.predictive ? "bg-[#22c55e]/20 text-[#22c55e]" : "bg-[#ef4444]/20 text-[#ef4444]"}`}>
+                          {n.predictive ? "CooledAI (Pilot)" : "Traditional (Control)"}
+                        </span>
+                        <span className={`text-xs ${n.status === "ok" ? "text-[#22c55e]" : "text-white/50"}`}>
+                          {n.status === "ok" ? "Live" : "Stale"}
+                        </span>
+                      </div>
+                      <svg className={`w-4 h-4 text-white/50 transition-transform ${isExpanded ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+                    {isExpanded && (
+                      <div className="border-t border-white/10 px-4 py-3 bg-black/20 space-y-2 text-sm">
+                        <p className="text-xs font-medium uppercase tracking-wider text-white/50 mb-2">Hardware details</p>
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                          <span className="text-white/50">GPUs</span>
+                          <span className="text-white">{n.gpu_count ?? n.gpu_temps_c?.length ?? "—"}</span>
+                          <span className="text-white/50">GPU temps (°C)</span>
+                          <span className="text-white">
+                            {n.gpu_temps_c?.length ? n.gpu_temps_c.map((t, i) => `GPU${i + 1}: ${t}`).join(", ") : "—"}
+                          </span>
+                          <span className="text-white/50">GPU power (W)</span>
+                          <span className="text-white">{totalGpuPower != null ? `${totalGpuPower} W` : "—"}</span>
+                          <span className="text-white/50">CPU temp (°C)</span>
+                          <span className="text-white">{n.cpu_temp_c != null ? `${n.cpu_temp_c}` : "—"}</span>
+                          <span className="text-white/50">Fan RPM</span>
+                          <span className="text-white">{n.fan_rpm != null ? n.fan_rpm : "—"}</span>
+                          <span className="text-white/50">Avg GPU temp (°C)</span>
+                          <span className="text-white">{n.temp_c != null ? n.temp_c.toFixed(1) : "—"}</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })
             )}
           </div>
         )}

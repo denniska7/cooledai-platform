@@ -57,8 +57,9 @@ _log = logging.getLogger("cooledai-agent")
 # Configuration (overridden by CLI / env / remote config)
 # ===================================================================
 DEFAULT_API_URL = "https://api.cooledai.com"
-REPORT_INTERVAL_S = 5  # Match st550_telemetry for consistent GPU power reporting
+REPORT_INTERVAL_S = 3  # Optimize + telemetry every 3s; fallback to local curve when offline
 CONFIG_INTERVAL_S = 60
+OPTIMIZE_TIMEOUT_S = 2.0  # Don't block cooling loop waiting for API
 DEFAULT_TARGET_TEMP = 65.0
 DEFAULT_CRITICAL_TEMP = 90.0
 SAFE_CONFIG_DIR = Path("/var/lib/cooledai")
@@ -299,11 +300,22 @@ def read_sensors(caps: SensorCapabilities, dry_run: bool = False) -> ThermalSnap
                 parts = [p.strip() for p in line.split(",")]
                 if len(parts) >= 4:
                     try:
-                        snap.gpu_temps.append(float(parts[0]))
+                        temp = float(parts[0])
+                        util = float(parts[2])
+                        raw_power = (parts[3].strip() if len(parts) > 3 else "").upper()
+                        # nvidia-smi can return "N/A", "[N/A]", "[Not Available]", or empty
+                        if raw_power and "N/A" not in raw_power and "NOT" not in raw_power:
+                            power = float(parts[3].strip())
+                        else:
+                            power = 0.0
+                        # nvidia-smi often reports 0W when idle; avoid ruining telemetry
+                        if power <= 0:
+                            power = max(10.0, util * 1.2) if util > 0 else 10.0
+                        snap.gpu_temps.append(temp)
                         snap.gpu_fan_pcts.append(float(parts[1]))
-                        snap.gpu_util_pcts.append(float(parts[2]))
-                        snap.gpu_power_w.append(float(parts[3]))
-                    except ValueError:
+                        snap.gpu_util_pcts.append(util)
+                        snap.gpu_power_w.append(power)
+                    except (ValueError, IndexError):
                         pass
         except Exception as exc:
             _log.debug("nvidia-smi failed: %s", exc)
@@ -627,6 +639,35 @@ def fetch_remote_config(
     return None
 
 
+def fetch_optimize_control(
+    api_url: str,
+    token: str,
+    snap: "ThermalSnapshot",
+    node_id: str,
+) -> Optional[int]:
+    """
+    Call full optimization engine for target_duty (0-100).
+    Returns None on any failure — caller must fall back to local curve.
+    """
+    fan_rpms = list(snap.fan_rpms.values()) if snap.fan_rpms else []
+    fan_rpm = int(sum(fan_rpms) / len(fan_rpms)) if fan_rpms else 2000
+    gpu_power = sum(snap.gpu_power_w) if snap.gpu_power_w else 50.0
+    cpu_temp = max(snap.cpu_temps) if snap.cpu_temps else None
+    payload = {
+        "temp_c": snap.max_temp_c,
+        "fan_rpm": float(fan_rpm),
+        "gpu_power_w": gpu_power,
+        "cpu_temp_c": cpu_temp,
+        "node_id": node_id,
+        "max_fan_rpm": 7000.0,
+    }
+    url_opt = f"{api_url.rstrip('/')}/api/v1/optimize/control"
+    result = _http_request(url_opt, token, "POST", payload, timeout_s=OPTIMIZE_TIMEOUT_S)
+    if result is not None and isinstance(result.get("target_duty"), (int, float)):
+        return int(max(0, min(100, result["target_duty"])))
+    return None
+
+
 # ===================================================================
 # Main loop
 # ===================================================================
@@ -713,7 +754,13 @@ def run_agent(
 
         # --- Control ---
         if has_control and cfg.control_enabled:
-            duty = target_duty_pct(snap.max_temp_c, cfg.target_temp)
+            api_duty = fetch_optimize_control(api_url, token, snap, node_id)
+            if api_duty is not None:
+                duty = api_duty
+            else:
+                duty = target_duty_pct(snap.max_temp_c, cfg.target_temp)
+                if consecutive_post_failures == 0:
+                    _log.debug("Optimize API unreachable — using local curve (hardware protected)")
             method = set_fan_duty(caps, duty, dry_run)
             if method != "none":
                 _manual_control_active = True

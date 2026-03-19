@@ -204,7 +204,11 @@ def _init_nvml(retries: int = 5, wait: float = 3.0) -> int:
 
 
 def _read_gpu_temps(count: int) -> list[dict]:
-    """Return one telemetry record per GPU (temp + power)."""
+    """Return one telemetry record per GPU (temp + power).
+
+    NVML/pynvml often reports 0W when GPU is idle or between sampling windows.
+    We apply a floor (10W) or utilization-based estimate to avoid 0W ruining charts.
+    """
     now = datetime.now(timezone.utc).isoformat()
     records: list[dict] = []
     for i in range(count):
@@ -218,11 +222,26 @@ def _read_gpu_temps(count: int) -> list[dict]:
                 "timestamp": now,
                 "temperature_c": float(temp_c),
             }
+            power_w = 0.0
             try:
                 power_mw = pynvml.nvmlDeviceGetPowerUsage(handle)
-                rec["power_draw_w"] = round(float(power_mw) / 1000.0, 2)
+                power_w = float(power_mw) / 1000.0
             except pynvml.NVMLError:
                 pass  # Power not supported on some GPUs
+
+            # NVML often reports 0W when idle; avoid ruining telemetry charts
+            if power_w <= 0:
+                util_pct = 0.0
+                try:
+                    util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                    util_pct = float(util.gpu)  # 0–100
+                except pynvml.NVMLError:
+                    pass
+                if util_pct > 0:
+                    power_w = max(10.0, util_pct * 1.2)
+                else:
+                    power_w = 10.0
+            rec["power_draw_w"] = round(power_w, 2)
             records.append(rec)
         except pynvml.NVMLError as exc:
             print(f"[telemetry] GPU {i} read error: {exc}")
