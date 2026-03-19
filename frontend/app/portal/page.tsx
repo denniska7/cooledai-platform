@@ -17,8 +17,8 @@ import {
 import { api } from "@/lib/api";
 import { useAuth } from "@clerk/nextjs";
 
-// Match telemetry heartbeat (5s) so UI refreshes on each new packet
-const STATS_POLL_MS = 5_000;
+const STATS_POLL_MS = 5_000;  // Real-time stats below overview
+const GRAPH_POLL_MS = 60_000;  // Graph refreshes every 1 minute
 const PULSE_STORAGE_KEY = "COOLEDAI_PULSE_DATA";
 const PULSE_STORAGE_VERSION = 4; // bump to invalidate stale/non-comparable cached data
 const MAX_STORED_POINTS = 60_480; // 7 days at 10s interval
@@ -42,8 +42,8 @@ type LiveStats = {
   has_live_data: boolean;
   uptime_hours: number;
   message?: string;
-  pilot_node: { node_id: string; fan_rpm: number; fan_power_watts: number | null; temp_c: number | null; last_seen_s_ago: number | null };
-  baseline_node: { node_id: string; fan_rpm: number; fan_power_watts: number | null; temp_c: number | null; source: string; last_seen_s_ago: number | null };
+  pilot_node: { node_id: string; fan_rpm: number; fan_power_watts: number | null; temp_c: number | null; cpu_temp_c?: number | null; gpu_power_w?: number | null; last_seen_s_ago: number | null };
+  baseline_node: { node_id: string; fan_rpm: number; fan_power_watts: number | null; temp_c: number | null; cpu_temp_c?: number | null; gpu_power_w?: number | null; source: string; last_seen_s_ago: number | null };
 };
 
 type PulsePoint = {
@@ -59,6 +59,181 @@ type PulsePoint = {
   delta?: number;
   ts: number;
 };
+
+const EXPORT_DAY_OPTIONS = [7, 14, 30, 60] as const;
+
+function ExportCSVSection({
+  getToken,
+  authError,
+}: {
+  getToken: () => Promise<string | null>;
+  authError: boolean;
+}) {
+  const [exportMode, setExportMode] = useState<"preset" | "custom">("preset");
+  const [presetDays, setPresetDays] = useState<number>(7);
+  const [startDate, setStartDate] = useState("");
+  const [endDate, setEndDate] = useState("");
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const handleExport = async () => {
+    setExportError(null);
+    setExporting(true);
+    try {
+      const token = await getToken();
+      if (!token) {
+        setExportError("Sign in required to export.");
+        return;
+      }
+      let params: { start_date?: string; end_date?: string; days?: number };
+      if (exportMode === "preset") {
+        params = { days: presetDays };
+      } else {
+        if (!startDate || !endDate) {
+          setExportError("Select both start and end dates.");
+          return;
+        }
+        params = { start_date: startDate, end_date: endDate };
+      }
+      const res = await api.getThermalExport(params, token);
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        setExportError(err.detail || `Export failed (${res.status})`);
+        return;
+      }
+      const blob = await res.blob();
+      const disposition = res.headers.get("Content-Disposition");
+      const match = disposition?.match(/filename="?([^";\n]+)"?/);
+      const filename = match?.[1] || "cooledai_thermal_export.csv";
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setExportError(e instanceof Error ? e.message : "Export failed");
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const today = new Date().toISOString().slice(0, 10);
+  const maxStart = new Date();
+  maxStart.setDate(maxStart.getDate() - 60);
+  const minStart = maxStart.toISOString().slice(0, 10);
+
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, delay: 0.25 }}
+      className="rounded-xl border border-white/10 bg-[#141414] p-6"
+    >
+      <h2 className="text-base font-semibold text-white mb-1">Export Data</h2>
+      <p className="text-sm text-white/50 mb-4">
+        Download thermal telemetry as CSV (up to 60 days) to evaluate CooledAI efficiency in spreadsheets.
+      </p>
+      <div className="flex flex-col sm:flex-row flex-wrap gap-4 items-start">
+        <div className="flex flex-col gap-2">
+          <span className="text-xs text-white/50">Range</span>
+          <div className="flex gap-0.5 rounded-lg border border-white/10 bg-white/5 p-0.5">
+            <button
+              type="button"
+              onClick={() => setExportMode("preset")}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                exportMode === "preset" ? "bg-accent-cyan/20 text-accent-cyan" : "text-white/60 hover:text-white/90"
+              }`}
+            >
+              Last N days
+            </button>
+            <button
+              type="button"
+              onClick={() => setExportMode("custom")}
+              className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                exportMode === "custom" ? "bg-accent-cyan/20 text-accent-cyan" : "text-white/60 hover:text-white/90"
+              }`}
+            >
+              Custom dates
+            </button>
+          </div>
+        </div>
+        {exportMode === "preset" ? (
+          <div className="flex flex-col gap-2">
+            <span className="text-xs text-white/50">Days</span>
+            <select
+              value={presetDays}
+              onChange={(e) => setPresetDays(Number(e.target.value))}
+              className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent-cyan"
+            >
+              {EXPORT_DAY_OPTIONS.map((d) => (
+                <option key={d} value={d}>
+                  Last {d} days
+                </option>
+              ))}
+            </select>
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-4">
+            <div className="flex flex-col gap-2">
+              <label className="text-xs text-white/50">Start date</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                min={minStart}
+                max={today}
+                className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent-cyan"
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <label className="text-xs text-white/50">End date</label>
+              <input
+                type="date"
+                value={endDate}
+                onChange={(e) => setEndDate(e.target.value)}
+                min={startDate || minStart}
+                max={today}
+                className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white focus:outline-none focus:ring-1 focus:ring-accent-cyan"
+              />
+            </div>
+          </div>
+        )}
+        <div className="flex items-end">
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={authError || exporting}
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-accent-cyan/20 text-accent-cyan font-medium text-sm hover:bg-accent-cyan/30 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {exporting ? (
+              <>
+                <svg className="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                </svg>
+                Exporting…
+              </>
+            ) : (
+              <>
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                </svg>
+                Download CSV
+              </>
+            )}
+          </button>
+        </div>
+      </div>
+      {exportError && (
+        <p className="mt-3 text-sm text-red-400">{exportError}</p>
+      )}
+      <p className="text-xs text-white/40 mt-3">
+        CSV includes: Timestamp, Date, Time, CooledAI & Control GPU temp, Temp delta, Fan RPM, CPU temp, GPU power. Max 60 days per export.
+      </p>
+    </motion.section>
+  );
+}
 
 function PortalOverviewContent() {
   const searchParams = useSearchParams();
@@ -77,6 +252,8 @@ function PortalOverviewContent() {
   const [powerMode, setPowerMode] = useState<LiveStats["power_comparison_mode"]>("not_comparable");
   const [pilotNodeId, setPilotNodeId] = useState("");
   const [baselineNodeId, setBaselineNodeId] = useState("");
+  const [pilotNode, setPilotNode] = useState<LiveStats["pilot_node"] | null>(null);
+  const [baselineNode, setBaselineNode] = useState<LiveStats["baseline_node"] | null>(null);
   const [pulseRange, setPulseRange] = useState<PulseRange>("1h");
   const [rangeData, setRangeData] = useState<PulsePoint[]>([]);
   const [rangeLoading, setRangeLoading] = useState(false);
@@ -155,6 +332,8 @@ function PortalOverviewContent() {
         setPowerMode("not_comparable");
         setPilotNodeId("");
         setBaselineNodeId("");
+        setPilotNode(null);
+        setBaselineNode(null);
         setPulseData([]);
         return;
       }
@@ -173,6 +352,8 @@ function PortalOverviewContent() {
       setPowerMode(data.power_comparison_mode ?? "not_comparable");
       setPilotNodeId(data.pilot_node.node_id || "");
       setBaselineNodeId(data.baseline_node.node_id || "");
+      setPilotNode(data.pilot_node);
+      setBaselineNode(data.baseline_node);
 
       // Only add point when BOTH temps are present — avoid defaulting to 0 (which produces bogus deltas)
       if (pilotTemp != null && baselineTemp != null) {
@@ -286,7 +467,7 @@ function PortalOverviewContent() {
       if (pulseRange === "1h") fetchRangeRaw(1);
       else if (pulseRange === "24h") fetchRangeRaw(24);
       else fetchRangeRaw(168);
-    }, STATS_POLL_MS);
+    }, GRAPH_POLL_MS);
     return () => clearInterval(id);
   }, [pulseRange, fetchRangeRaw]);
 
@@ -441,7 +622,48 @@ function PortalOverviewContent() {
         </motion.div>
       </div>
 
-      {/* Thermal Chart — live raw telemetry for 1H / 24H / 7D */}
+      {/* Real-time data — updates every 5s, no graph */}
+      {hasLiveData && (pilotNode || baselineNode) && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.2 }}
+          className="mb-8 rounded-xl border border-white/10 bg-[#141414] p-4"
+        >
+          <p className="text-xs font-medium uppercase tracking-wider text-white/50 mb-3">Live telemetry (updates every 5s)</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-[#22c55e]">{pilotNodeId || "CooledAI"}</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-white/80">
+                <span className="text-white/50">GPU temp</span>
+                <span>{pilotNode?.temp_c != null ? `${pilotNode.temp_c.toFixed(1)}°C` : "—"}</span>
+                <span className="text-white/50">CPU temp</span>
+                <span>{pilotNode?.cpu_temp_c != null ? `${pilotNode.cpu_temp_c.toFixed(1)}°C` : "—"}</span>
+                <span className="text-white/50">Fan RPM</span>
+                <span>{pilotNode?.fan_rpm != null ? pilotNode.fan_rpm : "—"}</span>
+                <span className="text-white/50">GPU power</span>
+                <span>{pilotNode?.gpu_power_w != null ? `${pilotNode.gpu_power_w} W` : "—"}</span>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-[#ef4444]">{baselineNodeId || "Control"}</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-sm text-white/80">
+                <span className="text-white/50">GPU temp</span>
+                <span>{baselineNode?.temp_c != null ? `${baselineNode.temp_c.toFixed(1)}°C` : "—"}</span>
+                <span className="text-white/50">CPU temp</span>
+                <span>{baselineNode?.cpu_temp_c != null ? `${baselineNode.cpu_temp_c.toFixed(1)}°C` : "—"}</span>
+                <span className="text-white/50">Fan RPM</span>
+                <span>{baselineNode?.fan_rpm != null ? baselineNode.fan_rpm : "—"}</span>
+                <span className="text-white/50">GPU power</span>
+                <span>{baselineNode?.gpu_power_w != null ? `${baselineNode.gpu_power_w} W` : "—"}</span>
+              </div>
+            </div>
+          </div>
+          <p className="text-xs text-white/40 mt-3">Chart below updates every 1 minute</p>
+        </motion.div>
+      )}
+
+      {/* Thermal Chart — refreshes every 1 min */}
       <motion.section
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
@@ -598,8 +820,8 @@ function PortalOverviewContent() {
               )}
               {chartMetric === "power" && (
                 <>
-                  <Line type="linear" dataKey="pilotGpuPowerW" name="pilotGpuPowerW" stroke="#22c55e" strokeWidth={2} dot={false} connectNulls={false} />
-                  <Line type="linear" dataKey="baselineGpuPowerW" name="baselineGpuPowerW" stroke="#ef4444" strokeWidth={2} dot={false} connectNulls={false} />
+                  <Line type="linear" dataKey="pilotGpuPowerW" name="pilotGpuPowerW" stroke="#22c55e" strokeWidth={2} dot={false} connectNulls />
+                  <Line type="linear" dataKey="baselineGpuPowerW" name="baselineGpuPowerW" stroke="#ef4444" strokeWidth={2} dot={false} connectNulls />
                 </>
               )}
               <Legend
@@ -632,6 +854,9 @@ function PortalOverviewContent() {
           </p>
         </div>
       </motion.section>
+
+      {/* CSV Export — up to 60 days for efficiency evaluation */}
+      <ExportCSVSection getToken={getToken} authError={!!authError} />
     </div>
   );
 }

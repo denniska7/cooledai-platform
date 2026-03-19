@@ -1536,7 +1536,7 @@ _tenant_telemetry: Dict[str, Dict[str, dict]] = {}
 _tenant_accumulators: Dict[str, dict] = {}
 # Rolling thermal history for 6H/24H aggregated charts: { owner_id: [(ts, pilot_temp, baseline_temp), ...] }
 _thermal_history: Dict[str, list] = {}
-_MAX_THERMAL_HISTORY_POINTS = 7 * 24 * 60 * 12  # 7 days at 5s interval
+_MAX_THERMAL_HISTORY_POINTS = 60 * 24 * 60 * 12  # 60 days at 5s interval
 
 # Fan power estimation — Fan Affinity Law: P ∝ RPM³
 _RATED_FAN_WATTS = float(os.environ.get("COOLEDAI_RATED_FAN_WATTS", "12"))
@@ -1586,14 +1586,30 @@ def _get_pilot_baseline_snapshot(
             pilot_rpm = all_nodes[nid].get("fan_rpm")
             pilot_cpu = all_nodes[nid].get("cpu_temp_c")
             pw = all_nodes[nid].get("gpu_power_w")
-            pilot_gpu_pwr = float(pw) if pw is not None and float(pw) > 0 else None
+            pilot_gpu_pwr = float(pw) if pw is not None else None
         elif "control" in nid_lower and "traditional" in nid_lower:
             baseline_temp = all_nodes[nid].get("avg_gpu_temp_c", all_nodes[nid].get("max_gpu_temp_c", all_nodes[nid].get("max_temp_c")))
             baseline_rpm = all_nodes[nid].get("fan_rpm")
             baseline_cpu = all_nodes[nid].get("cpu_temp_c")
             pw = all_nodes[nid].get("gpu_power_w")
-            baseline_gpu_pwr = float(pw) if pw is not None and float(pw) > 0 else None
+            baseline_gpu_pwr = float(pw) if pw is not None else None
     return pilot_temp, baseline_temp, pilot_rpm, baseline_rpm, pilot_cpu, baseline_cpu, pilot_gpu_pwr, baseline_gpu_pwr
+
+
+def _smooth_raw_points(points: list, window: int = 5, keys: tuple = ("pilot_gpu_power_w", "baseline_gpu_power_w")) -> None:
+    """Apply moving average to specified keys in-place for smoother charts."""
+    if len(points) < window or window < 2:
+        return
+    half = window // 2
+    for i in range(len(points)):
+        for key in keys:
+            vals = []
+            for j in range(max(0, i - half), min(len(points), i + half + 1)):
+                v = points[j].get(key)
+                if v is not None:
+                    vals.append(float(v))
+            if vals:
+                points[i][key] = round(sum(vals) / len(vals), 1)
 
 
 def _append_thermal_history(owner_id: str, now_ts: float) -> None:
@@ -1815,6 +1831,8 @@ async def get_thermal_history(
                 "pilot_gpu_power_w": round(pilot_gpu_pwr, 1) if pilot_gpu_pwr is not None else None,
                 "baseline_gpu_power_w": round(baseline_gpu_pwr, 1) if baseline_gpu_pwr is not None else None,
             })
+        # Smooth GPU power for cleaner chart (5-point moving average)
+        _smooth_raw_points(raw_points, window=5, keys=("pilot_gpu_power_w", "baseline_gpu_power_w"))
         return {
             "points": raw_points,
             "hours": hours,
@@ -1849,6 +1867,110 @@ async def get_thermal_history(
             "ts": hour_ts,
         })
     return {"buckets": buckets, "hours": hours}
+
+
+_MAX_EXPORT_DAYS = 60
+
+
+@app.get("/api/v1/thermal-history/export")
+async def export_thermal_history_csv(
+    owner_id: str = Depends(_require_clerk_fixed_owner_id),
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    days: Optional[int] = None,
+):
+    """
+    Export thermal history as CSV for evaluation (up to 60 days).
+
+    Use either:
+      - start_date & end_date (YYYY-MM-DD)
+      - days (number of days back from now)
+
+    Max range: 60 days. Returns CSV with readable headers for spreadsheet analysis.
+    """
+    now = time.time()
+    if days is not None:
+        if days < 1 or days > _MAX_EXPORT_DAYS:
+            raise HTTPException(400, f"days must be 1–{_MAX_EXPORT_DAYS}")
+        cutoff = now - (days * 86400)
+        start_ts = cutoff
+        end_ts = now
+    elif start_date and end_date:
+        try:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            end_dt = end_dt.replace(hour=23, minute=59, second=59, microsecond=999999)
+            start_ts = start_dt.timestamp()
+            end_ts = end_dt.timestamp()
+            if start_ts >= end_ts:
+                raise HTTPException(400, "start_date must be before end_date")
+            delta_days = (end_ts - start_ts) / 86400
+            if delta_days > _MAX_EXPORT_DAYS:
+                raise HTTPException(400, f"Date range cannot exceed {_MAX_EXPORT_DAYS} days")
+        except ValueError as e:
+            raise HTTPException(400, f"Invalid date format (use YYYY-MM-DD): {e}")
+    else:
+        raise HTTPException(400, "Provide start_date & end_date, or days")
+
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    points = [row for row in history if start_ts <= row[0] <= end_ts]
+
+    # CSV headers — readable for spreadsheet users
+    headers = [
+        "Timestamp_UTC",
+        "Date",
+        "Time",
+        "CooledAI_GPU_Temp_C",
+        "Control_GPU_Temp_C",
+        "Temp_Delta_C",
+        "CooledAI_Fan_RPM",
+        "Control_Fan_RPM",
+        "CooledAI_CPU_Temp_C",
+        "Control_CPU_Temp_C",
+        "CooledAI_GPU_Power_W",
+        "Control_GPU_Power_W",
+    ]
+
+    rows = []
+    for row in points:
+        out = _history_row(row)
+        ts, pt, bt, pr, br = out[0], out[1], out[2], out[3], out[4]
+        pilot_cpu = out[5] if len(out) > 5 else None
+        baseline_cpu = out[6] if len(out) > 6 else None
+        pilot_gpu_pwr = out[7] if len(out) > 7 else None
+        baseline_gpu_pwr = out[8] if len(out) > 8 else None
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        delta = round(bt - pt, 2) if (pt is not None and bt is not None) else ""
+        rows.append([
+            dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            dt.strftime("%Y-%m-%d"),
+            dt.strftime("%H:%M:%S"),
+            round(pt, 2) if pt is not None else "",
+            round(bt, 2) if bt is not None else "",
+            delta,
+            round(pr, 1) if pr is not None else "",
+            round(br, 1) if br is not None else "",
+            round(pilot_cpu, 2) if pilot_cpu is not None else "",
+            round(baseline_cpu, 2) if baseline_cpu is not None else "",
+            round(pilot_gpu_pwr, 1) if pilot_gpu_pwr is not None else "",
+            round(baseline_gpu_pwr, 1) if baseline_gpu_pwr is not None else "",
+        ])
+
+    import csv
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(headers)
+    writer.writerows(rows)
+    csv_content = buf.getvalue()
+
+    start_str = datetime.fromtimestamp(start_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+    end_str = datetime.fromtimestamp(end_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+    filename = f"cooledai_thermal_export_{start_str}_to_{end_str}.csv"
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/api/v1/stats")
@@ -2031,6 +2153,8 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
             "fan_power_estimated_from_temp": pilot_fan_estimated,
             "raw_fan_wattage": pilot.get("raw_fan_wattage"),
             "temp_c": pilot_temp,
+            "cpu_temp_c": pilot.get("cpu_temp_c"),
+            "gpu_power_w": round(float(pilot.get("gpu_power_w")), 1) if pilot.get("gpu_power_w") is not None else None,
             "gpu_temps_c": pilot.get("gpu_temps_c", []),
             "temp_basis": "avg_gpu_temp_c",
             "last_seen_s_ago": round(pilot_age, 1) if pilot_age is not None else None,
@@ -2041,7 +2165,9 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
             "fan_power_watts": round(baseline_w, 1) if baseline_w is not None else None,
             "raw_fan_wattage": baseline.get("raw_fan_wattage"),
             "temp_c": baseline_temp,
-            "gpu_temps_c": baseline.get("gpu_temps_c", []),
+            "cpu_temp_c": baseline.get("cpu_temp_c") if baseline else None,
+            "gpu_power_w": round(float(baseline.get("gpu_power_w")), 1) if baseline and baseline.get("gpu_power_w") is not None else None,
+            "gpu_temps_c": baseline.get("gpu_temps_c", []) if baseline else [],
             "temp_basis": "avg_gpu_temp_c",
             "last_seen_s_ago": round(baseline_age, 1) if baseline_age is not None else None,
             "source": baseline_source,
@@ -2253,6 +2379,80 @@ async def get_telemetry_logs(hours: int = 1):
         "hours": hours,
         "points": raw_points,
         "node_ids": {"cooledai": "ST550-CooledAI-Predictive", "control": "ST550-Control-Traditional"},
+    }
+
+
+@app.get("/api/v1/nodes/list")
+async def get_nodes_list(owner_id: str = Depends(_require_clerk_fixed_owner_id)):
+    """
+    List all servers the API is tracking, with predictive vs traditional distinction.
+    """
+    all_nodes = _tenant_telemetry.get(owner_id, {})
+    agent_keys = [k for k in all_nodes if "/" not in k]
+    nodes = []
+    for nid in agent_keys:
+        nid_lower = nid.lower()
+        is_predictive = "cooledai" in nid_lower and "predictive" in nid_lower
+        node = all_nodes[nid]
+        received = node.get("_received_at")
+        status = "ok" if received and (time.time() - received) < 120 else "stale"
+        nodes.append({
+            "node_id": nid,
+            "predictive": is_predictive,
+            "status": status,
+            "last_seen_s_ago": round(time.time() - received, 1) if received else None,
+            "temp_c": node.get("avg_gpu_temp_c", node.get("max_temp_c")),
+        })
+    return {"nodes": nodes}
+
+
+@app.get("/api/v1/facility/hourly-metrics")
+async def get_hourly_facility_metrics(owner_id: str = Depends(_require_clerk_fixed_owner_id)):
+    """
+    Hourly average PUE and acoustic load (from last hour of telemetry).
+    PUE derived from fan power ratio; acoustic from fan RPM (dB ≈ 30 + RPM/80).
+    """
+    now = time.time()
+    cutoff = now - 3600
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    points = [row for row in history if row[0] >= cutoff]
+    if not points:
+        return {
+            "pilot_pue": None,
+            "control_pue": None,
+            "pilot_acoustic_db": None,
+            "control_acoustic_db": None,
+            "period": "last_hour",
+            "points_count": 0,
+        }
+    pilot_pue_vals = []
+    control_pue_vals = []
+    pilot_rpm_vals = []
+    control_rpm_vals = []
+    for row in points:
+        out = _history_row(row)
+        pr, br = out[3], out[4]
+        pilot_w = _fan_power_watts(pr) if pr is not None else None
+        baseline_w = _fan_power_watts(br) if br is not None else None
+        if pilot_w is not None and pilot_w > 0:
+            pilot_pue_vals.append(1.0 + (pilot_w / 500.0))
+        if baseline_w is not None and baseline_w > 0:
+            control_pue_vals.append(1.0 + (baseline_w / 500.0))
+        if pr is not None:
+            pilot_rpm_vals.append(pr)
+        if br is not None:
+            control_rpm_vals.append(br)
+    pilot_pue = round(sum(pilot_pue_vals) / len(pilot_pue_vals), 2) if pilot_pue_vals else None
+    control_pue = round(sum(control_pue_vals) / len(control_pue_vals), 2) if control_pue_vals else None
+    pilot_acoustic = round(30 + sum(pilot_rpm_vals) / len(pilot_rpm_vals) / 80, 0) if pilot_rpm_vals else None
+    control_acoustic = round(30 + sum(control_rpm_vals) / len(control_rpm_vals) / 80, 0) if control_rpm_vals else None
+    return {
+        "pilot_pue": pilot_pue,
+        "control_pue": control_pue,
+        "pilot_acoustic_db": int(pilot_acoustic) if pilot_acoustic is not None else None,
+        "control_acoustic_db": int(control_acoustic) if control_acoustic is not None else None,
+        "period": "last_hour",
+        "points_count": len(points),
     }
 
 
