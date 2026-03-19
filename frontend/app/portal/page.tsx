@@ -580,7 +580,7 @@ function PortalOverviewContent() {
         </div>
         )}
         <p className="text-xs text-white/40 mt-3">
-          Yellow line: warning (65°C). Red line: critical (85°C). On 1H view, dashed orange shows live control fan RPM.
+          Yellow line: warning (65°C). Red line: critical (85°C). Temps use RAW GPU average per node. On 1H view, dashed orange shows live control fan RPM.
         </p>
       </motion.section>
     </div>

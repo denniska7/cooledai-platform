@@ -1559,7 +1559,7 @@ def _fan_power_watts(rpm: float) -> float:
 def _get_pilot_baseline_snapshot(
     owner_id: str,
 ) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float]]:
-    """Get current pilot/control temps and fan RPM for history snapshots."""
+    """Get current pilot/control RAW GPU-average temps and fan RPM for history snapshots."""
     if owner_id == "master":
         all_nodes = {}
         for tn in _tenant_telemetry.values():
@@ -1575,11 +1575,11 @@ def _get_pilot_baseline_snapshot(
             continue
         nid_lower = nid.lower()
         if "cooledai" in nid_lower and "predictive" in nid_lower:
-            # Apples-to-apples thermal comparison: prefer GPU max temp on both nodes.
-            pilot_temp = all_nodes[nid].get("max_gpu_temp_c", all_nodes[nid].get("max_temp_c"))
+            # Apples-to-apples thermal comparison: use RAW GPU average temp per node.
+            pilot_temp = all_nodes[nid].get("avg_gpu_temp_c", all_nodes[nid].get("max_gpu_temp_c", all_nodes[nid].get("max_temp_c")))
             pilot_rpm = all_nodes[nid].get("fan_rpm")
         elif "control" in nid_lower and "traditional" in nid_lower:
-            baseline_temp = all_nodes[nid].get("max_gpu_temp_c", all_nodes[nid].get("max_temp_c"))
+            baseline_temp = all_nodes[nid].get("avg_gpu_temp_c", all_nodes[nid].get("max_gpu_temp_c", all_nodes[nid].get("max_temp_c")))
             baseline_rpm = all_nodes[nid].get("fan_rpm")
     return pilot_temp, baseline_temp, pilot_rpm, baseline_rpm
 
@@ -1714,6 +1714,11 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
                 consolidated["max_temp_c"] = max(
                     consolidated.get("max_temp_c", 0), temp_c,
                 )
+
+        # Per-cycle raw GPU average temperature (apples-to-apples node comparison basis).
+        gpu_cycle = consolidated.get("gpu_temps_c", [])
+        if gpu_cycle:
+            consolidated["avg_gpu_temp_c"] = float(sum(gpu_cycle) / len(gpu_cycle))
 
         tenant[agent_id] = consolidated
 
@@ -1919,8 +1924,8 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
 
     # ST550: Use temp-based efficiency when both Pilot and Control temps available
     # Formula: (Baseline_Temp - Pilot_Temp) / Baseline_Temp * 100
-    pilot_temp = pilot.get("max_gpu_temp_c", pilot.get("max_temp_c"))
-    baseline_temp = baseline.get("max_gpu_temp_c", baseline.get("max_temp_c"))
+    pilot_temp = pilot.get("avg_gpu_temp_c", pilot.get("max_gpu_temp_c", pilot.get("max_temp_c")))
+    baseline_temp = baseline.get("avg_gpu_temp_c", baseline.get("max_gpu_temp_c", baseline.get("max_temp_c")))
     pilot_fan_estimated = False
     if (
         pilot_temp is not None
@@ -1975,6 +1980,8 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
             "fan_power_estimated_from_temp": pilot_fan_estimated,
             "raw_fan_wattage": pilot.get("raw_fan_wattage"),
             "temp_c": pilot_temp,
+            "gpu_temps_c": pilot.get("gpu_temps_c", []),
+            "temp_basis": "avg_gpu_temp_c",
             "last_seen_s_ago": round(pilot_age, 1) if pilot_age is not None else None,
         },
         "baseline_node": {
@@ -1983,6 +1990,8 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
             "fan_power_watts": round(baseline_w, 1) if baseline_w is not None else None,
             "raw_fan_wattage": baseline.get("raw_fan_wattage"),
             "temp_c": baseline_temp,
+            "gpu_temps_c": baseline.get("gpu_temps_c", []),
+            "temp_basis": "avg_gpu_temp_c",
             "last_seen_s_ago": round(baseline_age, 1) if baseline_age is not None else None,
             "source": baseline_source,
         },
