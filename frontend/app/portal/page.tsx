@@ -80,10 +80,7 @@ function PortalOverviewContent() {
   const [pulseRange, setPulseRange] = useState<PulseRange>("1h");
   const [rangeData, setRangeData] = useState<PulsePoint[]>([]);
   const [rangeLoading, setRangeLoading] = useState(false);
-  const [showGpuPower, setShowGpuPower] = useState(false);
-  const [showFanSpeed, setShowFanSpeed] = useState(false);
-  const [showCpuTemp, setShowCpuTemp] = useState(false);
-  const [dataSource, setDataSource] = useState<Record<string, string> | null>(null);
+  const [chartMetric, setChartMetric] = useState<"gpu" | "cpu" | "fan" | "power">("gpu");
   const [pulseData, setPulseData] = useState<PulsePoint[]>([]);
   const [serverMessage, setServerMessage] = useState<string | null>(null);
 
@@ -491,23 +488,25 @@ function PortalOverviewContent() {
               </div>
             </div>
             <div className="h-px w-px bg-white/20 sm:hidden" />
-            <div className="flex items-center gap-3">
-              <span className="text-xs text-white/50">Add to chart</span>
-              <div className="flex flex-wrap gap-3">
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-white/50">Metric</span>
+              <div className="flex flex-wrap gap-0.5 rounded-lg border border-white/10 bg-white/5 p-0.5">
                 {[
-                  { key: "showCpuTemp", checked: showCpuTemp, set: setShowCpuTemp, label: "CPU Temp" },
-                  { key: "showFanSpeed", checked: showFanSpeed, set: setShowFanSpeed, label: "Fan Speed" },
-                  { key: "showGpuPower", checked: showGpuPower, set: setShowGpuPower, label: "GPU Power" },
-                ].map(({ key, checked, set, label }) => (
-                  <label key={key} className="inline-flex items-center gap-2 cursor-pointer group">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(e) => set(e.target.checked)}
-                      className="rounded border-white/30 bg-white/5 text-accent-cyan focus:ring-accent-cyan focus:ring-offset-0 focus:ring-2"
-                    />
-                    <span className="text-xs text-white/70 group-hover:text-white">{label}</span>
-                  </label>
+                  { id: "gpu" as const, label: "GPU Temp" },
+                  { id: "cpu" as const, label: "CPU Temp" },
+                  { id: "fan" as const, label: "Fan Speed" },
+                  { id: "power" as const, label: "GPU Power" },
+                ].map(({ id, label }) => (
+                  <button
+                    key={id}
+                    type="button"
+                    onClick={() => setChartMetric(id)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${
+                      chartMetric === id ? "bg-accent-cyan/20 text-accent-cyan" : "text-white/60 hover:text-white/90"
+                    }`}
+                  >
+                    {label}
+                  </button>
                 ))}
               </div>
             </div>
@@ -542,35 +541,14 @@ function PortalOverviewContent() {
                 tickLine={false}
               />
               <YAxis
-                yAxisId="temp"
                 tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 11 }}
                 axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
                 tickLine={false}
-                domain={[0, "dataMax + 10"]}
-                tickFormatter={(v) => `${v}°C`}
+                domain={chartMetric === "power" ? [0, "auto"] : [0, "dataMax + 10"]}
+                tickFormatter={(v) =>
+                  chartMetric === "fan" ? `${v}` : chartMetric === "power" ? `${v} W` : `${v}°C`
+                }
               />
-              {showFanSpeed && (
-                <YAxis
-                  yAxisId="rpm"
-                  orientation="right"
-                  tick={{ fill: "rgba(255,255,255,0.45)", fontSize: 11 }}
-                  axisLine={{ stroke: "rgba(255,255,255,0.08)" }}
-                  tickLine={false}
-                  width={46}
-                  tickFormatter={(v) => `${v}`}
-                />
-              )}
-              {showGpuPower && (
-                <YAxis
-                  yAxisId="power"
-                  orientation="right"
-                  tick={{ fill: "rgba(255,255,255,0.45)", fontSize: 11 }}
-                  axisLine={{ stroke: "rgba(255,255,255,0.08)" }}
-                  tickLine={false}
-                  width={46}
-                  tickFormatter={(v) => `${v}W`}
-                />
-              )}
               <Tooltip
                 contentStyle={{
                   backgroundColor: "#1a1a1a",
@@ -581,140 +559,78 @@ function PortalOverviewContent() {
                 labelStyle={{ color: "rgba(255,255,255,0.9)", marginBottom: 8 }}
                 formatter={(value, name) => {
                   const v = value != null ? value : 0;
-                  if (name === "delta") return [`${v}°C`, "Δ (Control − CooledAI)"];
-                  if (name === "controlFanRpm") return [`${v} RPM`, "Control"];
-                  if (name === "pilotFanRpm") return [`${v} RPM`, "CooledAI"];
-                  if (name === "pilotGpuPowerW") return [`${v} W`, "CooledAI"];
-                  if (name === "baselineGpuPowerW") return [`${v} W`, "Control"];
-                  if (name === "pilotCpuTemp") return [`${v}°C`, "CooledAI"];
-                  if (name === "baselineCpuTemp") return [`${v}°C`, "Control"];
-                  return [`${v}°C`, name === "pilot" ? "CooledAI" : "Control"];
+                  const unit =
+                    chartMetric === "fan" ? " RPM" : chartMetric === "power" ? " W" : "°C";
+                  const label =
+                    name === "pilot" ||
+                    name === "pilotCpuTemp" ||
+                    name === "pilotFanRpm" ||
+                    name === "pilotGpuPowerW"
+                      ? "CooledAI"
+                      : "Control";
+                  return [`${v}${unit}`, label];
                 }}
                 labelFormatter={(label) => label}
               />
-              <ReferenceLine yAxisId="temp" y={65} stroke="rgba(234,179,8,0.5)" strokeDasharray="4 4" />
-              <ReferenceLine yAxisId="temp" y={85} stroke="rgba(239,68,68,0.5)" strokeDasharray="4 4" />
-              <Line
-                yAxisId="temp"
-                type="linear"
-                dataKey="pilot"
-                name="pilot"
-                stroke="#22c55e"
-                strokeWidth={2}
-                dot={false}
-              />
-              <Line
-                yAxisId="temp"
-                type="linear"
-                dataKey="baseline"
-                name="baseline"
-                stroke="#ef4444"
-                strokeWidth={2}
-                dot={false}
-              />
-              {showCpuTemp && (
+              {chartMetric === "gpu" && (
                 <>
-                  <Line
-                    yAxisId="temp"
-                    type="linear"
-                    dataKey="pilotCpuTemp"
-                    name="pilotCpuTemp"
-                    stroke="#22c55e"
-                    strokeWidth={1.5}
-                    strokeDasharray="4 4"
-                    dot={false}
-                    connectNulls={false}
-                  />
-                  <Line
-                    yAxisId="temp"
-                    type="linear"
-                    dataKey="baselineCpuTemp"
-                    name="baselineCpuTemp"
-                    stroke="#ef4444"
-                    strokeWidth={1.5}
-                    strokeDasharray="4 4"
-                    dot={false}
-                    connectNulls={false}
-                  />
+                  <ReferenceLine y={65} stroke="rgba(234,179,8,0.5)" strokeDasharray="4 4" />
+                  <ReferenceLine y={85} stroke="rgba(239,68,68,0.5)" strokeDasharray="4 4" />
                 </>
               )}
-              {showFanSpeed && (
+              {chartMetric === "gpu" && (
                 <>
-                  <Line
-                    yAxisId="rpm"
-                    type="linear"
-                    dataKey="pilotFanRpm"
-                    name="pilotFanRpm"
-                    stroke="#22c55e"
-                    strokeWidth={1.5}
-                    strokeDasharray="5 3"
-                    dot={false}
-                    connectNulls={false}
-                  />
-                  <Line
-                    yAxisId="rpm"
-                    type="linear"
-                    dataKey="controlFanRpm"
-                    name="controlFanRpm"
-                    stroke="#ef4444"
-                    strokeWidth={1.5}
-                    strokeDasharray="5 3"
-                    dot={false}
-                    connectNulls={false}
-                  />
+                  <Line type="linear" dataKey="pilot" name="pilot" stroke="#22c55e" strokeWidth={2} dot={false} />
+                  <Line type="linear" dataKey="baseline" name="baseline" stroke="#ef4444" strokeWidth={2} dot={false} />
                 </>
               )}
-              {showGpuPower && (
+              {chartMetric === "cpu" && (
                 <>
-                  <Line
-                    yAxisId="power"
-                    type="linear"
-                    dataKey="pilotGpuPowerW"
-                    name="pilotGpuPowerW"
-                    stroke="#22c55e"
-                    strokeWidth={1.5}
-                    strokeDasharray="5 3"
-                    dot={false}
-                    connectNulls={false}
-                  />
-                  <Line
-                    yAxisId="power"
-                    type="linear"
-                    dataKey="baselineGpuPowerW"
-                    name="baselineGpuPowerW"
-                    stroke="#ef4444"
-                    strokeWidth={1.5}
-                    strokeDasharray="5 3"
-                    dot={false}
-                    connectNulls={false}
-                  />
+                  <Line type="linear" dataKey="pilotCpuTemp" name="pilotCpuTemp" stroke="#22c55e" strokeWidth={2} dot={false} connectNulls={false} />
+                  <Line type="linear" dataKey="baselineCpuTemp" name="baselineCpuTemp" stroke="#ef4444" strokeWidth={2} dot={false} connectNulls={false} />
+                </>
+              )}
+              {chartMetric === "fan" && (
+                <>
+                  <Line type="linear" dataKey="pilotFanRpm" name="pilotFanRpm" stroke="#22c55e" strokeWidth={2} dot={false} connectNulls={false} />
+                  <Line type="linear" dataKey="controlFanRpm" name="controlFanRpm" stroke="#ef4444" strokeWidth={2} dot={false} connectNulls={false} />
+                </>
+              )}
+              {chartMetric === "power" && (
+                <>
+                  <Line type="linear" dataKey="pilotGpuPowerW" name="pilotGpuPowerW" stroke="#22c55e" strokeWidth={2} dot={false} connectNulls={false} />
+                  <Line type="linear" dataKey="baselineGpuPowerW" name="baselineGpuPowerW" stroke="#ef4444" strokeWidth={2} dot={false} connectNulls={false} />
                 </>
               )}
               <Legend
                 wrapperStyle={{ fontSize: 11 }}
                 iconType="line"
                 iconSize={10}
-                formatter={(value) => {
-                  if (value === "pilot") return "GPU temp (CooledAI)";
-                  if (value === "baseline") return "GPU temp (Control)";
-                  if (value === "pilotCpuTemp") return "CPU temp (CooledAI)";
-                  if (value === "baselineCpuTemp") return "CPU temp (Control)";
-                  if (value === "pilotFanRpm") return "Fan RPM (CooledAI)";
-                  if (value === "controlFanRpm") return "Fan RPM (Control)";
-                  if (value === "pilotGpuPowerW") return "GPU power (CooledAI)";
-                  if (value === "baselineGpuPowerW") return "GPU power (Control)";
-                  return value;
-                }}
+                formatter={(value) =>
+                  value === "pilot" ||
+                  value === "pilotCpuTemp" ||
+                  value === "pilotFanRpm" ||
+                  value === "pilotGpuPowerW"
+                    ? "CooledAI"
+                    : "Control"
+                }
               />
             </LineChart>
           </ResponsiveContainer>
         </div>
         )}
-        <p className="text-xs text-white/40 mt-4 flex flex-wrap gap-x-4 gap-y-1">
-          <span>GPU temp: avg of all GPUs per node</span>
-          <span>CPU temp, fan RPM, GPU power: from cooledai_agent telemetry</span>
-          <span>Yellow line: 65°C · Red line: 85°C</span>
+        <p className="text-xs text-white/40 mt-4">
+          {chartMetric === "gpu" && "GPU temp: avg of all GPUs per node. Yellow: 65°C · Red: 85°C"}
+          {chartMetric === "cpu" && "CPU temp from cooledai_agent"}
+          {chartMetric === "fan" && "Fan RPM from cooledai_agent (IPMI)"}
+          {chartMetric === "power" && "GPU power (W) from nvidia-smi. Both nodes report when telemetry includes power_draw_w."}
         </p>
+        <div className="mt-4 rounded-lg border border-white/10 bg-white/5 p-4">
+          <p className="text-xs font-medium text-white/70 mb-1">CooledAI vs Control: Efficiency</p>
+          <p className="text-xs text-white/50 leading-relaxed">
+            CooledAI runs cooler on average (2–3°C lower) by predicting workload and adjusting fans proactively. Control stays flat because it runs fans at a constant higher rate. Energy savings come from <strong className="text-white/70">fan power</strong>: power ∝ RPM³, so lower RPM when safe = less cooling energy. CooledAI may show brief temp spikes when inference starts—fans ramp up in response—but overall uses less fan energy than always-on high cooling.
+          </p>
+        </div>
       </motion.section>
     </div>
   );
