@@ -51,6 +51,11 @@ type PulsePoint = {
   pilot: number;
   baseline: number;
   controlFanRpm?: number;
+  pilotFanRpm?: number;
+  pilotCpuTemp?: number;
+  baselineCpuTemp?: number;
+  pilotGpuPowerW?: number;
+  baselineGpuPowerW?: number;
   delta?: number;
   ts: number;
 };
@@ -75,6 +80,9 @@ function PortalOverviewContent() {
   const [pulseRange, setPulseRange] = useState<PulseRange>("1h");
   const [rangeData, setRangeData] = useState<PulsePoint[]>([]);
   const [rangeLoading, setRangeLoading] = useState(false);
+  const [showGpuPower, setShowGpuPower] = useState(false);
+  const [showFanSpeed, setShowFanSpeed] = useState(false);
+  const [showCpuTemp, setShowCpuTemp] = useState(false);
   const [pulseData, setPulseData] = useState<PulsePoint[]>([]);
   const [serverMessage, setServerMessage] = useState<string | null>(null);
 
@@ -239,7 +247,12 @@ function PortalOverviewContent() {
         time: string;
         pilot: number;
         baseline: number;
+        pilot_fan_rpm?: number | null;
         control_fan_rpm?: number | null;
+        pilot_cpu_temp?: number | null;
+        baseline_cpu_temp?: number | null;
+        pilot_gpu_power_w?: number | null;
+        baseline_gpu_power_w?: number | null;
       }[];
       setRangeData(
         points.map((p) => ({
@@ -247,6 +260,11 @@ function PortalOverviewContent() {
           pilot: p.pilot,
           baseline: p.baseline,
           controlFanRpm: p.control_fan_rpm ?? undefined,
+          pilotFanRpm: p.pilot_fan_rpm ?? undefined,
+          pilotCpuTemp: p.pilot_cpu_temp ?? undefined,
+          baselineCpuTemp: p.baseline_cpu_temp ?? undefined,
+          pilotGpuPowerW: p.pilot_gpu_power_w ?? undefined,
+          baselineGpuPowerW: p.baseline_gpu_power_w ?? undefined,
           delta: p.baseline - p.pilot,
           ts: Math.round(p.ts * 1000),
         }))
@@ -454,6 +472,35 @@ function PortalOverviewContent() {
                 </button>
               ))}
             </div>
+            <div className="flex flex-wrap items-center gap-4 text-xs">
+              <label className="inline-flex items-center gap-2 cursor-pointer text-white/70 hover:text-white/90">
+                <input
+                  type="checkbox"
+                  checked={showGpuPower}
+                  onChange={(e) => setShowGpuPower(e.target.checked)}
+                  className="rounded border-white/30 bg-white/5 text-accent-cyan focus:ring-accent-cyan"
+                />
+                GPU Power
+              </label>
+              <label className="inline-flex items-center gap-2 cursor-pointer text-white/70 hover:text-white/90">
+                <input
+                  type="checkbox"
+                  checked={showFanSpeed}
+                  onChange={(e) => setShowFanSpeed(e.target.checked)}
+                  className="rounded border-white/30 bg-white/5 text-accent-cyan focus:ring-accent-cyan"
+                />
+                Fan Speed
+              </label>
+              <label className="inline-flex items-center gap-2 cursor-pointer text-white/70 hover:text-white/90">
+                <input
+                  type="checkbox"
+                  checked={showCpuTemp}
+                  onChange={(e) => setShowCpuTemp(e.target.checked)}
+                  className="rounded border-white/30 bg-white/5 text-accent-cyan focus:ring-accent-cyan"
+                />
+                CPU Temp
+              </label>
+            </div>
             <span className="inline-flex items-center gap-2 text-xs text-white/60">
               <span className="w-2 h-2 rounded-full bg-[#22c55e]" />
               {hasLiveData && (
@@ -501,13 +548,14 @@ function PortalOverviewContent() {
                 tickLine={false}
               />
               <YAxis
+                yAxisId="temp"
                 tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 11 }}
                 axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
                 tickLine={false}
                 domain={[0, "dataMax + 10"]}
                 tickFormatter={(v) => `${v}°C`}
               />
-              {pulseRange === "1h" && (
+              {showFanSpeed && (
                 <YAxis
                   yAxisId="rpm"
                   orientation="right"
@@ -516,6 +564,17 @@ function PortalOverviewContent() {
                   tickLine={false}
                   width={46}
                   tickFormatter={(v) => `${v}`}
+                />
+              )}
+              {showGpuPower && (
+                <YAxis
+                  yAxisId="power"
+                  orientation="right"
+                  tick={{ fill: "rgba(255,255,255,0.45)", fontSize: 11 }}
+                  axisLine={{ stroke: "rgba(255,255,255,0.08)" }}
+                  tickLine={false}
+                  width={46}
+                  tickFormatter={(v) => `${v}W`}
                 />
               )}
               <Tooltip
@@ -527,17 +586,23 @@ function PortalOverviewContent() {
                 labelStyle={{ color: "rgba(255,255,255,0.8)" }}
                 formatter={(value, name) => {
                   if (name === "delta") return [`${value != null ? value : 0}°C Δ`, "Efficiency Delta"];
-                  if (name === "controlFanRpm") return [`${value != null ? value : 0} RPM`, "Control Fan RPM (Live)"];
+                  if (name === "controlFanRpm") return [`${value != null ? value : 0} RPM`, "Control Fan RPM"];
+                  if (name === "pilotFanRpm") return [`${value != null ? value : 0} RPM`, "CooledAI Fan RPM"];
+                  if (name === "pilotGpuPowerW") return [`${value != null ? value : 0} W`, "CooledAI GPU Power"];
+                  if (name === "baselineGpuPowerW") return [`${value != null ? value : 0} W`, "Control GPU Power"];
+                  if (name === "pilotCpuTemp") return [`${value != null ? value : 0}°C`, "CooledAI CPU Temp"];
+                  if (name === "baselineCpuTemp") return [`${value != null ? value : 0}°C`, "Control CPU Temp"];
                   return [
                     `${value != null ? value : 0}°C`,
-                    name === "pilot" ? "CooledAI (Predictive)" : "Control (Traditional)",
+                    name === "pilot" ? "CooledAI (Predictive Temp)" : "Control (Traditional Temp)",
                   ];
                 }}
                 labelFormatter={(label) => `Time: ${label}`}
               />
-              <ReferenceLine y={65} stroke="rgba(234,179,8,0.5)" strokeDasharray="4 4" />
-              <ReferenceLine y={85} stroke="rgba(239,68,68,0.5)" strokeDasharray="4 4" />
+              <ReferenceLine yAxisId="temp" y={65} stroke="rgba(234,179,8,0.5)" strokeDasharray="4 4" />
+              <ReferenceLine yAxisId="temp" y={85} stroke="rgba(239,68,68,0.5)" strokeDasharray="4 4" />
               <Line
+                yAxisId="temp"
                 type="linear"
                 dataKey="pilot"
                 name="pilot"
@@ -546,6 +611,7 @@ function PortalOverviewContent() {
                 dot={false}
               />
               <Line
+                yAxisId="temp"
                 type="linear"
                 dataKey="baseline"
                 name="baseline"
@@ -553,25 +619,95 @@ function PortalOverviewContent() {
                 strokeWidth={2}
                 dot={false}
               />
-              {pulseRange === "1h" && (
-                <Line
-                  yAxisId="rpm"
-                  type="linear"
-                  dataKey="controlFanRpm"
-                  name="controlFanRpm"
-                  stroke="#f59e0b"
-                  strokeWidth={1.5}
-                  strokeDasharray="5 3"
-                  dot={false}
-                  connectNulls={false}
-                />
+              {showCpuTemp && (
+                <>
+                  <Line
+                    yAxisId="temp"
+                    type="linear"
+                    dataKey="pilotCpuTemp"
+                    name="pilotCpuTemp"
+                    stroke="#22c55e"
+                    strokeWidth={1.5}
+                    strokeDasharray="4 4"
+                    dot={false}
+                    connectNulls={false}
+                  />
+                  <Line
+                    yAxisId="temp"
+                    type="linear"
+                    dataKey="baselineCpuTemp"
+                    name="baselineCpuTemp"
+                    stroke="#ef4444"
+                    strokeWidth={1.5}
+                    strokeDasharray="4 4"
+                    dot={false}
+                    connectNulls={false}
+                  />
+                </>
+              )}
+              {showFanSpeed && (
+                <>
+                  <Line
+                    yAxisId="rpm"
+                    type="linear"
+                    dataKey="pilotFanRpm"
+                    name="pilotFanRpm"
+                    stroke="#22c55e"
+                    strokeWidth={1.5}
+                    strokeDasharray="5 3"
+                    dot={false}
+                    connectNulls={false}
+                  />
+                  <Line
+                    yAxisId="rpm"
+                    type="linear"
+                    dataKey="controlFanRpm"
+                    name="controlFanRpm"
+                    stroke="#ef4444"
+                    strokeWidth={1.5}
+                    strokeDasharray="5 3"
+                    dot={false}
+                    connectNulls={false}
+                  />
+                </>
+              )}
+              {showGpuPower && (
+                <>
+                  <Line
+                    yAxisId="power"
+                    type="linear"
+                    dataKey="pilotGpuPowerW"
+                    name="pilotGpuPowerW"
+                    stroke="#22c55e"
+                    strokeWidth={1.5}
+                    strokeDasharray="5 3"
+                    dot={false}
+                    connectNulls={false}
+                  />
+                  <Line
+                    yAxisId="power"
+                    type="linear"
+                    dataKey="baselineGpuPowerW"
+                    name="baselineGpuPowerW"
+                    stroke="#ef4444"
+                    strokeWidth={1.5}
+                    strokeDasharray="5 3"
+                    dot={false}
+                    connectNulls={false}
+                  />
+                </>
               )}
               <Legend
                 wrapperStyle={{ fontSize: 12 }}
                 formatter={(value) => {
-                  if (value === "pilot") return "CooledAI (Predictive Temp)";
-                  if (value === "baseline") return "Control (Traditional Temp)";
-                  if (value === "controlFanRpm") return "Control Fan RPM (Live)";
+                  if (value === "pilot") return "CooledAI GPU Temp";
+                  if (value === "baseline") return "Control GPU Temp";
+                  if (value === "pilotCpuTemp") return "CooledAI CPU Temp";
+                  if (value === "baselineCpuTemp") return "Control CPU Temp";
+                  if (value === "pilotFanRpm") return "CooledAI Fan RPM";
+                  if (value === "controlFanRpm") return "Control Fan RPM";
+                  if (value === "pilotGpuPowerW") return "CooledAI GPU Power";
+                  if (value === "baselineGpuPowerW") return "Control GPU Power";
                   return value;
                 }}
               />
@@ -580,7 +716,7 @@ function PortalOverviewContent() {
         </div>
         )}
         <p className="text-xs text-white/40 mt-3">
-          Yellow line: warning (65°C). Red line: critical (85°C). Temps use RAW GPU average per node. On 1H view, dashed orange shows live control fan RPM.
+          GPU temps always shown. Use checkboxes to add GPU Power, Fan Speed, or CPU Temp (CooledAI vs Control). Yellow: 65°C warning. Red: 85°C critical.
         </p>
       </motion.section>
     </div>
