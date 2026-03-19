@@ -204,7 +204,7 @@ def _init_nvml(retries: int = 5, wait: float = 3.0) -> int:
 
 
 def _read_gpu_temps(count: int) -> list[dict]:
-    """Return one telemetry record per GPU."""
+    """Return one telemetry record per GPU (temp + power)."""
     now = datetime.now(timezone.utc).isoformat()
     records: list[dict] = []
     for i in range(count):
@@ -213,13 +213,17 @@ def _read_gpu_temps(count: int) -> list[dict]:
             temp_c = pynvml.nvmlDeviceGetTemperature(
                 handle, pynvml.NVML_TEMPERATURE_GPU
             )
-            records.append(
-                {
-                    "node_id": f"{NODE_ID}/gpu{i}",  # Pilot (ST550-CooledAI-Predictive) vs Control (ST550-Control-Traditional)
-                    "timestamp": now,
-                    "temperature_c": float(temp_c),
-                }
-            )
+            rec: dict = {
+                "node_id": f"{NODE_ID}/gpu{i}",  # Pilot vs Control
+                "timestamp": now,
+                "temperature_c": float(temp_c),
+            }
+            try:
+                power_mw = pynvml.nvmlDeviceGetPowerUsage(handle)
+                rec["power_draw_w"] = round(float(power_mw) / 1000.0, 2)
+            except pynvml.NVMLError:
+                pass  # Power not supported on some GPUs
+            records.append(rec)
         except pynvml.NVMLError as exc:
             print(f"[telemetry] GPU {i} read error: {exc}")
     return records
