@@ -2,6 +2,23 @@
 
 ## 1. Cloud API (no SSH, works from anywhere)
 
+### Telemetry logs – last hour (GPU temps, CPU temps, Fan RPM, GPU power)
+
+```bash
+./scripts/tail_telemetry.sh
+# Or for 2 hours:
+./scripts/tail_telemetry.sh 2
+```
+
+Or with curl:
+
+```bash
+curl -s -H "X-API-Key: sk-osfrVz48r7DCsPwXeAYR4nCF7vhkaRYrN2ahX_2EKgo" \
+  "https://proactive-creativity-production.up.railway.app/api/v1/telemetry-logs?hours=1"
+```
+
+Returns all telemetry points for both nodes: `cooledai_gpu_temp_c`, `control_gpu_temp_c`, `cooledai_fan_rpm`, `control_fan_rpm`, `cooledai_cpu_temp_c`, `control_cpu_temp_c`, `cooledai_gpu_power_w`, `control_gpu_power_w`.
+
 ### Live snapshot (API key only)
 
 ```bash
@@ -34,6 +51,14 @@ The `/api/v1/thermal-history?mode=raw&hours=24` endpoint returns time-series tel
 | Agent | `~/cooledai_agent_control.log` or `/tmp/cooledai_agent.log` | Telemetry uploads |
 | Telemetry | `/var/log/cooledai_telemetry.log` or `/tmp/cooledai_telemetry.log` | st550_telemetry output |
 | Lenovo live | `/var/log/lenovo_live.log` or `/tmp/lenovo_live.log` | 5s samples (if lenovo_live.py running) |
+
+### Last hour from both nodes (one command)
+
+```bash
+./scripts/fetch_last_hour_logs.sh
+```
+
+Writes agent, telemetry, and lenovo_live logs to `./logs_last_hour_YYYYMMDD_HHMM/`. Run from your Mac on the same network. You'll be prompted for the SSH password for each node.
 
 ### Quick tail commands
 

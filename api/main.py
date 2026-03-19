@@ -2201,6 +2201,51 @@ async def debug_clerk_user(request: Request):
     }
 
 
+@app.get("/api/v1/telemetry-logs", dependencies=[Depends(_require_api_key)])
+async def get_telemetry_logs(hours: int = 1):
+    """
+    Raw telemetry for the past N hours: GPU temps, CPU temps, fan RPM, GPU power
+    for both CooledAI (pilot) and Control (baseline) nodes.
+
+    Use X-API-Key header. No Clerk login required.
+
+    Example:
+      curl -s -H "X-API-Key: YOUR_KEY" \\
+        "https://.../api/v1/telemetry-logs?hours=1"
+    """
+    owner_id = FIXED_OWNER_ID
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    now = time.time()
+    cutoff = now - (hours * 3600)
+    points = [row for row in history if _history_row(row)[0] >= cutoff]
+    raw_points = []
+    for row in points:
+        out = _history_row(row)
+        ts, pt, bt, pr, br = out[0], out[1], out[2], out[3], out[4]
+        pilot_cpu = out[5] if len(out) > 5 else None
+        baseline_cpu = out[6] if len(out) > 6 else None
+        pilot_gpu_pwr = out[7] if len(out) > 7 else None
+        baseline_gpu_pwr = out[8] if len(out) > 8 else None
+        dt = datetime.fromtimestamp(ts, tz=timezone.utc)
+        raw_points.append({
+            "ts": ts,
+            "time_utc": dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "cooledai_gpu_temp_c": round(pt, 2),
+            "control_gpu_temp_c": round(bt, 2),
+            "cooledai_fan_rpm": round(pr, 1) if pr is not None else None,
+            "control_fan_rpm": round(br, 1) if br is not None else None,
+            "cooledai_cpu_temp_c": round(pilot_cpu, 2) if pilot_cpu is not None else None,
+            "control_cpu_temp_c": round(baseline_cpu, 2) if baseline_cpu is not None else None,
+            "cooledai_gpu_power_w": round(pilot_gpu_pwr, 1) if pilot_gpu_pwr is not None else None,
+            "control_gpu_power_w": round(baseline_gpu_pwr, 1) if baseline_gpu_pwr is not None else None,
+        })
+    return {
+        "hours": hours,
+        "points": raw_points,
+        "node_ids": {"cooledai": "ST550-CooledAI-Predictive", "control": "ST550-Control-Traditional"},
+    }
+
+
 @app.get("/api/v1/nodes/status", dependencies=[Depends(_require_api_key)])
 async def get_nodes_status_remote():
     """

@@ -1,9 +1,11 @@
 #!/bin/bash
-# Quick access to recent telemetry from the cloud API (no SSH required).
-# Usage: ./scripts/tail_telemetry.sh
+# Quick access to telemetry from the cloud API (no SSH required).
+# Usage: ./scripts/tail_telemetry.sh [hours]
+#   hours: fetch telemetry for past N hours (default: 1)
 
+HOURS="${1:-1}"
 API_KEY="${COOLEDAI_API_KEY:-sk-osfrVz48r7DCsPwXeAYR4nCF7vhkaRYrN2ahX_2EKgo}"
 API_URL="${COOLEDAI_API_URL:-https://proactive-creativity-production.up.railway.app}"
 
-echo "=== Cloud telemetry (nodes/status) ==="
-curl -s -H "X-API-Key: $API_KEY" "${API_URL}/api/v1/nodes/status" | python3 -m json.tool
+echo "=== Telemetry logs (last ${HOURS}h): GPU temps, CPU temps, Fan RPM, GPU power ==="
+curl -s -H "X-API-Key: $API_KEY" "${API_URL}/api/v1/telemetry-logs?hours=${HOURS}" | python3 -m json.tool
