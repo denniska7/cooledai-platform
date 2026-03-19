@@ -1667,6 +1667,11 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
         consolidated["_received_at"] = now_ts
         consolidated["agent_id"] = agent_id
         consolidated["_owner_id"] = owner_id
+        # Reset per-cycle sensor aggregates so values reflect current telemetry,
+        # not historical maxima from prior cycles.
+        consolidated["gpu_temps_c"] = []
+        consolidated["max_gpu_temp_c"] = 0.0
+        consolidated["max_temp_c"] = 0.0
 
         for record in telemetry:
             node_id = record.get("node_id", agent_id)
