@@ -37,12 +37,13 @@ type LiveStats = {
   last_telemetry_at: number | null;
   power_reclaimed_kwh: number;
   power_reclaimed_watts: number;
+  power_comparison_mode?: "raw_fan_wattage" | "fan_rpm_model" | "not_comparable";
   estimated_annual_savings_usd: number;
   has_live_data: boolean;
   uptime_hours: number;
   message?: string;
-  pilot_node: { node_id: string; fan_rpm: number; fan_power_watts: number; temp_c: number | null; last_seen_s_ago: number | null };
-  baseline_node: { node_id: string; fan_rpm: number; fan_power_watts: number; temp_c: number | null; source: string; last_seen_s_ago: number | null };
+  pilot_node: { node_id: string; fan_rpm: number; fan_power_watts: number | null; temp_c: number | null; last_seen_s_ago: number | null };
+  baseline_node: { node_id: string; fan_rpm: number; fan_power_watts: number | null; temp_c: number | null; source: string; last_seen_s_ago: number | null };
 };
 
 type PulsePoint = {
@@ -66,8 +67,9 @@ function PortalOverviewContent() {
   const [powerReclaimed, setPowerReclaimed] = useState(0);
   const [annualSavings, setAnnualSavings] = useState(0);
   const [hasLiveData, setHasLiveData] = useState(false);
-  const [pilotWatts, setPilotWatts] = useState(0);
-  const [baselineWatts, setBaselineWatts] = useState(0);
+  const [pilotWatts, setPilotWatts] = useState<number | null>(null);
+  const [baselineWatts, setBaselineWatts] = useState<number | null>(null);
+  const [powerMode, setPowerMode] = useState<LiveStats["power_comparison_mode"]>("not_comparable");
   const [pilotNodeId, setPilotNodeId] = useState("");
   const [baselineNodeId, setBaselineNodeId] = useState("");
   const [pulseRange, setPulseRange] = useState<PulseRange>("1h");
@@ -142,8 +144,9 @@ function PortalOverviewContent() {
         setHasLiveData(false);
         setPowerReclaimed(0);
         setAnnualSavings(0);
-        setPilotWatts(0);
-        setBaselineWatts(0);
+        setPilotWatts(null);
+        setBaselineWatts(null);
+        setPowerMode("not_comparable");
         setPilotNodeId("");
         setBaselineNodeId("");
         setPulseData([]);
@@ -161,6 +164,7 @@ function PortalOverviewContent() {
       setHasLiveData(data.has_live_data);
       setPilotWatts(data.pilot_node.fan_power_watts);
       setBaselineWatts(data.baseline_node.fan_power_watts);
+      setPowerMode(data.power_comparison_mode ?? "not_comparable");
       setPilotNodeId(data.pilot_node.node_id || "");
       setBaselineNodeId(data.baseline_node.node_id || "");
 
@@ -361,7 +365,9 @@ function PortalOverviewContent() {
             {serverMessage
               ? serverMessage
               : hasLiveData
-                ? `${pilotWatts.toFixed(0)}W CooledAI vs ${baselineWatts.toFixed(0)}W Control`
+                ? powerMode === "not_comparable" || pilotWatts == null || baselineWatts == null
+                  ? "Power comparison requires fan telemetry on both nodes"
+                  : `${pilotWatts.toFixed(0)}W CooledAI vs ${baselineWatts.toFixed(0)}W Control`
                 : "awaiting telemetry…"}
           </p>
         </motion.div>

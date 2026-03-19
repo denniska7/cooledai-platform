@@ -1700,6 +1700,9 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
                 if "/gpu" in nid:
                     consolidated.setdefault("gpu_temps_c", [])
                     consolidated["gpu_temps_c"].append(temp_c)
+                    consolidated["max_gpu_temp_c"] = max(
+                        consolidated.get("max_gpu_temp_c", 0), temp_c,
+                    )
                 elif "/cpu" in nid:
                     consolidated["cpu_temp_c"] = temp_c
                 consolidated["max_temp_c"] = max(
@@ -1883,25 +1886,36 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
             baseline = all_nodes[baseline_id]
 
     pilot_rpm = float(pilot.get("fan_rpm", 0))
-    baseline_source = "default_max"
-    if _BASELINE_FAN_RPM > 0:
-        baseline_rpm = _BASELINE_FAN_RPM
-        baseline_source = "env"
-    elif baseline:
-        baseline_rpm = float(baseline.get("fan_rpm", _MAX_FAN_RPM))
-        baseline_source = "live"
-    else:
-        baseline_rpm = _MAX_FAN_RPM
+    baseline_rpm = float(baseline.get("fan_rpm", 0)) if baseline else 0.0
+    baseline_source = "live" if baseline and baseline.get("fan_rpm") is not None else "missing"
 
-    pilot_w = _fan_power_watts(pilot_rpm)
-    baseline_w = _fan_power_watts(baseline_rpm)
-    delta_w = max(0.0, baseline_w - pilot_w)
+    pilot_raw_w = pilot.get("raw_fan_wattage")
+    baseline_raw_w = baseline.get("raw_fan_wattage") if baseline else None
+
+    # Comparable watts mode:
+    # 1) raw_fan_wattage on BOTH nodes (best)
+    # 2) fan_rpm on BOTH nodes via same affinity-law model
+    # else not comparable (avoid misleading "8W vs 72W")
+    power_comparison_mode = "not_comparable"
+    if pilot_raw_w is not None and baseline_raw_w is not None:
+        pilot_w = float(pilot_raw_w)
+        baseline_w = float(baseline_raw_w)
+        power_comparison_mode = "raw_fan_wattage"
+    elif pilot.get("fan_rpm") is not None and baseline and baseline.get("fan_rpm") is not None:
+        pilot_w = _fan_power_watts(pilot_rpm)
+        baseline_w = _fan_power_watts(baseline_rpm)
+        power_comparison_mode = "fan_rpm_model"
+    else:
+        pilot_w = None
+        baseline_w = None
+
+    delta_w = max(0.0, (baseline_w or 0.0) - (pilot_w or 0.0))
 
     # ST550: Use temp-based efficiency when both Pilot and Control temps available
     # Formula: (Baseline_Temp - Pilot_Temp) / Baseline_Temp * 100
-    pilot_temp = pilot.get("max_temp_c")
-    baseline_temp = baseline.get("max_temp_c")
-    pilot_fan_estimated = False  # True when we show pilot W derived from temp (no fan_rpm from agent)
+    pilot_temp = pilot.get("max_gpu_temp_c", pilot.get("max_temp_c"))
+    baseline_temp = baseline.get("max_gpu_temp_c", baseline.get("max_temp_c"))
+    pilot_fan_estimated = False
     if (
         pilot_temp is not None
         and baseline_temp is not None
@@ -1909,14 +1923,10 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
     ):
         efficiency_pct = ((baseline_temp - pilot_temp) / baseline_temp) * 100.0
         efficiency_pct = max(0.0, min(100.0, efficiency_pct))
-        # ST550 agents send only GPU temps, not fan_rpm — so pilot_w is 0 and "0W CooledAI" is misleading.
-        # Derive pilot display watts from temp-based efficiency so the UI shows e.g. "44W vs 72W".
-        if pilot_rpm == 0 and baseline_w > 0:
-            pilot_w = baseline_w * (1.0 - efficiency_pct / 100.0)
-            delta_w = baseline_w - pilot_w
-            pilot_fan_estimated = True
+        # We intentionally do NOT synthesize comparable watts from temperature here.
+        # Comparable watts must come from telemetry parity (raw_wattage or both fan_rpm).
     else:
-        efficiency_pct = (delta_w / baseline_w * 100.0) if baseline_w > 0 else 0.0
+        efficiency_pct = (delta_w / baseline_w * 100.0) if (baseline_w or 0) > 0 else 0.0
 
     if owner_id == "master":
         total_wh = sum(a.get("power_reclaimed_wh", 0.0) for a in _tenant_accumulators.values())
@@ -1947,6 +1957,7 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
         "last_telemetry_at": last_telemetry_at if last_telemetry_at > 0 else None,
         "power_reclaimed_kwh": round(reclaimed_kwh, 3),
         "power_reclaimed_watts": round(delta_w, 1),
+        "power_comparison_mode": power_comparison_mode,
         "estimated_annual_savings_usd": round(annual_savings, 0),
         "usd_per_kwh": _USD_PER_KWH,
         "uptime_hours": round(uptime_h, 2),
@@ -1954,18 +1965,18 @@ async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id))
         "pilot_node": {
             "node_id": pilot_id or "none",
             "fan_rpm": pilot_rpm,
-            "fan_power_watts": round(pilot_w, 1),
+            "fan_power_watts": round(pilot_w, 1) if pilot_w is not None else None,
             "fan_power_estimated_from_temp": pilot_fan_estimated,
             "raw_fan_wattage": pilot.get("raw_fan_wattage"),
-            "temp_c": pilot.get("max_temp_c"),
+            "temp_c": pilot_temp,
             "last_seen_s_ago": round(pilot_age, 1) if pilot_age is not None else None,
         },
         "baseline_node": {
             "node_id": baseline_id or "none",
             "fan_rpm": baseline_rpm,
-            "fan_power_watts": round(baseline_w, 1),
+            "fan_power_watts": round(baseline_w, 1) if baseline_w is not None else None,
             "raw_fan_wattage": baseline.get("raw_fan_wattage"),
-            "temp_c": baseline.get("max_temp_c"),
+            "temp_c": baseline_temp,
             "last_seen_s_ago": round(baseline_age, 1) if baseline_age is not None else None,
             "source": baseline_source,
         },
