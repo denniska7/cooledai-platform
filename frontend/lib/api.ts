@@ -83,6 +83,10 @@ export const api = {
     apiFetch(`/api/v1/thermal-history?hours=${hours}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     }),
+  getThermalHistoryRaw: (hours: number, token?: string | null) =>
+    apiFetch(`/api/v1/thermal-history?hours=${hours}&mode=raw`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    }),
 
   // --- Write (API key required) ---
   postOptimize: (body: unknown) =>
