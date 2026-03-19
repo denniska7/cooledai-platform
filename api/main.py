@@ -1575,10 +1575,11 @@ def _get_pilot_baseline_snapshot(
             continue
         nid_lower = nid.lower()
         if "cooledai" in nid_lower and "predictive" in nid_lower:
-            pilot_temp = all_nodes[nid].get("max_temp_c")
+            # Apples-to-apples thermal comparison: prefer GPU max temp on both nodes.
+            pilot_temp = all_nodes[nid].get("max_gpu_temp_c", all_nodes[nid].get("max_temp_c"))
             pilot_rpm = all_nodes[nid].get("fan_rpm")
         elif "control" in nid_lower and "traditional" in nid_lower:
-            baseline_temp = all_nodes[nid].get("max_temp_c")
+            baseline_temp = all_nodes[nid].get("max_gpu_temp_c", all_nodes[nid].get("max_temp_c"))
             baseline_rpm = all_nodes[nid].get("fan_rpm")
     return pilot_temp, baseline_temp, pilot_rpm, baseline_rpm
 
