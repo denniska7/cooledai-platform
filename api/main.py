@@ -1620,6 +1620,13 @@ def _append_thermal_history(owner_id: str, now_ts: float) -> None:
     if pilot_temp is None or baseline_temp is None:
         return
     history = _thermal_history.setdefault(owner_id, [])
+    # Carry forward last non-zero GPU power when 0 (NVML/nvidia-smi often report 0 when idle)
+    if history and (pilot_gpu_pwr == 0 or baseline_gpu_pwr == 0):
+        last = _history_row(history[-1])
+        if pilot_gpu_pwr == 0 and last[7] is not None and last[7] > 0:
+            pilot_gpu_pwr = last[7]
+        if baseline_gpu_pwr == 0 and last[8] is not None and last[8] > 0:
+            baseline_gpu_pwr = last[8]
     history.append(
         (
             now_ts,
@@ -2385,25 +2392,240 @@ async def get_telemetry_logs(hours: int = 1):
 @app.get("/api/v1/nodes/list")
 async def get_nodes_list(owner_id: str = Depends(_require_clerk_fixed_owner_id)):
     """
-    List all servers the API is tracking, with predictive vs traditional distinction.
+    List the two tracked servers: Pilot (CooledAI predictive) and Control (traditional).
+    Returns hardware details for identification.
     """
     all_nodes = _tenant_telemetry.get(owner_id, {})
     agent_keys = [k for k in all_nodes if "/" not in k]
-    nodes = []
+    pilot_node = None
+    baseline_node = None
+    pilot_id = ""
+    baseline_id = ""
+
     for nid in agent_keys:
         nid_lower = nid.lower()
-        is_predictive = "cooledai" in nid_lower and "predictive" in nid_lower
-        node = all_nodes[nid]
-        received = node.get("_received_at")
+        if "cooledai" in nid_lower and "predictive" in nid_lower:
+            pilot_node = all_nodes[nid]
+            pilot_id = nid
+            break
+    for nid in agent_keys:
+        nid_lower = nid.lower()
+        if "control" in nid_lower and "traditional" in nid_lower:
+            baseline_node = all_nodes[nid]
+            baseline_id = nid
+            break
+
+    nodes = []
+    for node_data, nid, is_predictive in [
+        (pilot_node, pilot_id, True),
+        (baseline_node, baseline_id, False),
+    ]:
+        if not nid or not node_data:
+            continue
+        received = node_data.get("_received_at")
         status = "ok" if received and (time.time() - received) < 120 else "stale"
         nodes.append({
             "node_id": nid,
             "predictive": is_predictive,
             "status": status,
             "last_seen_s_ago": round(time.time() - received, 1) if received else None,
-            "temp_c": node.get("avg_gpu_temp_c", node.get("max_temp_c")),
+            "temp_c": node_data.get("avg_gpu_temp_c", node_data.get("max_temp_c")),
+            "gpu_temps_c": node_data.get("gpu_temps_c", []),
+            "gpu_power_w": node_data.get("gpu_power_w"),
+            "cpu_temp_c": node_data.get("cpu_temp_c"),
+            "fan_rpm": node_data.get("fan_rpm"),
+            "gpu_count": len(node_data.get("gpu_temps_c", [])),
         })
     return {"nodes": nodes}
+
+
+def _build_nodes_from_thermal_history(owner_id: str, max_points: int = 30) -> List[BaseNode]:
+    """Build ServerNodes from thermal history for optimization reasoning.
+    Uses last N points so the brain has a time series for thermal lag, etc.
+    """
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    if not history:
+        return []
+    points = history[-max_points:]
+    nodes: List[BaseNode] = []
+    for i, row in enumerate(points):
+        out = _history_row(row)
+        ts, pilot_temp, baseline_temp, pilot_rpm, baseline_rpm = out[0], out[1], out[2], out[3], out[4]
+        pilot_cpu, baseline_cpu, pilot_gpu_pwr, baseline_gpu_pwr = out[5], out[6], out[7], out[8]
+        thermal = float(pilot_temp) if pilot_temp is not None else 0.0
+        power = float(pilot_gpu_pwr) if pilot_gpu_pwr is not None else 50.0
+        cooling = float(pilot_rpm) if pilot_rpm is not None else 2000.0
+        util = min(100.0, max(0.0, (power / 200.0) * 50.0)) if power else 0.0
+        node = ServerNode(
+            thermal_input=thermal,
+            power_draw=power,
+            cooling_output=cooling,
+            utilization=util,
+            node_id="ST550-CooledAI-Predictive",
+            timestamp=datetime.fromtimestamp(ts, tz=timezone.utc),
+            source="thermal_history",
+        )
+        nodes.append(node)
+    return nodes
+
+
+class AgentOptimizeControlInput(BaseModel):
+    """Agent telemetry snapshot for real-time optimization control."""
+    temp_c: float  # GPU avg or max temp
+    fan_rpm: float
+    gpu_power_w: float = 50.0
+    cpu_temp_c: Optional[float] = None
+    node_id: str = "ST550-CooledAI-Predictive"
+    max_fan_rpm: float = 7000.0  # For duty conversion; agent can override
+
+
+def _build_nodes_for_agent_control(
+    owner_id: str,
+    agent_snapshot: AgentOptimizeControlInput,
+    max_points: int = 30,
+) -> List[BaseNode]:
+    """Build nodes from thermal history + agent's latest snapshot."""
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    nodes: List[BaseNode] = []
+    now_ts = time.time()
+    # Use last N-1 from history, then agent's snapshot as most recent
+    if history:
+        points = history[-(max_points - 1) :]
+        for row in points:
+            out = _history_row(row)
+            ts, pilot_temp, _, pilot_rpm, _, _, _, pilot_gpu_pwr, _ = out
+            thermal = float(pilot_temp) if pilot_temp is not None else 0.0
+            power = float(pilot_gpu_pwr) if pilot_gpu_pwr is not None else 50.0
+            cooling = float(pilot_rpm) if pilot_rpm is not None else 2000.0
+            util = min(100.0, max(0.0, (power / 200.0) * 50.0)) if power else 0.0
+            nodes.append(ServerNode(
+                thermal_input=thermal,
+                power_draw=power,
+                cooling_output=cooling,
+                utilization=util,
+                node_id=agent_snapshot.node_id,
+                timestamp=datetime.fromtimestamp(ts, tz=timezone.utc),
+                source="thermal_history",
+            ))
+    # Append agent's current snapshot as most recent
+    util = min(100.0, max(0.0, (agent_snapshot.gpu_power_w / 200.0) * 50.0))
+    nodes.append(ServerNode(
+        thermal_input=agent_snapshot.temp_c,
+        power_draw=agent_snapshot.gpu_power_w,
+        cooling_output=agent_snapshot.fan_rpm,
+        utilization=util,
+        node_id=agent_snapshot.node_id,
+        timestamp=datetime.fromtimestamp(now_ts, tz=timezone.utc),
+        source="agent",
+    ))
+    return nodes
+
+
+@app.post("/api/v1/optimize/control", dependencies=[Depends(_require_api_key)])
+async def agent_optimize_control(
+    body: AgentOptimizeControlInput,
+    owner_id: str = Depends(_resolve_owner),
+):
+    """
+    Real-time optimization for the CooledAI agent. Called every 3s.
+    Returns target_duty (0-100) for fan control. Agent falls back to local
+    curve when this endpoint is unreachable.
+    """
+    nodes = _build_nodes_for_agent_control(owner_id, body)
+    if len(nodes) < 2:
+        # Not enough history; use simple duty from temp
+        delta_temp = body.temp_c - 65.0
+        if delta_temp < -15:
+            duty = 25
+        elif delta_temp < -5:
+            duty = 40
+        elif delta_temp < 0:
+            duty = 55
+        elif delta_temp < 8:
+            duty = 70
+        elif delta_temp < 15:
+            duty = 85
+        else:
+            duty = 100
+        return {
+            "target_duty": duty,
+            "recommended_cooling_delta": 0.0,
+            "source": "fallback_simple",
+        }
+    try:
+        apply_telemetry_filters(nodes, _sanity_check_filter, _moving_avg_filter)
+        _derivative_enricher.enrich(nodes)
+        resp = _run_optimization_with_state_machine(nodes)
+        delta = resp.recommended_cooling_delta
+        current_rpm = body.fan_rpm
+        max_rpm = max(body.max_fan_rpm, 1000.0)
+        target_rpm = current_rpm * (1.0 + delta)
+        target_rpm = max(0.0, min(max_rpm, target_rpm))
+        target_duty = int(round((target_rpm / max_rpm) * 100.0))
+        target_duty = max(0, min(100, target_duty))
+        return {
+            "target_duty": target_duty,
+            "recommended_cooling_delta": delta,
+            "target_rpm": round(target_rpm, 0),
+            "source": "optimization_brain",
+        }
+    except Exception as e:
+        logging.getLogger("api.main").warning("Agent optimize control failed: %s", e)
+        delta_temp = body.temp_c - 65.0
+        if delta_temp < -15:
+            duty = 25
+        elif delta_temp < -5:
+            duty = 40
+        elif delta_temp < 0:
+            duty = 55
+        elif delta_temp < 8:
+            duty = 70
+        elif delta_temp < 15:
+            duty = 85
+        else:
+            duty = 100
+        return {
+            "target_duty": duty,
+            "recommended_cooling_delta": 0.0,
+            "source": "fallback_error",
+        }
+
+
+@app.get("/api/v1/optimization-reasoning")
+async def get_optimization_reasoning(owner_id: str = Depends(_require_clerk_fixed_owner_id)):
+    """
+    Run optimization on live thermal history and return AI reasoning.
+    Returns diagnostic_reasoning, recommendations, reasoning_log for the UI.
+    """
+    nodes = _build_nodes_from_thermal_history(owner_id)
+    if not nodes:
+        return {
+            "diagnostic_reasoning": "No thermal history yet. Reasoning will appear once telemetry is flowing.",
+            "recommendations": [],
+            "reasoning_log": [],
+            "efficiency_score": None,
+            "recommended_cooling_delta": None,
+        }
+    try:
+        apply_telemetry_filters(nodes, _sanity_check_filter, _moving_avg_filter)
+        _derivative_enricher.enrich(nodes)
+        resp = _run_optimization_with_state_machine(nodes)
+        return {
+            "diagnostic_reasoning": resp.diagnostic_reasoning or "",
+            "recommendations": resp.recommendations or [],
+            "reasoning_log": (resp.raw_metrics.get("reasoning_string") or "").split(" | ") if resp.raw_metrics.get("reasoning_string") else [],
+            "efficiency_score": resp.efficiency_score,
+            "recommended_cooling_delta": resp.recommended_cooling_delta,
+        }
+    except Exception as e:
+        logging.getLogger("api.main").warning("Optimization reasoning failed: %s", e)
+        return {
+            "diagnostic_reasoning": f"Reasoning unavailable: {str(e)[:200]}",
+            "recommendations": [],
+            "reasoning_log": [],
+            "efficiency_score": None,
+            "recommended_cooling_delta": None,
+        }
 
 
 @app.get("/api/v1/facility/hourly-metrics")
@@ -2551,7 +2773,7 @@ class AgentConfigInput(BaseModel):
     """Body for POST /api/v1/config."""
     target_temp: float = 65.0
     control_enabled: bool = True
-    poll_interval_s: float = 10.0
+    poll_interval_s: float = 3.0  # 3s for optimize + telemetry
     critical_temp_c: float = 90.0
 
 
@@ -2567,7 +2789,7 @@ async def get_agent_config(node_id: str = "default"):
         "node_id": node_id,
         "target_temp": config.get("target_temp", 65),
         "control_enabled": config.get("control_enabled", True),
-        "poll_interval_s": config.get("poll_interval_s", 10),
+        "poll_interval_s": config.get("poll_interval_s", 3),  # 3s for optimize+telemetry
         "critical_temp_c": config.get("critical_temp_c", 90),
     }
 

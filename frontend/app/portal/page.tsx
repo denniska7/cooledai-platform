@@ -260,6 +260,14 @@ function PortalOverviewContent() {
   const [chartMetric, setChartMetric] = useState<"gpu" | "cpu" | "fan" | "power">("gpu");
   const [pulseData, setPulseData] = useState<PulsePoint[]>([]);
   const [serverMessage, setServerMessage] = useState<string | null>(null);
+  const [showReasoning, setShowReasoning] = useState(false);
+  const [reasoning, setReasoning] = useState<{
+    diagnostic_reasoning: string;
+    recommendations: string[];
+    reasoning_log: string[];
+    efficiency_score: number | null;
+    recommended_cooling_delta: number | null;
+  } | null>(null);
 
   // Force fresh data on mount: clear stale localStorage (82.1%, 0, old versions)
   useEffect(() => {
@@ -471,6 +479,26 @@ function PortalOverviewContent() {
     return () => clearInterval(id);
   }, [pulseRange, fetchRangeRaw]);
 
+  const fetchReasoning = useCallback(async () => {
+    try {
+      const token = await getToken();
+      if (!token) return;
+      const res = await api.getOptimizationReasoning(token);
+      if (res.ok) {
+        const data = await res.json();
+        setReasoning(data);
+      }
+    } catch {
+      // ignore
+    }
+  }, [getToken]);
+
+  useEffect(() => {
+    fetchReasoning();
+    const id = setInterval(fetchReasoning, 30_000);
+    return () => clearInterval(id);
+  }, [fetchReasoning]);
+
   useEffect(() => {
     if (searchParams.get("success") === "true") {
       setShowSuccessBanner(true);
@@ -622,7 +650,7 @@ function PortalOverviewContent() {
         </motion.div>
       </div>
 
-      {/* Real-time data — updates every 5s, no graph */}
+      {/* Real-time data */}
       {hasLiveData && (pilotNode || baselineNode) && (
         <motion.div
           initial={{ opacity: 0, y: 8 }}
@@ -630,7 +658,7 @@ function PortalOverviewContent() {
           transition={{ duration: 0.2 }}
           className="mb-8 rounded-xl border border-white/10 bg-[#141414] p-4"
         >
-          <p className="text-xs font-medium uppercase tracking-wider text-white/50 mb-3">Live telemetry (updates every 5s)</p>
+          <p className="text-xs font-medium uppercase tracking-wider text-white/50 mb-3">Live telemetry</p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
             <div className="space-y-2">
               <p className="text-sm font-medium text-[#22c55e]">{pilotNodeId || "CooledAI"}</p>
@@ -659,11 +687,10 @@ function PortalOverviewContent() {
               </div>
             </div>
           </div>
-          <p className="text-xs text-white/40 mt-3">Chart below updates every 1 minute</p>
         </motion.div>
       )}
 
-      {/* Thermal Chart — refreshes every 1 min */}
+      {/* Thermal Chart */}
       <motion.section
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
@@ -847,6 +874,75 @@ function PortalOverviewContent() {
           {chartMetric === "fan" && "Fan RPM from cooledai_agent (IPMI)"}
           {chartMetric === "power" && "GPU power (W) from nvidia-smi. Both nodes report when telemetry includes power_draw_w."}
         </p>
+
+        {/* AI Reasoning — expandable like Grok/Gemini/Claude */}
+        <div className="mt-6 rounded-xl border border-white/10 bg-[#141414] overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowReasoning(!showReasoning)}
+            className="flex w-full items-center justify-between px-4 py-3 text-left hover:bg-white/5 transition-colors"
+          >
+            <span className="text-sm font-medium text-white/90 flex items-center gap-2">
+              <span className="text-accent-cyan">🧠</span>
+              How the predictive model thinks
+            </span>
+            <svg className={`w-4 h-4 text-white/50 transition-transform ${showReasoning ? "rotate-180" : ""}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          {showReasoning && (
+            <div className="border-t border-white/10 px-4 py-4 bg-black/20 space-y-4 text-sm">
+              {reasoning?.diagnostic_reasoning ? (
+                <>
+                  <div>
+                    <p className="text-xs font-medium uppercase tracking-wider text-white/50 mb-2">Reasoning</p>
+                    <p className="text-white/90 leading-relaxed">{reasoning.diagnostic_reasoning}</p>
+                  </div>
+                  {reasoning.recommendations?.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wider text-white/50 mb-2">Recommendations</p>
+                      <ul className="list-disc list-inside space-y-1 text-white/80">
+                        {reasoning.recommendations.map((r, i) => (
+                          <li key={i}>{r}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {reasoning.reasoning_log?.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium uppercase tracking-wider text-white/50 mb-2">Step-by-step</p>
+                      <ul className="space-y-1 text-white/70 text-xs">
+                        {reasoning.reasoning_log.map((step, i) => (
+                          <li key={i} className="flex gap-2">
+                            <span className="text-white/40 shrink-0">{i + 1}.</span>
+                            <span>{step}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {(reasoning.efficiency_score != null || reasoning.recommended_cooling_delta != null) && (
+                    <div className="flex gap-4 text-xs">
+                      {reasoning.efficiency_score != null && (
+                        <span className="text-white/60">Efficiency score: <strong className="text-white">{reasoning.efficiency_score}</strong></span>
+                      )}
+                      {reasoning.recommended_cooling_delta != null && (
+                        <span className="text-white/60">Cooling delta: <strong className="text-white">{reasoning.recommended_cooling_delta > 0 ? "+" : ""}{(reasoning.recommended_cooling_delta * 100).toFixed(0)}%</strong></span>
+                      )}
+                    </div>
+                  )}
+                </>
+              ) : (
+                <p className="text-white/50">
+                  {reasoning
+                    ? (reasoning.diagnostic_reasoning || "No thermal history yet. Reasoning will appear once telemetry is flowing.")
+                    : "Loading reasoning…"}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
         <div className="mt-4 rounded-lg border border-white/10 bg-white/5 p-4">
           <p className="text-xs font-medium text-white/70 mb-1">CooledAI vs Control: Efficiency</p>
           <p className="text-xs text-white/50 leading-relaxed">

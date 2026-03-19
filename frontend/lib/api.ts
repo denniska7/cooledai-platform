@@ -95,6 +95,10 @@ export const api = {
     apiFetch("/api/v1/facility/hourly-metrics", {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     }),
+  getOptimizationReasoning: (token?: string | null) =>
+    apiFetch("/api/v1/optimization-reasoning", {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    }),
   getThermalExport: (
     params: { start_date?: string; end_date?: string; days?: number },
     token?: string | null
