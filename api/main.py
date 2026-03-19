@@ -1815,7 +1815,17 @@ async def get_thermal_history(
                 "pilot_gpu_power_w": round(pilot_gpu_pwr, 1) if pilot_gpu_pwr is not None else None,
                 "baseline_gpu_power_w": round(baseline_gpu_pwr, 1) if baseline_gpu_pwr is not None else None,
             })
-        return {"points": raw_points, "hours": hours, "mode": "raw"}
+        return {
+            "points": raw_points,
+            "hours": hours,
+            "mode": "raw",
+            "data_source": {
+                "gpu_temp": "avg_gpu_temp_c (average of all GPUs per node)",
+                "cpu_temp": "cpu_temp_c from cooledai_agent node_id/cpu record",
+                "fan_rpm": "fan_rpm from cooledai_agent node_id/fans record (IPMI tach)",
+                "gpu_power_w": "sum of power_draw_w from nvidia-smi per GPU",
+            },
+        }
 
     # Aggregate into hourly buckets
     buckets_dict: Dict[int, List[Tuple[float, float]]] = {}
