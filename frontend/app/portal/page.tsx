@@ -20,7 +20,7 @@ import { useAuth } from "@clerk/nextjs";
 // Match telemetry heartbeat (5s) so UI refreshes on each new packet
 const STATS_POLL_MS = 5_000;
 const PULSE_STORAGE_KEY = "COOLEDAI_PULSE_DATA";
-const PULSE_STORAGE_VERSION = 3; // bump to invalidate stale data
+const PULSE_STORAGE_VERSION = 4; // bump to invalidate stale/non-comparable cached data
 const MAX_STORED_POINTS = 60_480; // 7 days at 10s interval
 const EFFICIENCY_DELTA_WINDOW_MS = 30_000; // Instantaneous: last 30 seconds
 
@@ -284,9 +284,7 @@ function PortalOverviewContent() {
 
   const now = Date.now();
   const rangeMs = RANGE_MS[pulseRange];
-  const displayedPulseData = rangeData.length
-    ? rangeData.filter((p) => now - p.ts <= rangeMs)
-    : pulseData.filter((p) => now - p.ts <= rangeMs);
+  const displayedPulseData = rangeData.filter((p) => now - p.ts <= rangeMs);
 
   // Efficiency Delta: same pulseData as Chart, last 30s window, most recent point
   const efficiencyDeltaC = useMemo(() => {
