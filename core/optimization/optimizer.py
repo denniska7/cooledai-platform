@@ -356,6 +356,29 @@ class PowerCostOptimizer:
             p_reduce = self._zone_power_from_units(proposed, max_cooling_by_unit)
             candidates.append((delta_reduce, p_reduce, "Reduce 10%"))
 
+        # 3b. Thermal-margin proportional reduction: when temp is well below
+        # target (>10°C margin), propose a deeper reduction proportional to
+        # the headroom.  At 30°C margin → target ~30% of max; at 10°C → ~60%.
+        # This lets the optimizer match or beat the agent's local fallback
+        # curve instead of being stuck at the "sweet spot" ceiling.
+        thermal_margin = target_temp - current_thermal
+        if thermal_margin > 10 and not temp_rising:
+            margin_frac = min(1.0, thermal_margin / 30.0)  # 0..1
+            target_frac = max(0.25, SWEET_SPOT_TARGET - margin_frac * 0.45)
+            proposed_margin = {
+                uid: max(0, max_cooling_by_unit.get(uid, max_cooling) * target_frac)
+                for uid in cooling_unit_ids
+            }
+            agg_current = sum(current_cooling_by_unit.values()) or 1e-6
+            agg_proposed = sum(proposed_margin.values())
+            delta_margin = (agg_proposed / agg_current) - 1.0
+            if delta_margin < -0.05:  # Only if it's a meaningful reduction
+                p_margin = self._zone_power_from_units(proposed_margin, max_cooling_by_unit)
+                candidates.append((
+                    delta_margin, p_margin,
+                    f"Thermal margin ({thermal_margin:.0f}°C headroom, target {target_frac:.0%} of max)",
+                ))
+
         # 4. Increase (for temp rising) - minimum to stay safe
         if temp_rising:
             delta_increase = 0.12
