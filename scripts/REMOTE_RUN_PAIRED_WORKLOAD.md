@@ -9,6 +9,17 @@
 
 Optional: reach the pilot via **data-port LAN** `192.168.12.100` instead — set `COOLEDAI_PILOT_SSH=cooledaiadmin@192.168.12.100`.
 
+## SSH: “REMOTE HOST IDENTIFICATION HAS CHANGED”
+
+After an OS reinstall or motherboard swap, your Mac still has the **old** host key. Remove it, then connect again:
+
+```bash
+ssh-keygen -R 192.168.12.100
+ssh-keygen -R 192.168.12.101
+```
+
+Reconnect with `ssh` and type `yes` to store the new key. (Expected when **you** changed the machine; suspicious on public Wi‑Fi.)
+
 ## Security first
 
 - **Never commit SSH passwords or API keys to GitHub.** Run commands from your laptop and type passwords only when `ssh` / `sudo` prompt you—or use **SSH keys**.
@@ -67,8 +78,8 @@ From **project root** on your Mac, after `git pull` on both servers:
 # 1) Dual Ollama on both GPUs (kills existing ollama serve)
 ./scripts/run_dual_ollama_on_both_st550.sh
 
-# 2) Same model on both (run on EACH server over SSH, or see GPU_LOAD_BALANCE.md)
-#    ollama pull llama3
+# 2) On EACH server after dual Ollama: pull model on BOTH ports (avoids HTTP 404 / ok=0/2)
+#    ssh ... 'cd ~/coolingai_simulator && bash scripts/pull_ollama_model_both_ports.sh'
 
 # 3) Paired +5% workload on both nodes
 ./scripts/run_paired_workload_on_both_st550.sh
