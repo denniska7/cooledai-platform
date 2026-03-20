@@ -66,3 +66,11 @@ See also: `TELEMETRY_LOG_ACCESS.md` (curl example).
 ## Run both nodes from your Mac (SSH)
 
 See **`REMOTE_RUN_PAIRED_WORKLOAD.md`** and `run_paired_workload_on_both_st550.sh` (requires SSH keys, no passwords in git).
+
+## FOPDT cold-start (any hardware)
+
+After collecting stepped telemetry as JSONL, run:
+
+`python3 scripts/cold_start_fopdt_calibration.py --rack-id <node_id> your_samples.jsonl`
+
+See `docs/CLIENT_TELEMETRY_SURVEY.md` for the client intake template.

@@ -670,6 +670,9 @@ def fetch_optimize_control(
         "node_id": node_id,
         "max_fan_rpm": 7000.0,
     }
+    lcd = getattr(fetch_optimize_control, "_last_applied_duty", None)
+    if lcd is not None:
+        payload["last_commanded_duty"] = float(lcd)
     url_opt = f"{api_url.rstrip('/')}/api/v1/optimize/control"
     result = _http_request(url_opt, token, "POST", payload, timeout_s=OPTIMIZE_TIMEOUT_S)
     if result is not None and isinstance(result.get("target_duty"), (int, float)):
@@ -791,6 +794,7 @@ def run_agent(
             method = set_fan_duty(caps, duty, dry_run)
             if method != "none":
                 _manual_control_active = True
+                fetch_optimize_control._last_applied_duty = int(duty)  # type: ignore[attr-defined]
             else:
                 _log.debug("Fan set returned 'none' — no method succeeded this cycle.")
         else:

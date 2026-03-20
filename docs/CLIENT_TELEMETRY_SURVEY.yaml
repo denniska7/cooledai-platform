@@ -1,0 +1,72 @@
+# CooledAI — Client telemetry & control survey (copy per site / row)
+# Fill one file per deployment. SE pastes answers into onboarding ticket.
+# "available" = yes | no | unknown   "cadence_s" = typical poll interval in seconds
+
+site:
+  name: ""
+  contact_email: ""
+  timezone: "UTC"
+
+# Thermal — what we can READ
+telemetry:
+  gpu:
+    available: unknown
+    vendor: ""           # e.g. NVIDIA, AMD
+    interface: ""        # e.g. nvidia-smi, DCGM, ROCm-SMI
+    per_gpu_temps: unknown
+    per_gpu_power_w: unknown
+    junction_vs_edge: unknown
+  cpu:
+    available: unknown
+    interface: ""        # IPMI, k10temp, etc.
+  inlet_air_c:
+    available: unknown
+    sensor_location: ""  # front of rack, CRAC return, etc.
+  outlet_air_c:
+    available: unknown
+  ambient_outdoor_c:
+    available: unknown
+
+# Cooling — what we can READ
+cooling_sensors:
+  fan_tach_rpm:
+    available: unknown
+    notes: ""            # per-fan, aggregate, often wrong on some BMCs
+  liquid_flow_lpm:
+    available: unknown
+  supply_temp_c:
+    available: unknown
+  return_temp_c:
+    available: unknown
+  crac_pressure:
+    available: unknown
+
+# Actuation — what we can COMMAND digitally
+actuation:
+  fan_pwm_or_duty:
+    available: unknown
+    method: ""           # IPMI raw, Redfish, vendor tool, BMC web only
+  crac_setpoint_c:
+    available: unknown
+    protocol: ""         # BACnet, SNMP, Modbus, API, none
+  pump_vfd:
+    available: unknown
+  workload_throttle_api:
+    available: unknown   # K8s, Slurm, cloud — for emergency escalation only
+
+# Network / security
+connectivity:
+  agent_can_reach_internet: unknown
+  outbound_https_only: unknown
+  snmp_community_or_readonly_user: unknown
+  vpn_or_tailscale: unknown
+
+# Rated limits (for normalizing RPM → %)
+hardware_limits:
+  max_fan_rpm_rated: unknown
+  num_fans_controlled_together: unknown
+  tdp_gpu_w: unknown
+  critical_temp_c_policy: unknown   # customer hard limit
+
+# Gaps — what you wish CooledAI had but don't have yet
+wishlist: ""

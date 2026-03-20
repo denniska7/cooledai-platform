@@ -2507,6 +2507,8 @@ class AgentOptimizeControlInput(BaseModel):
     cpu_temp_c: Optional[float] = None
     node_id: str = "ST550-CooledAI-Predictive"
     max_fan_rpm: float = 7000.0  # For duty conversion; agent can override
+    # Last fan duty actually applied (0–100). Enables fan-slippage heuristic vs tach.
+    last_commanded_duty: Optional[float] = None
 
 
 def _build_nodes_for_agent_control(
@@ -2608,6 +2610,35 @@ async def agent_optimize_control(
         target_duty = int(round((target_rpm / max_rpm) * 100.0))
         target_duty = max(0, min(100, target_duty))
         rm = resp.raw_metrics or {}
+        # Conservative boosts when telemetry is stale, tach may not track command, or
+        # temperature rises despite high duty (saturation flag for operators).
+        try:
+            from core.safety.telemetry_failure_policy import build_posture_from_nodes
+
+            target_duty, fail_posture = build_posture_from_nodes(
+                nodes,
+                target_duty=target_duty,
+                last_commanded_duty=body.last_commanded_duty,
+                fan_rpm=float(body.fan_rpm),
+                max_fan_rpm=float(max_rpm),
+                now=datetime.now(timezone.utc),
+            )
+            failure_payload = {
+                "reasons": fail_posture.reasons,
+                "stale_history": fail_posture.stale_history,
+                "stale_age_sec": round(fail_posture.stale_age_sec, 1),
+                "fan_slippage": fail_posture.fan_slippage,
+                "slippage_detail": fail_posture.slippage_detail or None,
+                "saturation_suspected": fail_posture.saturation_suspected,
+                "saturation_detail": fail_posture.saturation_detail or None,
+                "duty_boost_applied": fail_posture.duty_boost,
+                "duty_floor_applied": fail_posture.duty_floor,
+            }
+        except Exception as e:
+            logging.getLogger("api.main").debug("failure posture skipped: %s", e)
+            failure_payload = {"reasons": [], "note": "failure_posture_unavailable"}
+        # Align reported RPM with final duty after failure-posture boost
+        target_rpm = (target_duty / 100.0) * max_rpm
         return {
             "target_duty": target_duty,
             "recommended_cooling_delta": delta,
@@ -2617,6 +2648,7 @@ async def agent_optimize_control(
             "policy_soft_floor_rpm": rm.get("policy_soft_floor_rpm_target"),
             "policy_floor_forced_after_layers": rm.get("policy_floor_forced_after_layers"),
             "policy_capacity_rpm": rm.get("policy_capacity_rpm"),
+            "failure_posture": failure_payload,
         }
     except Exception as e:
         logging.getLogger("api.main").warning("Agent optimize control failed: %s", e)
