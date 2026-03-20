@@ -1571,8 +1571,9 @@ def _get_pilot_baseline_snapshot(
 ) -> Tuple[
     Optional[float], Optional[float], Optional[float], Optional[float],
     Optional[float], Optional[float], Optional[float], Optional[float],
+    Optional[float], Optional[float],
 ]:
-    """Get current pilot/control RAW GPU-average temps, fan RPM, CPU temp, GPU power for history snapshots."""
+    """Get current pilot/control RAW GPU-average temps, fan RPM, CPU temp, GPU power, peak power for history snapshots."""
     if owner_id == "master":
         all_nodes = {}
         for tn in _tenant_telemetry.values():
@@ -1587,6 +1588,8 @@ def _get_pilot_baseline_snapshot(
     baseline_cpu = None
     pilot_gpu_pwr = None
     baseline_gpu_pwr = None
+    pilot_peak_pwr = None
+    baseline_peak_pwr = None
     for nid in all_nodes:
         if "/" in nid:
             continue
@@ -1597,13 +1600,17 @@ def _get_pilot_baseline_snapshot(
             pilot_cpu = all_nodes[nid].get("cpu_temp_c")
             pw = all_nodes[nid].get("gpu_power_w")
             pilot_gpu_pwr = float(pw) if pw is not None else None
+            ppw = all_nodes[nid].get("peak_power_w")
+            pilot_peak_pwr = float(ppw) if ppw is not None else None
         elif "control" in nid_lower and "traditional" in nid_lower:
             baseline_temp = all_nodes[nid].get("avg_gpu_temp_c", all_nodes[nid].get("max_gpu_temp_c", all_nodes[nid].get("max_temp_c")))
             baseline_rpm = all_nodes[nid].get("fan_rpm")
             baseline_cpu = all_nodes[nid].get("cpu_temp_c")
             pw = all_nodes[nid].get("gpu_power_w")
             baseline_gpu_pwr = float(pw) if pw is not None else None
-    return pilot_temp, baseline_temp, pilot_rpm, baseline_rpm, pilot_cpu, baseline_cpu, pilot_gpu_pwr, baseline_gpu_pwr
+            ppw = all_nodes[nid].get("peak_power_w")
+            baseline_peak_pwr = float(ppw) if ppw is not None else None
+    return pilot_temp, baseline_temp, pilot_rpm, baseline_rpm, pilot_cpu, baseline_cpu, pilot_gpu_pwr, baseline_gpu_pwr, pilot_peak_pwr, baseline_peak_pwr
 
 
 def _smooth_raw_points(points: list, window: int = 5, keys: tuple = ("pilot_gpu_power_w", "baseline_gpu_power_w")) -> None:
@@ -1627,6 +1634,7 @@ def _append_thermal_history(owner_id: str, now_ts: float) -> None:
     out = _get_pilot_baseline_snapshot(owner_id)
     pilot_temp, baseline_temp, pilot_rpm, baseline_rpm = out[:4]
     pilot_cpu, baseline_cpu, pilot_gpu_pwr, baseline_gpu_pwr = out[4:8]
+    pilot_peak_pwr, baseline_peak_pwr = out[8:10]
     if pilot_temp is None or baseline_temp is None:
         return
     history = _thermal_history.setdefault(owner_id, [])
@@ -1648,6 +1656,8 @@ def _append_thermal_history(owner_id: str, now_ts: float) -> None:
             float(baseline_cpu) if baseline_cpu is not None else None,
             float(pilot_gpu_pwr) if pilot_gpu_pwr is not None else None,
             float(baseline_gpu_pwr) if baseline_gpu_pwr is not None else None,
+            float(pilot_peak_pwr) if pilot_peak_pwr is not None else None,
+            float(baseline_peak_pwr) if baseline_peak_pwr is not None else None,
         )
     )
     if len(history) > _MAX_THERMAL_HISTORY_POINTS:
@@ -1657,6 +1667,7 @@ def _append_thermal_history(owner_id: str, now_ts: float) -> None:
 def _history_row(row: tuple) -> Tuple[
     float, float, float, Optional[float], Optional[float],
     Optional[float], Optional[float], Optional[float], Optional[float],
+    Optional[float], Optional[float],
 ]:
     """Normalize thermal history row across legacy/new formats."""
     ts = float(row[0])
@@ -1668,7 +1679,9 @@ def _history_row(row: tuple) -> Tuple[
     baseline_cpu = float(row[6]) if len(row) > 6 and row[6] is not None else None
     pilot_gpu_pwr = float(row[7]) if len(row) > 7 and row[7] is not None else None
     baseline_gpu_pwr = float(row[8]) if len(row) > 8 and row[8] is not None else None
-    return ts, pilot, baseline, pilot_rpm, baseline_rpm, pilot_cpu, baseline_cpu, pilot_gpu_pwr, baseline_gpu_pwr
+    pilot_peak_pwr = float(row[9]) if len(row) > 9 and row[9] is not None else None
+    baseline_peak_pwr = float(row[10]) if len(row) > 10 and row[10] is not None else None
+    return ts, pilot, baseline, pilot_rpm, baseline_rpm, pilot_cpu, baseline_cpu, pilot_gpu_pwr, baseline_gpu_pwr, pilot_peak_pwr, baseline_peak_pwr
 
 
 def _accumulate_savings(owner_id: str, pilot_rpm: float) -> None:
@@ -1763,6 +1776,12 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
             if power_w is not None and "/gpu" in record.get("node_id", ""):
                 consolidated["gpu_power_w"] = consolidated.get("gpu_power_w", 0) + float(power_w)
 
+            # FIX E: Track peak_power_w from GPU records (raw max across GPUs in a poll cycle)
+            ppw = record.get("peak_power_w")
+            if ppw is not None and "/gpu" in record.get("node_id", ""):
+                cur_peak = consolidated.get("peak_power_w")
+                consolidated["peak_power_w"] = max(float(ppw), float(cur_peak)) if cur_peak is not None else float(ppw)
+
             temp_c = record.get("temperature_c")
             if temp_c is not None:
                 nid = record.get("node_id", "")
@@ -1855,8 +1874,10 @@ async def get_thermal_history(
             baseline_cpu = out[6] if len(out) > 6 else None
             pilot_gpu_pwr = out[7] if len(out) > 7 else None
             baseline_gpu_pwr = out[8] if len(out) > 8 else None
+            pilot_peak_pwr = out[9] if len(out) > 9 else None
+            baseline_peak_pwr = out[10] if len(out) > 10 else None
             dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-            raw_points.append({
+            point = {
                 "ts": ts,
                 "time": dt.strftime("%H:%M:%S"),
                 "pilot": round(pt, 2),
@@ -1867,7 +1888,12 @@ async def get_thermal_history(
                 "baseline_cpu_temp": round(baseline_cpu, 2) if baseline_cpu is not None else None,
                 "pilot_gpu_power_w": round(pilot_gpu_pwr, 1) if pilot_gpu_pwr is not None else None,
                 "baseline_gpu_power_w": round(baseline_gpu_pwr, 1) if baseline_gpu_pwr is not None else None,
-            })
+            }
+            if pilot_peak_pwr is not None:
+                point["pilot_peak_power_w"] = round(pilot_peak_pwr, 1)
+            if baseline_peak_pwr is not None:
+                point["baseline_peak_power_w"] = round(baseline_peak_pwr, 1)
+            raw_points.append(point)
         # Smooth GPU power for cleaner chart (5-point moving average)
         _smooth_raw_points(raw_points, window=5, keys=("pilot_gpu_power_w", "baseline_gpu_power_w"))
         return {
@@ -2399,8 +2425,10 @@ async def get_telemetry_logs(hours: int = 1):
         baseline_cpu = out[6] if len(out) > 6 else None
         pilot_gpu_pwr = out[7] if len(out) > 7 else None
         baseline_gpu_pwr = out[8] if len(out) > 8 else None
+        pilot_peak_pwr = out[9] if len(out) > 9 else None
+        baseline_peak_pwr = out[10] if len(out) > 10 else None
         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
-        raw_points.append({
+        point = {
             "ts": ts,
             "time_utc": dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "cooledai_gpu_temp_c": round(pt, 2),
@@ -2411,7 +2439,12 @@ async def get_telemetry_logs(hours: int = 1):
             "control_cpu_temp_c": round(baseline_cpu, 2) if baseline_cpu is not None else None,
             "cooledai_gpu_power_w": round(pilot_gpu_pwr, 1) if pilot_gpu_pwr is not None else None,
             "control_gpu_power_w": round(baseline_gpu_pwr, 1) if baseline_gpu_pwr is not None else None,
-        })
+        }
+        if pilot_peak_pwr is not None:
+            point["cooledai_peak_power_w"] = round(pilot_peak_pwr, 1)
+        if baseline_peak_pwr is not None:
+            point["control_peak_power_w"] = round(baseline_peak_pwr, 1)
+        raw_points.append(point)
     return {
         "hours": hours,
         "points": raw_points,
@@ -2482,6 +2515,7 @@ def _build_nodes_from_thermal_history(owner_id: str, max_points: int = 30) -> Li
         out = _history_row(row)
         ts, pilot_temp, baseline_temp, pilot_rpm, baseline_rpm = out[0], out[1], out[2], out[3], out[4]
         pilot_cpu, baseline_cpu, pilot_gpu_pwr, baseline_gpu_pwr = out[5], out[6], out[7], out[8]
+        pilot_peak_pwr = out[9] if len(out) > 9 else None
         thermal = float(pilot_temp) if pilot_temp is not None else 0.0
         power = float(pilot_gpu_pwr) if pilot_gpu_pwr is not None else 50.0
         cooling = float(pilot_rpm) if pilot_rpm is not None else 2000.0
@@ -2494,6 +2528,7 @@ def _build_nodes_from_thermal_history(owner_id: str, max_points: int = 30) -> Li
             node_id="ST550-CooledAI-Predictive",
             timestamp=datetime.fromtimestamp(ts, tz=timezone.utc),
             source="thermal_history",
+            peak_power_w=float(pilot_peak_pwr) if pilot_peak_pwr is not None else None,
         )
         nodes.append(node)
     return nodes
@@ -2509,6 +2544,8 @@ class AgentOptimizeControlInput(BaseModel):
     max_fan_rpm: float = 7000.0  # For duty conversion; agent can override
     # Last fan duty actually applied (0–100). Enables fan-slippage heuristic vs tach.
     last_commanded_duty: Optional[float] = None
+    # FIX E: Raw peak GPU power within polling interval (W) for spike detection
+    peak_power_w: Optional[float] = None
 
 
 def _build_nodes_for_agent_control(
@@ -2525,7 +2562,10 @@ def _build_nodes_for_agent_control(
         points = history[-(max_points - 1) :]
         for row in points:
             out = _history_row(row)
-            ts, pilot_temp, _, pilot_rpm, _, _, _, pilot_gpu_pwr, _ = out
+            ts, pilot_temp = out[0], out[1]
+            pilot_rpm = out[3]
+            pilot_gpu_pwr = out[7]
+            pilot_peak_pwr = out[9] if len(out) > 9 else None
             thermal = float(pilot_temp) if pilot_temp is not None else 0.0
             power = float(pilot_gpu_pwr) if pilot_gpu_pwr is not None else 50.0
             cooling = float(pilot_rpm) if pilot_rpm is not None else 2000.0
@@ -2538,6 +2578,7 @@ def _build_nodes_for_agent_control(
                 node_id=agent_snapshot.node_id,
                 timestamp=datetime.fromtimestamp(ts, tz=timezone.utc),
                 source="thermal_history",
+                peak_power_w=float(pilot_peak_pwr) if pilot_peak_pwr is not None else None,
             ))
     # Append agent's current snapshot as most recent
     util = min(100.0, max(0.0, (agent_snapshot.gpu_power_w / 200.0) * 50.0))
@@ -2549,6 +2590,7 @@ def _build_nodes_for_agent_control(
         node_id=agent_snapshot.node_id,
         timestamp=datetime.fromtimestamp(now_ts, tz=timezone.utc),
         source="agent",
+        peak_power_w=agent_snapshot.peak_power_w,
     ))
     return nodes
 
@@ -2822,6 +2864,7 @@ async def get_nodes_status_remote():
             "gpu_temps_c": node.get("gpu_temps_c", []),
             "fan_rpm": node.get("fan_rpm"),
             "raw_fan_wattage": node.get("raw_fan_wattage"),
+            "peak_power_w": node.get("peak_power_w"),
         }
 
     pilot = _node_status(pilot_node_id, pilot_received)
