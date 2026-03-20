@@ -6,7 +6,7 @@
 #
 # Defaults match COOLEDAI_NODE_SETUP.md (Tailscale pilot + LAN control).
 # Override:
-#   COOLEDAI_PILOT_SSH=cooledaiadmin@192.168.12.100 \
+#   COOLEDAI_PILOT_SSH=cooledaiadmin@192.168.12.100 \  # optional LAN data port instead of Tailscale
 #   COOLEDAI_CONTROL_SSH=cooledaiadmin@192.168.12.101 \
 #   COOLEDAI_REMOTE_DIR=coolingai_simulator \
 #   ./scripts/run_paired_workload_on_both_st550.sh

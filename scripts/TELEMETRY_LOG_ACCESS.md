@@ -55,7 +55,7 @@ If `policy_soft_floor_rpm` is correct but the **physical fan** barely moves, che
 
 ## 2. Remote node logs (SSH required, same network)
 
-### Node 100 (Pilot – CooledAI Predictive)
+### Pilot (CooledAI Predictive) — Tailscale `100.92.29.44`
 
 | Log | Path | Contents |
 |-----|------|----------|
@@ -77,22 +77,24 @@ If `policy_soft_floor_rpm` is correct but the **physical fan** barely moves, che
 ./scripts/fetch_last_hour_logs.sh
 ```
 
-Writes agent, telemetry, and lenovo_live logs to `./logs_last_hour_YYYYMMDD_HHMM/`. Run from your Mac on the same network. You'll be prompted for the SSH password for each node.
+Writes agent, telemetry, and lenovo_live logs to `./logs_last_hour_YYYYMMDD_HHMM/`. Run from your Mac (Tailscale for pilot `100.92.29.44`, LAN for control). Use SSH keys or enter password when prompted.
 
 ### Quick tail commands
 
-```bash
-# Node 100 – last 50 lines of agent log
-ssh -t cooledaiadmin@192.168.12.100 'tail -50 ~/cooledai_agent_pilot.log 2>/dev/null || tail -50 /tmp/cooledai_agent.log'
+Pilot uses Tailscale **`100.92.29.44`** (or `192.168.12.100` from the LAN data port).
 
-# Node 101 – last 50 lines of agent log
+```bash
+# Pilot – last 50 lines of agent log
+ssh -t cooledaiadmin@100.92.29.44 'tail -50 ~/cooledai_agent_pilot.log 2>/dev/null || tail -50 /tmp/cooledai_agent.log'
+
+# Control – last 50 lines of agent log
 ssh -t cooledaiadmin@192.168.12.101 'tail -50 ~/cooledai_agent_control.log 2>/dev/null || tail -50 /tmp/cooledai_agent.log'
 
-# Node 100 – telemetry log
-ssh -t cooledaiadmin@192.168.12.100 'tail -100 /var/log/cooledai_telemetry.log 2>/dev/null || tail -100 /tmp/cooledai_telemetry.log'
+# Pilot – telemetry log
+ssh -t cooledaiadmin@100.92.29.44 'tail -100 /var/log/cooledai_telemetry.log 2>/dev/null || tail -100 /tmp/cooledai_telemetry.log'
 
-# Node 100 – lenovo_live (JSON Lines, last 20 records)
-ssh -t cooledaiadmin@192.168.12.100 'tail -20 /var/log/lenovo_live.log 2>/dev/null || tail -20 /tmp/lenovo_live.log'
+# Pilot – lenovo_live (JSON Lines, last 20 records)
+ssh -t cooledaiadmin@100.92.29.44 'tail -20 /var/log/lenovo_live.log 2>/dev/null || tail -20 /tmp/lenovo_live.log'
 ```
 
 ---

@@ -1,13 +1,14 @@
 #!/bin/bash
-# Fetch all logs from the past hour on both nodes (100 = Pilot, 101 = Control).
-# Run from your Mac (same network as nodes). You'll be prompted for SSH password.
+# Fetch all logs from the past hour on both nodes (Pilot + Control).
+# Run from your Mac. Pilot default: Tailscale 100.92.29.44; control: LAN .101.
+# Override: COOLEDAI_PILOT_SSH=cooledaiadmin@192.168.12.100 COOLEDAI_CONTROL_SSH=...
 #
 # Usage: ./scripts/fetch_last_hour_logs.sh [output_dir]
 # Output: writes to ./logs_last_hour_YYYYMMDD_HHMM/ or specified dir
 
 set -e
-NODE100="cooledaiadmin@192.168.12.100"
-NODE101="cooledaiadmin@192.168.12.101"
+NODE100="${COOLEDAI_PILOT_SSH:-cooledaiadmin@100.92.29.44}"
+NODE101="${COOLEDAI_CONTROL_SSH:-cooledaiadmin@192.168.12.101}"
 # ~360 agent lines/hour (10s), ~720 lenovo_live lines/hour (5s). Use 500/1000 to be safe.
 AGENT_LINES=500
 TELEMETRY_LINES=500
