@@ -15,14 +15,37 @@ The scheduler is **deterministic** (same UTC boundaries, same prompts), but GPU 
 ## Recommended startup (both nodes)
 
 1. Dual Ollama: `bash scripts/start_ollama_dual_gpu.sh` (see `GPU_LOAD_BALANCE.md`).
-2. Paired scheduler:
+2. **Pull the model on both ports** (required on every new machine — otherwise `/api/generate` returns **404** and logs show `ok=0/2`):
+
+```bash
+bash scripts/pull_ollama_model_both_ports.sh
+```
+
+3. Paired scheduler:
 
 ```bash
 cd /path/to/coolingai_simulator
 bash scripts/start_st550_paired_workload.sh
 ```
 
-3. Confirm logs show `WORKLOAD_INTENSITY=1.05` and `OLLAMA_SPREAD_URLS=2 URLs` (or similar).
+4. Confirm logs show `WORKLOAD_INTENSITY=1.05`, `ok=2/2` (not `ok=0/2`), and no GIN `404` on `/api/generate`.
+
+## Troubleshooting
+
+### Mac: `WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED` (192.168.12.100)
+
+The server was reinstalled or its SSH host key changed. On your **Mac**:
+
+```bash
+ssh-keygen -R 192.168.12.100
+ssh-keygen -R 192.168.12.101   # if that one errors too
+```
+
+Then SSH again and accept the new fingerprint. **Only do this if** you expect the key change (same machine, OS reinstall, etc.) — not on untrusted networks.
+
+### Ollama `404` on `POST /api/generate` / `[LIGHT] done. ok=0/2`
+
+The model name in `OLLAMA_MODEL` (default `llama3`) is **not** available on that Ollama process. Run `bash scripts/pull_ollama_model_both_ports.sh` on that node (pulls on **11434 and 11435**).
 
 ## +5% workload
 
