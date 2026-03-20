@@ -673,6 +673,24 @@ def fetch_optimize_control(
     url_opt = f"{api_url.rstrip('/')}/api/v1/optimize/control"
     result = _http_request(url_opt, token, "POST", payload, timeout_s=OPTIMIZE_TIMEOUT_S)
     if result is not None and isinstance(result.get("target_duty"), (int, float)):
+        # Throttled INFO so operators can confirm deployed API exposes policy fields
+        # (soft floor vs hardware/IPMI cap) without flooding logs every 3s.
+        now_m = time.monotonic()
+        last_m = getattr(fetch_optimize_control, "_last_policy_log_mono", 0.0)
+        if now_m - last_m >= 45.0:
+            sf = result.get("policy_soft_floor_rpm")
+            ff = result.get("policy_floor_forced_after_layers")
+            cap = result.get("policy_capacity_rpm")
+            if sf is not None or ff is not None or cap is not None:
+                _log.info(
+                    "optimize/control policy: soft_floor_rpm=%s floor_forced_after_layers=%s "
+                    "capacity_rpm=%s target_duty=%s",
+                    sf,
+                    ff,
+                    cap,
+                    result.get("target_duty"),
+                )
+                fetch_optimize_control._last_policy_log_mono = now_m  # type: ignore[attr-defined]
         return int(max(0, min(100, result["target_duty"])))
     return None
 
