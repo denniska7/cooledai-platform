@@ -13,6 +13,23 @@ Complete setup for the **cooledai-srv** (pilot) node with predictive cooling, du
 
 ---
 
+## 0. Full repo on the node (recommended)
+
+If `cd ~/coolingai_simulator` fails, clone once on **pilot** (and repeat on **control**):
+
+```bash
+cd ~
+git clone https://github.com/denniska7/cooledai-platform.git coolingai_simulator
+cd ~/coolingai_simulator && git pull origin main
+```
+
+Then use `bash scripts/start_ollama_dual_gpu.sh` and `bash scripts/start_st550_paired_workload.sh` from that directory.  
+*(Private repo: `git clone git@github.com:denniska7/cooledai-platform.git coolingai_simulator` after adding a deploy key.)*
+
+The sections below describe an older **scp individual scripts to `~`** workflow; a full clone replaces most of that.
+
+---
+
 ## 1. Copy Files to Pilot (from your Mac)
 
 From the project root:
