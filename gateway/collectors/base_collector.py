@@ -47,6 +47,7 @@ class TelemetryObject:
     
     # Optional
     ambient_inlet_temp: Optional[float] = None  # °C
+    peak_power_w: Optional[float] = None  # Raw peak power within poll interval (kW)
     raw_data: Dict[str, Any] = field(default_factory=dict)
     
     def to_dict(self) -> Dict[str, Any]:
@@ -62,6 +63,7 @@ class TelemetryObject:
             "source": self.source,
             "protocol": self.protocol,
             "ambient_inlet_temp": self.ambient_inlet_temp,
+            "peak_power_w": self.peak_power_w,
         }
     
     def is_valid(self) -> bool:

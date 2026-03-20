@@ -220,6 +220,10 @@ class PowerCostOptimizer:
 
     Uses Fan Affinity Laws to project energy cost. Biases toward Efficiency
     Sweet Spot (60–80% of max) to hit 40% savings target.
+
+    When a CalibrationProfile is provided, slew rate limiting uses
+    asymmetric rates (faster up, slower down) and the minimum response
+    quantum rounds up small changes rather than suppressing them.
     """
 
     def __init__(
@@ -227,10 +231,12 @@ class PowerCostOptimizer:
         sweet_spot_min: float = SWEET_SPOT_MIN,
         sweet_spot_max: float = SWEET_SPOT_MAX,
         default_rated_power_w: float = DEFAULT_RATED_POWER_W,
+        calibration_profile: object = None,
     ):
         self.sweet_spot_min = sweet_spot_min
         self.sweet_spot_max = sweet_spot_max
         self.default_rated_power_w = default_rated_power_w
+        self.calibration_profile = calibration_profile
 
     def optimize_for_min_power(
         self,
@@ -384,13 +390,42 @@ class PowerCostOptimizer:
             reason = f"{reason} + steep power-slope pre-ramp"
 
         # Safety net: under sustained / active compute with rising power, never return a silent hold/reduce.
+        active_trigger = ACTIVE_COMPUTE_POWER_THRESHOLD_W
+        if self.calibration_profile is not None:
+            active_trigger = getattr(self.calibration_profile, "active_compute_trigger_w", active_trigger)
         if (
-            (sustained_active_compute or current_power_w >= ACTIVE_COMPUTE_POWER_THRESHOLD_W)
+            (sustained_active_compute or current_power_w >= active_trigger)
             and power_slope_w_per_s > SAFETY_NET_POWER_SLOPE_W_S
             and delta < SAFETY_NET_MIN_DELTA
         ):
             delta = max(delta, SAFETY_NET_MIN_DELTA)
             reason = f"{reason} + active-load safety-net (rising power)"
+
+        # Asymmetric slew rate limiting (calibration profile)
+        cp = self.calibration_profile
+        if cp is not None and max_cooling > 1e-6:
+            slew_up = getattr(cp, "slew_rate_up_rpm_per_cycle", 0)
+            slew_down = getattr(cp, "slew_rate_down_rpm_per_cycle", 0)
+            min_quantum = getattr(cp, "min_response_quantum_rpm", 0)
+
+            if slew_up > 0 or slew_down > 0:
+                delta_rpm = delta * current_cooling if current_cooling > 1e-6 else delta * max_cooling
+                if delta_rpm > 0 and slew_up > 0:
+                    delta_rpm = min(delta_rpm, slew_up)
+                elif delta_rpm < 0 and slew_down > 0:
+                    delta_rpm = max(delta_rpm, -slew_down)
+                if current_cooling > 1e-6:
+                    delta = delta_rpm / current_cooling
+                else:
+                    delta = delta_rpm / max_cooling
+
+            # Minimum response quantum: round up small changes rather than suppressing
+            if min_quantum > 0 and current_cooling > 1e-6:
+                delta_rpm_abs = abs(delta * current_cooling)
+                if 0 < delta_rpm_abs < min_quantum:
+                    sign = 1.0 if delta >= 0 else -1.0
+                    delta = sign * min_quantum / current_cooling
+                    reason = f"{reason} + min_response_quantum rounded up"
 
         # Recompute zone power after post-selection delta adjustments
         proposed_cooling = min(

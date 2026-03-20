@@ -45,6 +45,9 @@ class BaseNode(ABC):
     # Multi-variate: ambient inlet temp for correlation (CPU Util vs Power vs Inlet)
     ambient_inlet_temp: Optional[float] = None  # Rack inlet / ambient °C
 
+    # Peak power within the polling interval (raw max, not EWMA-smoothed)
+    peak_power_w: Optional[float] = None
+
     # First derivative (thermal momentum) - °C/s, set by telemetry enrichment
     thermal_input_rate: Optional[float] = None  # dT/dt for AI to see rate of change
     
@@ -72,6 +75,8 @@ class BaseNode(ABC):
             "node_id": self.node_id,
             "timestamp": self.timestamp.isoformat() if self.timestamp else None,
         }
+        if getattr(self, "peak_power_w", None) is not None:
+            out["peak_power_w"] = self.peak_power_w
         if getattr(self, "thermal_input_rate", None) is not None:
             out["thermal_input_rate"] = self.thermal_input_rate
         if getattr(self, "maintenance_mode", False):

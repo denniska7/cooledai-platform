@@ -18,9 +18,12 @@ objectives if the network feeds control directly.
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, Optional
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from core.optimization.thermal_calibrator import CalibrationProfile
 
 
 def _env_float(name: str, default: float) -> float:
@@ -114,14 +117,34 @@ def merge_policy_floors(
     power_draw_w: float,
     sustained_active: bool,
     spike_hold_min_rpm: float = 0.0,
+    calibration_profile: Optional["CalibrationProfile"] = None,
 ) -> float:
-    """Single soft floor in RPM from active compute + optional spike hold."""
+    """Single soft floor in RPM from active compute + optional spike hold.
+
+    When *calibration_profile* is provided, floor values and hysteresis come
+    from the profile instead of hardcoded module constants.
+    """
     cap = policy_capacity_rpm(telemetry_max_cooling_rpm, rated_max_fan_rpm)
     floor = 0.0
+
+    # Resolve thresholds: profile overrides → module constants
+    if calibration_profile is not None:
+        active_floor_rpm = calibration_profile.active_compute_fan_floor_rpm
+        spike_floor_rpm = calibration_profile.spike_hold_fan_floor_rpm
+    else:
+        active_floor_rpm = active_compute_fan_floor_rpm(cap)
+        spike_floor_rpm = None  # fall through to legacy logic
+
     if sustained_active or power_draw_w >= ACTIVE_COMPUTE_POWER_THRESHOLD_W:
-        floor = max(floor, active_compute_fan_floor_rpm(cap))
+        if calibration_profile is not None:
+            floor = max(floor, active_floor_rpm)
+        else:
+            floor = max(floor, active_compute_fan_floor_rpm(cap))
     if spike_hold_min_rpm > 0:
-        floor = max(floor, min(spike_hold_min_rpm, cap * SPIKE_HOLD_MAX_FRAC_OF_RATED))
+        if spike_floor_rpm is not None:
+            floor = max(floor, min(spike_hold_min_rpm, spike_floor_rpm))
+        else:
+            floor = max(floor, min(spike_hold_min_rpm, cap * SPIKE_HOLD_MAX_FRAC_OF_RATED))
     return floor
 
 
