@@ -242,6 +242,12 @@ def _read_gpu_temps(count: int) -> list[dict]:
                 else:
                     power_w = 10.0
             rec["power_draw_w"] = round(power_w, 2)
+            try:
+                fan_pct = pynvml.nvmlDeviceGetFanSpeed(handle)
+                if fan_pct is not None and fan_pct >= 0:
+                    rec["fan_speed_pct"] = float(fan_pct)
+            except pynvml.NVMLError:
+                pass  # Passive / OEM boards may not expose GPU fan
             records.append(rec)
         except pynvml.NVMLError as exc:
             print(f"[telemetry] GPU {i} read error: {exc}")

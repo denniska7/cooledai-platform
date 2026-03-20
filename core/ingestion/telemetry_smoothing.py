@@ -1,12 +1,13 @@
 """
-CooledAI Telemetry Smoothing - Moving Average Filter
+CooledAI Telemetry Smoothing - Moving Average & EWMA
 
-Applies a moving average (e.g. last 5 readings) to smooth telemetry before it
-hits the OptimizationBrain. Prevents fan jitter from electrical noise.
+Applies smoothing before telemetry hits the OptimizationBrain to reduce fan
+jitter from electrical noise. EWMA is O(1) per field (no sum over a window each
+tick); moving average keeps a fixed-length history for stronger low-pass filtering.
 """
 
 from collections import deque
-from typing import Any, Dict, List
+from typing import Dict, List
 
 from core.hal.base_node import BaseNode
 
@@ -69,3 +70,40 @@ class MovingAverageFilter:
     def reset(self) -> None:
         """Clear history (e.g. after topology change)."""
         self._history.clear()
+
+
+class EwmaTelemetryFilter:
+    """
+    Per-node exponential weighted moving average (EWMA).
+
+    Same role as MovingAverageFilter but constant time per update—better for
+    high-frequency agent/API paths. alpha ≈ 2/(N+1) approximates an N-sample
+    SMA (e.g. alpha=0.33 ≈ 5-sample).
+    """
+
+    def __init__(self, alpha: float = 0.33):
+        self.alpha = max(0.05, min(0.95, float(alpha)))
+        self._state: Dict[str, Dict[str, float]] = {}
+
+    def _ensure_node(self, nid: str) -> Dict[str, float]:
+        if nid not in self._state:
+            self._state[nid] = {}
+        return self._state[nid]
+
+    def apply(self, nodes: List[BaseNode]) -> None:
+        """Apply EWMA to nodes. Mutates nodes in place."""
+        a = self.alpha
+        for node in nodes:
+            nid = getattr(node, "node_id", "") or ""
+            st = self._ensure_node(nid)
+            for key in ("thermal_input", "power_draw", "cooling_output"):
+                raw = float(getattr(node, key, 0) or 0)
+                prev = st.get(key)
+                if prev is None:
+                    st[key] = raw
+                else:
+                    st[key] = a * raw + (1.0 - a) * prev
+                setattr(node, key, st[key])
+
+    def reset(self) -> None:
+        self._state.clear()

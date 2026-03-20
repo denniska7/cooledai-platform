@@ -41,6 +41,26 @@ CAUTIONARY_CONFIDENCE_THRESHOLD = 0.80
 CAUTIONARY_BASELINE_DELTA = 0.15
 
 
+def _detrended_noise_ratio(arr: np.ndarray) -> float:
+    """Scale-free noise after removing linear trend (ramps don't look like high CV)."""
+    n = len(arr)
+    if n < 4:
+        return 1.0
+    x = np.arange(n, dtype=np.float64)
+    y = np.asarray(arr, dtype=np.float64)
+    # Simple linear detrend
+    x_mean = np.mean(x)
+    y_mean = np.mean(y)
+    denom = np.sum((x - x_mean) ** 2)
+    if denom < 1e-12:
+        return float(min(1.0, np.std(y) / (abs(y_mean) + 1e-6)))
+    slope = np.sum((x - x_mean) * (y - y_mean)) / denom
+    intercept = y_mean - slope * x_mean
+    resid = y - (slope * x + intercept)
+    scale = max(np.mean(np.abs(y)), 1e-6)
+    return float(min(1.0, np.std(resid) / scale))
+
+
 def _variance_based_confidence(
     thermal: np.ndarray,
     power: np.ndarray,
@@ -51,6 +71,7 @@ def _variance_based_confidence(
     Compute epistemic confidence from input variance and predictor confidence.
 
     Higher variance in inputs = lower confidence. More samples = higher confidence.
+    Thermal uses detrended noise so monotonic CSV-style ramps aren't misread as chaos.
     """
     n = len(thermal)
     if n < 2:
@@ -64,8 +85,8 @@ def _variance_based_confidence(
             return 1.0
         return min(1.0, float(std / abs(mean)))
 
-    cv_thermal = safe_cv(thermal)
-    cv_power = safe_cv(power)
+    cv_thermal = _detrended_noise_ratio(thermal) if n >= 4 else safe_cv(thermal)
+    cv_power = _detrended_noise_ratio(power) if n >= 4 else safe_cv(power)
     cv_cooling = safe_cv(cooling)
     avg_cv = (cv_thermal + cv_power + cv_cooling) / 3.0
 

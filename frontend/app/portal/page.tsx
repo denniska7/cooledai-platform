@@ -871,7 +871,7 @@ function PortalOverviewContent() {
         <p className="text-xs text-white/40 mt-4">
           {chartMetric === "gpu" && "GPU temp: avg of all GPUs per node. Yellow: 65°C · Red: 85°C"}
           {chartMetric === "cpu" && "CPU temp from cooledai_agent"}
-          {chartMetric === "fan" && "Fan RPM from cooledai_agent (IPMI)"}
+          {chartMetric === "fan" && "Fan RPM: chassis tach (IPMI) when available; otherwise GPU fan % scaled to RPM (nvidia-smi / NVML)."}
           {chartMetric === "power" && "GPU power (W) from nvidia-smi. Both nodes report when telemetry includes power_draw_w."}
         </p>
 

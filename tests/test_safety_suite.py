@@ -155,11 +155,13 @@ class TestAIHallucination(unittest.TestCase):
 
     def test_guardrail_intercepts_low_fan_under_load(self):
         """
-        High load (280W, 75°C). AI outputs delta that would drop fan below 400 RPM.
+        Moderate load (15W > LOAD_THRESHOLD_W, below active-compute floor policy).
+        AI outputs delta that would drop fan below 400 RPM.
         Guardrail must intercept and override to 100% cooling.
         """
-        # Scenario: Power=280W, Temp=75°C, current cooling=500 RPM
+        # Scenario: Power=15W, Temp=75°C, current cooling=500 RPM
         # AI hallucination: recommended_delta=-0.5 -> proposed = 500 * 0.5 = 250 RPM < 400
+        # (High GPU power would hit active-compute soft floor first — use 15W to test MIN_FAN_RPM path.)
         gap = EfficiencyGap(
             recommended_cooling_delta=-0.5,  # AI wants to cut fan 50%
             thermal_lag_seconds=0,
@@ -171,7 +173,7 @@ class TestAIHallucination(unittest.TestCase):
             gap=gap,
             current_thermal=75.0,
             current_cooling=500.0,
-            power_draw=280.0,
+            power_draw=15.0,
             max_cooling=3000.0,
         )
 

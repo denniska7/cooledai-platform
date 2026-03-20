@@ -70,7 +70,13 @@ CUDA_VISIBLE_DEVICES=1 OLLAMA_HOST=127.0.0.1:11435 ollama serve &
 Update your deploy scripts to:
 1. Stop any existing Ollama (use `sudo systemctl stop ollama` on Control if needed)
 2. Start dual Ollama (`start_ollama_dual_gpu.sh`) before the workload scheduler
-3. Set `OLLAMA_SPREAD_URLS=11434,11435` when starting the scheduler
+3. Run the **same** paired launcher on Pilot (.100) and Control (.101):
+
+```bash
+bash scripts/start_st550_paired_workload.sh
+```
+
+This sets `OLLAMA_SPREAD_URLS=11434,11435` and `COOLEDAI_WORKLOAD_INTENSITY=1.05` (+5% token budget) identically on both hosts. See `ST550_PAIRED_WORKLOAD.md` if GPU power averages still diverge.
 
 ## Telemetry Verification
 

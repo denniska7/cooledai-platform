@@ -222,6 +222,12 @@ class RackRegistry:
         """
         Fit FOPDT (tau, theta, gain) from telemetry using step-response method.
 
+        This is **physics identification only** (step-response fit on temperature vs
+        cooling changes). It does **not** optimize for fan noise, energy, or a reward
+        function—those come from the efficiency / sweet-spot path in the brain.
+        If fans drift too low under load, use `cooling_safety_policy` floors in
+        `optimization_brain.apply_guardrails`, not changes here.
+
         Looks for fan step changes and fits:
         - theta: time from step to first significant temp change
         - tau: from 63.2% of final response

@@ -48,6 +48,10 @@ THREADS_PER_BATCH = int(os.environ.get("THREADS_PER_BATCH", "2"))  # 2 GPUs
 
 REQUEST_TIMEOUT_SEC = float(os.environ.get("OLLAMA_TIMEOUT_SEC", "180"))
 
+# Multiply token budget for all tiers (1.05 = +5% vs previous defaults). Must be
+# identical on Pilot (.100) and Control (.101) for comparable GPU power averages.
+WORKLOAD_INTENSITY = float(os.environ.get("COOLEDAI_WORKLOAD_INTENSITY", "1.05"))
+
 LIGHT_EVERY_SEC = 5 * 60
 HEAVIER_EVERY_SEC = 30 * 60
 DIFFICULT_EVERY_SEC = 60 * 60
@@ -74,6 +78,12 @@ DIFFICULT_PROMPTS = [
     "Explain the trade-offs between synchronous and asynchronous programming in distributed systems. Include concrete examples and failure scenarios.",
     "Design a system for real-time anomaly detection on sensor telemetry with strict latency targets. Provide a pipeline and evaluation strategy.",
 ]
+
+
+def _scaled_num_predict(base: int) -> int:
+    """Apply WORKLOAD_INTENSITY; keep a sane minimum for tiny models."""
+    n = int(round(float(base) * WORKLOAD_INTENSITY))
+    return max(16, n)
 
 
 def _write_load(val: float) -> None:
@@ -220,6 +230,7 @@ def main() -> None:
         "[scheduler] starting (identical workload: wall-clock aligned + deterministic prompts). "
         f"OLLAMA_URL={OLLAMA_URL} OLLAMA_MODEL={OLLAMA_MODEL} "
         f"THREADS_PER_BATCH={THREADS_PER_BATCH}{spread_info} "
+        f"WORKLOAD_INTENSITY={WORKLOAD_INTENSITY} "
         f"intervals: light={LIGHT_EVERY_SEC}s heavier={HEAVIER_EVERY_SEC}s difficult={DIFFICULT_EVERY_SEC}s"
     )
 
@@ -240,7 +251,7 @@ def main() -> None:
                     DIFFICULT_PROMPTS,
                     next_difficult,
                     DIFFICULT_EVERY_SEC,
-                    num_predict=750,
+                    num_predict=_scaled_num_predict(750),
                     temperature=0.7,
                 )
                 next_difficult = _next_aligned(now, DIFFICULT_EVERY_SEC)
@@ -253,7 +264,7 @@ def main() -> None:
                     HEAVIER_PROMPTS,
                     next_heavier,
                     HEAVIER_EVERY_SEC,
-                    num_predict=350,
+                    num_predict=_scaled_num_predict(350),
                     temperature=0.55,
                 )
                 next_heavier = _next_aligned(now, HEAVIER_EVERY_SEC)
@@ -266,7 +277,7 @@ def main() -> None:
                     LIGHT_PROMPTS,
                     next_light,
                     LIGHT_EVERY_SEC,
-                    num_predict=125,
+                    num_predict=_scaled_num_predict(125),
                     temperature=0.25,
                 )
                 next_light = _next_aligned(now, LIGHT_EVERY_SEC)

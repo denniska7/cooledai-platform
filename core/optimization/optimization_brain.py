@@ -39,6 +39,15 @@ from core.optimization.confidence_estimator import (
     CAUTIONARY_CONFIDENCE_THRESHOLD,
     CAUTIONARY_BASELINE_DELTA,
 )
+from core.optimization.cooling_safety_policy import (
+    sustained_active_compute_signal,
+    parse_policy_context,
+    merge_policy_floors,
+    policy_capacity_rpm,
+    POWER_SLOPE_PRE_RAMP_MODERATE_W_S,
+    POWER_SLOPE_PRE_RAMP_STEEP_W_S,
+)
+from core.optimization.spike_hold_state import record_spike_if_hot, spike_hold_floor_rpm
 
 try:
     from backend.safety.guardrails import snap_rpm_to_safe_boundary
@@ -155,6 +164,10 @@ def apply_guardrails(
     current_cooling: float,
     power_draw: float,
     max_cooling: float = 3000.0,
+    *,
+    sustained_active_compute: bool = False,
+    spike_hold_min_rpm: float = 0.0,
+    rated_max_fan_rpm: Optional[float] = None,
 ) -> EfficiencyGap:
     """Apply ASHRAE-based safety guardrails to AI recommendations.
 
@@ -171,6 +184,7 @@ def apply_guardrails(
         current_cooling: Current cooling output (RPM or flow rate).
         power_draw: Current power draw (W); used to detect "under load".
         max_cooling: Maximum cooling capacity (for 100% = Emergency Mode).
+        rated_max_fan_rpm: Chassis rated max RPM for policy floor caps (see merge_policy_floors).
 
     Returns:
         EfficiencyGap with guardrails applied (may be modified).
@@ -187,6 +201,28 @@ def apply_guardrails(
         gap.recommendations.append(msg)
         gap.reasoning_log.append(msg)
         proposed_cooling = proposed_safe
+
+    # Active compute + post-spike hold: soft RPM floor (not emergency 100%).
+    # Prevents efficiency optimizer from locking fans near idle under GPU load.
+    # rated_max_fan_rpm: chassis max so floors don't collapse when telemetry max == stuck-low RPM.
+    soft_floor_rpm = merge_policy_floors(
+        max_cooling,
+        rated_max_fan_rpm=rated_max_fan_rpm,
+        power_draw_w=power_draw,
+        sustained_active=sustained_active_compute,
+        spike_hold_min_rpm=spike_hold_min_rpm,
+    )
+    gap.raw_metrics["policy_soft_floor_rpm_target"] = soft_floor_rpm
+    if soft_floor_rpm > 0 and current_cooling > 1e-6 and proposed_cooling + 1e-6 < soft_floor_rpm:
+        new_delta = (soft_floor_rpm / current_cooling) - 1.0
+        gap.recommended_cooling_delta = max(gap.recommended_cooling_delta, new_delta)
+        proposed_cooling = min(max_cooling, current_cooling * (1.0 + gap.recommended_cooling_delta))
+        msg = (
+            f"Policy fan floor: raised cooling toward minimum {soft_floor_rpm:.0f} RPM "
+            f"(active compute / thermal spike hold)."
+        )
+        gap.reasoning_log.append(msg)
+        gap.recommendations.append(msg)
     
     guardrail_hit = False
     reason = ""
@@ -237,6 +273,40 @@ def apply_guardrails(
             f"⚠️ GUARDRAIL: {reason} Cooling set to 100% (Emergency Mode).",
         )
     
+    return gap
+
+
+def enforce_policy_floor_after_all_layers(
+    gap: EfficiencyGap,
+    current_cooling: float,
+) -> EfficiencyGap:
+    """Re-apply active-compute / spike-hold RPM floor after slew & hysteresis.
+
+    Mechanical longevity (often ±5%/cycle when cool) and equipment safety can shrink
+    ``recommended_cooling_delta`` so the command never reaches the guardrail floor.
+    This step restores the **minimum RPM** implied by ``policy_soft_floor_rpm_target``.
+    """
+    if gap.emergency_mode:
+        return gap
+    raw = gap.raw_metrics.get("policy_soft_floor_rpm_target")
+    if raw is None:
+        return gap
+    try:
+        target_f = float(raw)
+    except (TypeError, ValueError):
+        return gap
+    if target_f <= 0 or current_cooling < 1e-6:
+        return gap
+    proposed = current_cooling * (1.0 + gap.recommended_cooling_delta)
+    if proposed + 0.5 >= target_f:
+        return gap
+    gap.recommended_cooling_delta = (target_f / current_cooling) - 1.0
+    gap.hysteresis_hold = False
+    gap.raw_metrics["policy_floor_forced_after_layers"] = True
+    gap.reasoning_log.append(
+        f"Policy RPM floor re-applied after mechanical/safety layers: "
+        f"raised command to ≥ {target_f:.0f} RPM (telemetry RPM {current_cooling:.0f})."
+    )
     return gap
 
 
@@ -921,6 +991,8 @@ class OptimizationBrain:
         influence_map: Optional[InfluenceMap] = None,
         failing_component_findings: Optional[List[Any]] = None,
         upcoming_jobs: Optional[List[Any]] = None,
+        policy_context: Optional[Dict[str, Any]] = None,
+        thermal_session_key: Optional[str] = None,
     ) -> EfficiencyGap:
         """Analyze normalized node data and compute Efficiency Gap.
 
@@ -940,6 +1012,13 @@ class OptimizationBrain:
             influence_map: Optional InfluenceMap for zone-to-unit mapping.
             failing_component_findings: Optional list of FailingComponentFinding.
             upcoming_jobs: Optional list of UpcomingJob (or dicts with rack_id, job_id, seconds_until_start).
+            policy_context: Optional dict from API layer. Keys:
+                ``rated_max_fan_rpm`` (required for correct active-compute floor when telemetry
+                max RPM is stuck low), ``spike_hold_active`` + ``spike_hold_min_rpm`` (legacy).
+            thermal_session_key: Tenant/session id for shared post-spike RPM hold (see spike_hold_state).
+                When set, ``analyze`` records max temperature from this batch and applies the same
+                hysteresis as the agent path — pass e.g. ``owner_id`` from all server routes that
+                should behave consistently.
 
         Returns:
             EfficiencyGap with metrics, recommendations, and per-unit deltas.
@@ -955,6 +1034,24 @@ class OptimizationBrain:
         current_power = float(power[-1]) if len(power) > 0 else 0.0
         max_cooling = float(np.max(cooling)) if len(cooling) > 0 else 3000.0
         max_cooling = max(max_cooling, 1000.0)
+
+        rated_max_fan_rpm: Optional[float] = None
+        if policy_context is not None and policy_context.get("rated_max_fan_rpm") is not None:
+            try:
+                rated_max_fan_rpm = float(policy_context["rated_max_fan_rpm"])
+            except (TypeError, ValueError):
+                rated_max_fan_rpm = None
+
+        capacity_for_policy = policy_capacity_rpm(max_cooling, rated_max_fan_rpm)
+
+        sustained_active = sustained_active_compute_signal(np.asarray(power, dtype=float))
+
+        if thermal_session_key:
+            record_spike_if_hot(thermal_session_key, float(np.max(thermal)), time.time())
+        spike_floor_rpm = max(
+            parse_policy_context(policy_context),
+            spike_hold_floor_rpm(thermal_session_key, capacity_for_policy, time.time()),
+        )
 
         # Thermal momentum: first derivative (rate of change) for all temp sensors
         rates = [
@@ -993,6 +1090,18 @@ class OptimizationBrain:
             "cooling_mean": float(np.mean(cooling)),
             "thermal_momentum": thermal_momentum,
             "thermal_rate_by_node": thermal_rate_by_node,
+            "sustained_active_compute": sustained_active,
+            "thermal_session_key": thermal_session_key,
+            "spike_hold_min_rpm_request": spike_floor_rpm,
+            "merged_policy_soft_floor_rpm": merge_policy_floors(
+                max_cooling,
+                rated_max_fan_rpm=rated_max_fan_rpm,
+                power_draw_w=current_power,
+                sustained_active=sustained_active,
+                spike_hold_min_rpm=spike_floor_rpm,
+            ),
+            "policy_capacity_rpm": capacity_for_policy,
+            "rated_max_fan_rpm": rated_max_fan_rpm,
         }
         if influence_map is not None:
             gap.raw_metrics["influence_map"] = influence_map.to_dict()
@@ -1024,11 +1133,28 @@ class OptimizationBrain:
         pred = self.predictor.predict(nodes)
         predicted_t10 = pred.predicted_temp_t10 if pred else current_thermal
         gap.predicted_temp_t10 = predicted_t10
+        power_slope = pred.power_trajectory_slope if pred else 0.0
+        if pred is not None:
+            gap.raw_metrics["predictor_confidence"] = pred.confidence
+            gap.raw_metrics["predicted_temp_slope_c_per_s"] = pred.temp_trajectory_slope
+            gap.raw_metrics["extrapolation_temp_slope_c_per_s"] = (
+                pred.extrapolation_temp_slope_c_per_s
+            )
+            gap.raw_metrics["predicted_power_slope_w_per_s"] = power_slope
+            gap.raw_metrics["power_slope_pre_ramp_moderate"] = (
+                power_slope >= POWER_SLOPE_PRE_RAMP_MODERATE_W_S
+            )
+            gap.raw_metrics["power_slope_pre_ramp_steep"] = (
+                power_slope >= POWER_SLOPE_PRE_RAMP_STEEP_W_S
+            )
 
         # Recommended delta based on PREDICTED state (look-ahead), not just current
         # Use predicted T+10 to be proactive
         temp_for_decision = predicted_t10 if pred and pred.confidence > 0.6 else current_thermal
         temp_rising = temp_for_decision > self.target_temp + 5
+        # Power-slope pre-ramp: rising package power ⇒ cooling headroom before temp moves.
+        if power_slope >= POWER_SLOPE_PRE_RAMP_MODERATE_W_S:
+            temp_rising = True
 
         # Power-cost optimizer: solve for lowest zone power (Fan Affinity Laws)
         # Keeps fans in Efficiency Sweet Spot (60-80%) for 40% savings target
@@ -1056,6 +1182,9 @@ class OptimizationBrain:
             max_cooling_by_unit=max_cooling_by_unit,
             cooling_unit_ids=cooling_unit_ids,
             predicted_temp_t10=predicted_t10,
+            power_slope_w_per_s=power_slope,
+            sustained_active_compute=sustained_active,
+            current_power_w=current_power,
         )
 
         gap.recommended_cooling_delta = opt_result.recommended_delta
@@ -1078,11 +1207,18 @@ class OptimizationBrain:
                 f"Min power increase to stay safe."
             )
         elif oscillation > self.oscillation_threshold:
-            gap.recommended_cooling_delta = 0.0
-            gap.reasoning_log.append(
-                f"Holding cooling because oscillation ratio {oscillation:.2f} exceeds threshold "
-                f"{self.oscillation_threshold} (prevents fan hunting)."
-            )
+            # Under sustained compute, do not force a full silent hold — safety net / floors apply next.
+            if not sustained_active:
+                gap.recommended_cooling_delta = 0.0
+                gap.reasoning_log.append(
+                    f"Holding cooling because oscillation ratio {oscillation:.2f} exceeds threshold "
+                    f"{self.oscillation_threshold} (prevents fan hunting)."
+                )
+            else:
+                gap.reasoning_log.append(
+                    f"Oscillation ratio {oscillation:.2f} high but sustained compute active — "
+                    f"skipping full hold; policy floors and power-slope rules still apply."
+                )
         else:
             gap.reasoning_log.append(
                 opt_result.reasoning or "Holding cooling: efficiency within target; power-optimized."
@@ -1144,6 +1280,9 @@ class OptimizationBrain:
             current_cooling=current_cooling,
             power_draw=current_power,
             max_cooling=max_cooling,
+            sustained_active_compute=sustained_active,
+            spike_hold_min_rpm=spike_floor_rpm,
+            rated_max_fan_rpm=rated_max_fan_rpm,
         )
 
         # Reward function (for RL / grading)
@@ -1213,6 +1352,9 @@ class OptimizationBrain:
                 precool_delta=0.20,
                 max_seconds=60.0,
             )
+
+        # Policy floor must survive slew / hysteresis / equipment caps (see enforce_policy_floor_after_all_layers).
+        gap = enforce_policy_floor_after_all_layers(gap, current_cooling)
 
         gap.stagger_delays = get_staggered_start_delays(len(nodes) if nodes else 1)
 

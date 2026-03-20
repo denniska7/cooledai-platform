@@ -350,11 +350,12 @@ _thermal_model = ThermalModelLoader()
 from core.hal.base_node import BaseNode, ServerNode
 from core.ingestion.data_ingestor import DataIngestor
 from core.ingestion import TelemetryDerivativeEnricher, InfluenceMap, apply_telemetry_filters
-from core.ingestion.telemetry_smoothing import MovingAverageFilter
+from core.ingestion.telemetry_smoothing import EwmaTelemetryFilter
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     pass  # DataIngestor used for type hints
 from core.optimization.optimization_brain import OptimizationBrain, EfficiencyGap
+from core.optimization.spike_hold_state import record_spike_if_hot
 from core.synthetic.synthetic_sensor import SyntheticSensor
 
 # Initialize FastAPI app
@@ -566,7 +567,8 @@ _last_nodes: List[BaseNode] = []
 # Node IDs in maintenance mode: optimization skips them and sends no commands (human on-site)
 _maintenance_mode_ids: set = set()
 _sanity_check_filter = None
-_moving_avg_filter = MovingAverageFilter(window_size=5)
+# EWMA ~5-tap MA at O(1); less CPU than deque sum each request (agent 3s path).
+_moving_avg_filter = EwmaTelemetryFilter(alpha=0.33)
 try:
     from core.anomaly import SanityCheckFilter
     _sanity_check_filter = SanityCheckFilter()
@@ -1103,7 +1105,11 @@ async def ingest_json(nodes_data: List[NodeInput]):
     return {"status": "success", "nodes_ingested": len(nodes)}
 
 
-def _run_optimization_with_state_machine(nodes: List[BaseNode]) -> OptimizationResponse:
+def _run_optimization_with_state_machine(
+    nodes: List[BaseNode],
+    policy_context: Optional[dict] = None,
+    thermal_session_key: Optional[str] = None,
+) -> OptimizationResponse:
     """
     Run optimization and apply System State Machine.
     Evaluates GUARD_MODE triggers; in GUARD_MODE prioritizes thermal stability.
@@ -1146,6 +1152,8 @@ def _run_optimization_with_state_machine(nodes: List[BaseNode]) -> OptimizationR
         influence_map=_influence_map,
         failing_component_findings=failing_findings if failing_findings else None,
         upcoming_jobs=upcoming_jobs if upcoming_jobs else None,
+        policy_context=policy_context,
+        thermal_session_key=thermal_session_key,
     )
 
     # Persist failing component findings to history (for GET /health/anomalies / Maintenance Task List)
@@ -1543,6 +1551,8 @@ _RATED_FAN_WATTS = float(os.environ.get("COOLEDAI_RATED_FAN_WATTS", "12"))
 _MAX_FAN_RPM = float(os.environ.get("COOLEDAI_MAX_FAN_RPM", "7000"))
 _NUM_FANS = int(os.environ.get("COOLEDAI_NUM_FANS", "6"))
 _USD_PER_KWH = float(os.environ.get("COOLEDAI_UTILITY_RATE", "0.12"))
+# Scale GPU fan % (0–100) to RPM for portal charts when chassis tach missing
+_GPU_FAN_PCT_RPM_MAX = float(os.environ.get("COOLEDAI_GPU_FAN_PCT_RPM_MAX", "4200"))
 
 # ST550 comparative demo: .100 = Pilot (ST550-CooledAI-Predictive), .101 = Control (ST550-Control-Traditional)
 _PILOT_NODE_ID = os.environ.get("COOLEDAI_PILOT_NODE_ID", "ST550-CooledAI-Predictive")
@@ -1762,11 +1772,31 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
                     consolidated["max_gpu_temp_c"] = max(
                         consolidated.get("max_gpu_temp_c", 0), temp_c,
                     )
+                    fsp = record.get("fan_speed_pct")
+                    if fsp is not None:
+                        try:
+                            consolidated.setdefault("_gpu_fan_pcts_batch", []).append(float(fsp))
+                        except (TypeError, ValueError):
+                            pass
                 elif "/cpu" in nid:
                     consolidated["cpu_temp_c"] = temp_c
                 consolidated["max_temp_c"] = max(
                     consolidated.get("max_temp_c", 0), temp_c,
                 )
+
+        # Fan RPM for charts: chassis tach preferred; else average GPU fan % → scaled RPM
+        gf = consolidated.pop("_gpu_fan_pcts_batch", [])
+        rpm_now = consolidated.get("fan_rpm")
+        try:
+            rpm_int = int(rpm_now) if rpm_now is not None else 0
+        except (TypeError, ValueError):
+            rpm_int = 0
+        if (rpm_now is None or rpm_int <= 0) and gf:
+            avg_pct = sum(gf) / len(gf)
+            consolidated["fan_rpm"] = int(
+                round((avg_pct / 100.0) * _GPU_FAN_PCT_RPM_MAX)
+            )
+            consolidated["fan_rpm_from_gpu_pct"] = True
 
         # Per-cycle raw GPU average temperature (apples-to-apples node comparison basis).
         gpu_cycle = consolidated.get("gpu_temps_c", [])
@@ -1847,7 +1877,7 @@ async def get_thermal_history(
             "data_source": {
                 "gpu_temp": "avg_gpu_temp_c (average of all GPUs per node)",
                 "cpu_temp": "cpu_temp_c from cooledai_agent node_id/cpu record",
-                "fan_rpm": "fan_rpm from cooledai_agent node_id/fans record (IPMI tach)",
+                "fan_rpm": "chassis tach (IPMI) or GPU fan % scaled to RPM when tach missing",
                 "gpu_power_w": "sum of power_draw_w from nvidia-smi per GPU",
             },
         }
@@ -2555,7 +2585,21 @@ async def agent_optimize_control(
     try:
         apply_telemetry_filters(nodes, _sanity_check_filter, _moving_avg_filter)
         _derivative_enricher.enrich(nodes)
-        resp = _run_optimization_with_state_machine(nodes)
+        # Spike hold uses shared spike_hold_state; include history peak so excursions
+        # only in rolling history still extend the hold (same as prior agent-only path).
+        history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+        peaks: List[float] = [float(body.temp_c)]
+        for row in history[-30:]:
+            try:
+                peaks.append(float(_history_row(row)[1]))
+            except (TypeError, ValueError, IndexError):
+                continue
+        record_spike_if_hot(owner_id, max(peaks) if peaks else float(body.temp_c))
+        resp = _run_optimization_with_state_machine(
+            nodes,
+            thermal_session_key=owner_id,
+            policy_context={"rated_max_fan_rpm": float(body.max_fan_rpm)},
+        )
         delta = resp.recommended_cooling_delta
         current_rpm = body.fan_rpm
         max_rpm = max(body.max_fan_rpm, 1000.0)
@@ -2563,11 +2607,16 @@ async def agent_optimize_control(
         target_rpm = max(0.0, min(max_rpm, target_rpm))
         target_duty = int(round((target_rpm / max_rpm) * 100.0))
         target_duty = max(0, min(100, target_duty))
+        rm = resp.raw_metrics or {}
         return {
             "target_duty": target_duty,
             "recommended_cooling_delta": delta,
             "target_rpm": round(target_rpm, 0),
             "source": "optimization_brain",
+            # Observability: confirm policy floor reached the wire (vs stuck-low telemetry max).
+            "policy_soft_floor_rpm": rm.get("policy_soft_floor_rpm_target"),
+            "policy_floor_forced_after_layers": rm.get("policy_floor_forced_after_layers"),
+            "policy_capacity_rpm": rm.get("policy_capacity_rpm"),
         }
     except Exception as e:
         logging.getLogger("api.main").warning("Agent optimize control failed: %s", e)
@@ -2609,7 +2658,7 @@ async def get_optimization_reasoning(owner_id: str = Depends(_require_clerk_fixe
     try:
         apply_telemetry_filters(nodes, _sanity_check_filter, _moving_avg_filter)
         _derivative_enricher.enrich(nodes)
-        resp = _run_optimization_with_state_machine(nodes)
+        resp = _run_optimization_with_state_machine(nodes, thermal_session_key=owner_id)
         return {
             "diagnostic_reasoning": resp.diagnostic_reasoning or "",
             "recommendations": resp.recommendations or [],

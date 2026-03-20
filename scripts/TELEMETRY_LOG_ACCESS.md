@@ -32,6 +32,25 @@ Returns pilot and control node status plus latest telemetry: `temp_c`, `avg_gpu_
 
 The `/api/v1/thermal-history?mode=raw&hours=24` endpoint returns time-series telemetry but requires a Clerk JWT. **Easiest access:** open the portal at https://cooledai-platform.vercel.app (or your deployed URL), sign in, and use the dashboard charts. The 1H/24H/7D views show raw telemetry.
 
+### Optimize/control — verify policy fan floor (API key)
+
+Isolates **cloud optimizer** vs **host fan path**. After deploying the latest API, `POST /api/v1/optimize/control` includes:
+
+- `policy_soft_floor_rpm` — target minimum RPM under active GPU load (~2500 typical with 7000 rated max).
+- `policy_floor_forced_after_layers` — `true` if slew/hysteresis was overridden to hit that floor.
+- `policy_capacity_rpm` — rated capacity used for policy math.
+
+```bash
+export API_KEY="your-x-api-key"
+export API_BASE="https://your-railway-or-api-host"
+
+curl -s -X POST -H "X-API-Key: $API_KEY" -H "Content-Type: application/json" \
+  -d '{"temp_c":48,"fan_rpm":1932,"gpu_power_w":120,"max_fan_rpm":7000,"node_id":"ST550-CooledAI-Predictive"}' \
+  "$API_BASE/api/v1/optimize/control" | python3 -m json.tool
+```
+
+If `policy_soft_floor_rpm` is correct but the **physical fan** barely moves, check IPMI/BIOS/PWM limits on the ST550 — the command may not reach the hardware.
+
 ---
 
 ## 2. Remote node logs (SSH required, same network)

@@ -15,6 +15,15 @@ import logging
 
 import numpy as np
 
+from core.optimization.cooling_safety_policy import (
+    ACTIVE_COMPUTE_POWER_THRESHOLD_W,
+    POWER_SLOPE_PRE_RAMP_MODERATE_W_S,
+    POWER_SLOPE_PRE_RAMP_STEEP_W_S,
+    POWER_SLOPE_STEEP_MIN_DELTA,
+    SAFETY_NET_MIN_DELTA,
+    SAFETY_NET_POWER_SLOPE_W_S,
+)
+
 _log = logging.getLogger("cooledai.optimizer")
 
 # Fan Affinity Law: P₂ = P₁ · (N₂/N₁)³
@@ -237,6 +246,9 @@ class PowerCostOptimizer:
         max_cooling_by_unit: Optional[Dict[str, float]] = None,
         cooling_unit_ids: Optional[List[str]] = None,
         predicted_temp_t10: Optional[float] = None,
+        power_slope_w_per_s: float = 0.0,
+        sustained_active_compute: bool = False,
+        current_power_w: float = 0.0,
     ) -> OptimizationResult:
         """
         Find cooling delta that minimizes zone power while keeping temp safe.
@@ -277,6 +289,10 @@ class PowerCostOptimizer:
                 thermal_safe=current_thermal < max_safe_temp,
                 reasoning="Holding cooling: oscillation detected (power-aware optimizer).",
             )
+
+        # Power-slope pre-ramp: rising package power ⇒ treat as warming even if T+10 is still calm.
+        if power_slope_w_per_s >= POWER_SLOPE_PRE_RAMP_MODERATE_W_S:
+            temp_rising = True
 
         # Thermal-adequacy guard: refuse to reduce cooling when headroom is thin.
         # If current temp is within 5°C of max_safe, or predicted T+10 exceeds
@@ -362,8 +378,28 @@ class PowerCostOptimizer:
         delta, power_w, reason = best
         savings = p_current - power_w
 
-        # Check if chosen state is in sweet spot
-        proposed_cooling = current_cooling * (1 + delta) if delta != 0 else current_cooling
+        # Steep power ramp: enforce a stronger minimum positive delta (proactive cooling).
+        if power_slope_w_per_s >= POWER_SLOPE_PRE_RAMP_STEEP_W_S:
+            delta = max(delta, POWER_SLOPE_STEEP_MIN_DELTA)
+            reason = f"{reason} + steep power-slope pre-ramp"
+
+        # Safety net: under sustained / active compute with rising power, never return a silent hold/reduce.
+        if (
+            (sustained_active_compute or current_power_w >= ACTIVE_COMPUTE_POWER_THRESHOLD_W)
+            and power_slope_w_per_s > SAFETY_NET_POWER_SLOPE_W_S
+            and delta < SAFETY_NET_MIN_DELTA
+        ):
+            delta = max(delta, SAFETY_NET_MIN_DELTA)
+            reason = f"{reason} + active-load safety-net (rising power)"
+
+        # Recompute zone power after post-selection delta adjustments
+        proposed_cooling = min(
+            max_cooling,
+            max(0.0, current_cooling * (1.0 + delta)),
+        )
+        power_w = self._zone_power(proposed_cooling, max_cooling)
+        savings = p_current - power_w
+
         sweet = in_sweet_spot(proposed_cooling, max_cooling)
 
         return OptimizationResult(

@@ -23,23 +23,106 @@ DEFAULT_THERMAL_INERTIA_S = 120.0
 # Calibration trigger: calibrate rack when buffer gains this many samples
 CALIBRATE_EVERY_N_SAMPLES = 50
 
+# Max points in sliding window for trend fit (balances noise vs responsiveness)
+TREND_WINDOW_MAX = 14
+
+# Recent-sample half-life for weighted regression (seconds). Newer points weigh more.
+TREND_WEIGHT_HALF_LIFE_S = 4.0
+
+# Cap |dT/dt| used for short-horizon extrapolation (°C/s). Field logs showed ~0.5–1°C/s
+# on worst ramps; 1.8 leaves headroom without letting single-sample spikes dominate.
+MAX_EXTRAP_SLOPE_C_PER_S = 1.8
+
+
+def _weighted_linear_trend(
+    t: np.ndarray,
+    y: np.ndarray,
+    half_life_s: float = TREND_WEIGHT_HALF_LIFE_S,
+) -> Tuple[float, float, float, float]:
+    """Weighted least-squares line y ≈ slope*t + intercept.
+
+    Weights decay exponentially toward older samples (robust for CSV / agent bursts).
+
+    Returns:
+        slope, intercept, r_squared in [0,1], weighted_rmse of residuals.
+    """
+    t = np.asarray(t, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64)
+    n = len(t)
+    if n < 2:
+        return 0.0, float(y[-1]) if n else 0.0, 0.0, 0.0
+
+    span = max(float(t[-1] - t[0]), 1e-9)
+    hl = max(0.35, min(half_life_s, span * 0.5))
+    w = np.exp(np.log(0.5) * (t[-1] - t) / hl)
+    w_sum = np.sum(w)
+    if w_sum < 1e-18:
+        w = np.ones(n) / n
+        w_sum = 1.0
+    w = w * (n / w_sum)
+
+    wt = np.sum(w)
+    tw = np.sum(w * t)
+    yw = np.sum(w * y)
+    wtt = np.sum(w * t * t)
+    wty = np.sum(w * t * y)
+
+    denom = wt * wtt - tw * tw
+    if abs(denom) < 1e-18:
+        return 0.0, float(y[-1]), 0.0, 0.0
+
+    slope = (wt * wty - tw * yw) / denom
+    intercept = (yw - slope * tw) / wt
+
+    y_pred = slope * t + intercept
+    resid = y - y_pred
+    ss_res = float(np.sum(w * resid ** 2))
+    y_mean = yw / wt
+    ss_tot = float(np.sum(w * (y - y_mean) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 1e-12 else 0.0
+    r2 = float(np.nan_to_num(r2, nan=0.0, posinf=1.0, neginf=0.0))
+    r2 = max(0.0, min(1.0, r2))
+    rmse = float(np.sqrt(ss_res / max(wt, 1e-18)))
+    return float(slope), float(intercept), r2, rmse
+
+
+def _confidence_from_trend_quality(
+    n_samples: int,
+    span_s: float,
+    r2_thermal: float,
+    r2_power: float,
+    fopdt_used: bool,
+) -> float:
+    """Map fit quality + window shape to [0,1] confidence (calibrated, not arbitrary)."""
+    span_factor = min(1.0, span_s / 9.0)
+    n_factor = min(1.0, n_samples / 12.0)
+    fit_quality = 0.5 * r2_thermal + 0.5 * r2_power
+    conf = 0.12 + 0.40 * fit_quality + 0.28 * n_factor + 0.20 * span_factor
+    if fopdt_used:
+        conf += 0.08
+    return float(min(1.0, max(0.15, conf)))
+
 
 @dataclass
 class PredictionResult:
     """Result of temperature prediction at T+10s.
 
     Attributes:
-        predicted_temp: Current temperature.
+        predicted_temp: Current temperature (last sample; not modified by clamps).
         predicted_temp_t10: Predicted temperature at T+10 seconds.
         power_trajectory_slope: Power trend (W/s).
-        temp_trajectory_slope: Temperature trend (°C/s).
+        temp_trajectory_slope: Temperature trend (°C/s) from weighted regression **without**
+            ``MAX_EXTRAP_SLOPE_C_PER_S`` — reflects observed local ramp/spike in telemetry.
+        extrapolation_temp_slope_c_per_s: Slope actually used for short-horizon linear
+            extrapolation and FOPDT residual guard — **clamped** to limit forecast blow-up.
         thermal_inertia_s: Estimated thermal time constant (seconds).
         confidence: Prediction confidence in [0, 1].
     """
     predicted_temp: float
     predicted_temp_t10: float  # T+10 seconds
     power_trajectory_slope: float  # W/s
-    temp_trajectory_slope: float   # °C/s
+    temp_trajectory_slope: float   # °C/s (observed / reported trend)
+    extrapolation_temp_slope_c_per_s: float  # °C/s (used for T+10 linear path)
     thermal_inertia_s: float
     confidence: float  # 0-1
 
@@ -93,7 +176,9 @@ class TempPredictor:
         When rack topology and FOPDT calibration exist: uses First-Order Plus
         Dead Time model with self-calibrated tau, theta, gain per rack.
 
-        Otherwise: linear extrapolation T_pred = T_now + temp_slope * 10.
+        Otherwise: linear extrapolation uses a **clamped** slope for the forecast only;
+        ``temp_trajectory_slope`` in the result stays the **unclamped** regression slope
+        so fast legitimate sensor transitions remain visible in metrics.
 
         Args:
             nodes: List of BaseNode with thermal_input, power_draw, timestamp.
@@ -124,17 +209,27 @@ class TempPredictor:
         if len(time_s) < 2 or time_s[-1] - time_s[0] < 1e-6:
             return None
 
-        # Linear regression: temp = a*t + b, power = c*t + d
-        n_use = min(10, len(nodes) - 1)
+        # Weighted regression on recent window (noise-resistant vs two-point slope)
+        n_use = min(TREND_WINDOW_MAX, len(nodes))
         t_win = time_s[-n_use:]
         T_win = thermal[-n_use:]
         P_win = power[-n_use:]
 
-        dt = t_win[-1] - t_win[0]
+        dt = float(t_win[-1] - t_win[0])
         if dt < 1e-6:
             return None
-        temp_slope = (T_win[-1] - T_win[0]) / dt
-        power_slope = (P_win[-1] - P_win[0]) / dt
+
+        temp_slope_raw, _, r2_t, _ = _weighted_linear_trend(t_win, T_win)
+        power_slope, _, r2_p, _ = _weighted_linear_trend(t_win, P_win)
+
+        # Clamp **only** the slope used for short-horizon forecast — keep raw for telemetry truth.
+        slope_extrap = float(
+            np.clip(
+                temp_slope_raw,
+                -MAX_EXTRAP_SLOPE_C_PER_S,
+                MAX_EXTRAP_SLOPE_C_PER_S,
+            )
+        )
 
         current_temp = float(thermal[-1])
         power_last = float(power[-1]) if len(power) > 0 else 0.0
@@ -145,18 +240,31 @@ class TempPredictor:
         )
 
         if not fopdt_used:
-            predicted_t10 = current_temp + temp_slope * self.prediction_horizon_s
+            raw_t10 = current_temp + slope_extrap * self.prediction_horizon_s
+            max_delta = max(0.5, MAX_EXTRAP_SLOPE_C_PER_S * self.prediction_horizon_s)
+            predicted_t10 = float(np.clip(raw_t10, current_temp - max_delta, current_temp + max_delta))
             thermal_inertia = self._estimate_thermal_inertia(thermal, power, time_s)
+        else:
+            # Soft guard: FOPDT shouldn't diverge absurdly from local trend
+            max_delta = max(2.0, MAX_EXTRAP_SLOPE_C_PER_S * self.prediction_horizon_s * 2.0)
+            predicted_t10 = float(
+                np.clip(predicted_t10, current_temp - max_delta, current_temp + max_delta)
+            )
 
-        confidence = min(1.0, 0.5 + 0.1 * len(nodes) + 0.1 * n_use)
-        if fopdt_used:
-            confidence = min(1.0, confidence + 0.15)  # Slightly higher for FOPDT
+        confidence = _confidence_from_trend_quality(
+            n_samples=n_use,
+            span_s=dt,
+            r2_thermal=r2_t,
+            r2_power=r2_p,
+            fopdt_used=fopdt_used,
+        )
 
         return PredictionResult(
             predicted_temp=current_temp,
             predicted_temp_t10=predicted_t10,
             power_trajectory_slope=power_slope,
-            temp_trajectory_slope=temp_slope,
+            temp_trajectory_slope=float(temp_slope_raw),
+            extrapolation_temp_slope_c_per_s=slope_extrap,
             thermal_inertia_s=thermal_inertia,
             confidence=confidence,
         )
@@ -172,6 +280,7 @@ class TempPredictor:
         except Exception:
             return
 
+        calibrated_racks: set = set()
         for n in nodes:
             node_id = getattr(n, "node_id", "")
             rack_id = node_to_rack.get(node_id) or resolve_node_to_rack(node_id, None)
@@ -189,8 +298,13 @@ class TempPredictor:
                 power_w=n.power_draw,
             )
             buf = getattr(registry, "_telemetry_buffer", {}).get(rack_id, [])
-            if len(buf) > 0 and len(buf) % CALIBRATE_EVERY_N_SAMPLES == 0:
+            if (
+                len(buf) > 0
+                and len(buf) % CALIBRATE_EVERY_N_SAMPLES == 0
+                and rack_id not in calibrated_racks
+            ):
                 registry.calibrate_rack(rack_id)
+                calibrated_racks.add(rack_id)
 
     def _predict_fopdt_if_available(
         self,
