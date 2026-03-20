@@ -19,6 +19,11 @@ curl -s -H "X-API-Key: sk-osfrVz48r7DCsPwXeAYR4nCF7vhkaRYrN2ahX_2EKgo" \
 
 Returns all telemetry points for both nodes: `cooledai_gpu_temp_c`, `control_gpu_temp_c`, `cooledai_fan_rpm`, `control_fan_rpm`, `cooledai_cpu_temp_c`, `control_cpu_temp_c`, `cooledai_gpu_power_w`, `control_gpu_power_w`.
 
+### ST550 telemetry agent logs (`st550_telemetry.py`)
+
+- **`"received":2` with only `gpu` in the log** means the POST had **two GPU rows only** — no `/cpu` or `/fans`. Fix: `git pull` the latest script, **`sudo`** `start_telemetry.sh`, **`apt install ipmitool`**, and watch for `records=4 {'gpu': 2, 'cpu': 1, 'fans': 1}` (counts vary).
+- **Connect / read timeouts to Railway** are often transient (cold start, Wi‑Fi). The script retries with backoff; optional env: `COOLEDAI_TELEMETRY_TIMEOUT_S=45`, `COOLEDAI_TELEMETRY_RETRIES=6`.
+
 ### Live snapshot (API key only)
 
 ```bash
