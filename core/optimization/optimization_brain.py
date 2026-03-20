@@ -1063,8 +1063,8 @@ class OptimizationBrain:
         current_thermal = float(thermal[-1]) if len(thermal) > 0 else 0.0
         current_cooling = float(cooling[-1]) if len(cooling) > 0 else 0.0
         current_power = float(power[-1]) if len(power) > 0 else 0.0
-        max_cooling = float(np.max(cooling)) if len(cooling) > 0 else 3000.0
-        max_cooling = max(max_cooling, 1000.0)
+        observed_max_cooling = float(np.max(cooling)) if len(cooling) > 0 else 3000.0
+        observed_max_cooling = max(observed_max_cooling, 1000.0)
 
         rated_max_fan_rpm: Optional[float] = None
         if policy_context is not None and policy_context.get("rated_max_fan_rpm") is not None:
@@ -1072,6 +1072,11 @@ class OptimizationBrain:
                 rated_max_fan_rpm = float(policy_context["rated_max_fan_rpm"])
             except (TypeError, ValueError):
                 rated_max_fan_rpm = None
+
+        # Use rated capacity (from agent hardware config) as max_cooling when available,
+        # so the optimizer works with the full hardware range rather than the observed
+        # range (which may be artificially low when fans have been running at low duty).
+        max_cooling = max(observed_max_cooling, rated_max_fan_rpm or observed_max_cooling)
 
         capacity_for_policy = policy_capacity_rpm(max_cooling, rated_max_fan_rpm)
 
