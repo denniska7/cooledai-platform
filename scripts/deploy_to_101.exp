@@ -2,31 +2,39 @@
 # Deploy and start telemetry on .101 (ST550-Shadow-Node)
 # Usage: cd /path/to/coolingai_simulator && expect scripts/deploy_to_101.exp
 
-set timeout 60
+set timeout 180
 set pass "***REDACTED_SSH_PASS***"
 set host "cooledaiadmin@192.168.12.101"
+set send_delay 10
 set script_dir [file dirname [info script]]
 set project_root [file dirname $script_dir]
 
 spawn scp -o StrictHostKeyChecking=no $project_root/scripts/st550_telemetry.py $project_root/scripts/start_telemetry.sh $host:~/
+expect "password:"
+sleep $send_delay
+send "$pass\r"
+expect eof
+
 spawn scp -o StrictHostKeyChecking=no $project_root/scripts/llama_workload_scheduler.py $host:~/
 expect "password:"
+sleep $send_delay
 send "$pass\r"
 expect eof
 
 spawn ssh -o StrictHostKeyChecking=no $host
 expect "password:"
+sleep $send_delay
 send "$pass\r"
 expect -re {\$ |# }
 send "sudo apt-get update -qq && sudo apt-get install -y -qq python3-pynvml 2>/dev/null; sudo apt-get install -y -qq python3-pip 2>/dev/null; sudo python3 -m pip install --break-system-packages -q nvidia-ml-py3 requests psutil 2>/dev/null; echo deps_done\r"
 expect {
-    "password for" { send "$pass\r"; exp_continue }
+    "password for" { sleep $send_delay; send "$pass\r"; exp_continue }
     -re {\$ |# } { }
 }
 expect -re {\$ |# }
 send "sudo bash ~/start_telemetry.sh --node-id ST550-Control-Traditional\r"
 expect {
-    "password for" { send "$pass\r"; exp_continue }
+    "password for" { sleep $send_delay; send "$pass\r"; exp_continue }
     -re {\$ |# } { }
     timeout { puts "Timeout"; exit 1 }
 }

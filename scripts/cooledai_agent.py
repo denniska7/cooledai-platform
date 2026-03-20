@@ -68,6 +68,8 @@ SAFE_CONFIG_FILE = SAFE_CONFIG_DIR / "last_config.json"
 BACKOFF_BASE_S = 2.0
 BACKOFF_CAP_S = 60.0
 WARN_AFTER_FAILURES = 3
+# Map nvidia-smi GPU fan % (0–100) to chart RPM scale (chassis fans are real RPM; this aligns scales)
+GPU_FAN_PCT_TO_RPM_MAX = float(os.environ.get("COOLEDAI_GPU_FAN_PCT_RPM_MAX", "4200"))
 
 _running = True
 
@@ -362,11 +364,18 @@ def read_sensors(caps: SensorCapabilities, dry_run: bool = False) -> ThermalSnap
                         snap.fan_power_w = float(m.group(1))
                     continue
 
-                # Fan [N] Tach and other fan RPM sensors
-                if "fan" in name_lower:
+                # Fan tach (IPMI): "Fan 1 Tach", "Fan1", "System Fan", etc.
+                if "fan" in name_lower or "tach" in name_lower:
                     m = re.search(r"(\d+)\s*RPM", value_str, re.IGNORECASE)
                     if m:
                         snap.fan_rpms[name] = int(m.group(1))
+                    else:
+                        # Some boards report raw RPM without the word "RPM"
+                        m2 = re.search(r"\b(\d{3,5})\b", value_str)
+                        if m2 and "na" not in value_str.lower():
+                            v = int(m2.group(1))
+                            if 200 <= v <= 20000:
+                                snap.fan_rpms[name] = v
         except Exception as exc:
             _log.debug("ipmitool sdr failed: %s", exc)
 
@@ -798,15 +807,23 @@ def run_agent(
                 "timestamp": now_iso,
                 "temperature_c": round(max(snap.chassis_temps), 1),
             })
-        if snap.fan_rpms or snap.fan_power_w is not None:
+        if snap.fan_rpms or snap.fan_power_w is not None or snap.gpu_fan_pcts:
             tach_rpms = list(snap.fan_rpms.values())
             avg_rpm = int(sum(tach_rpms) / len(tach_rpms)) if tach_rpms else 0
+            # Graph needs a fan series: prefer chassis tach; else GPU fan % → scaled RPM
+            if avg_rpm <= 0 and snap.gpu_fan_pcts:
+                avg_pct = sum(snap.gpu_fan_pcts) / len(snap.gpu_fan_pcts)
+                avg_rpm = int(round((avg_pct / 100.0) * GPU_FAN_PCT_TO_RPM_MAX))
             fan_rec: Dict[str, Any] = {
                 "node_id": f"{node_id}/fans",
                 "timestamp": now_iso,
                 "fan_rpms": snap.fan_rpms,
-                "fan_rpm": avg_rpm,
+                "fan_rpm": max(0, avg_rpm),
             }
+            if snap.gpu_fan_pcts:
+                fan_rec["gpu_fan_speed_pct_avg"] = round(
+                    sum(snap.gpu_fan_pcts) / len(snap.gpu_fan_pcts), 1
+                )
             if snap.fan_power_w is not None:
                 fan_rec["raw_fan_wattage"] = round(snap.fan_power_w, 1)
             records.append(fan_rec)

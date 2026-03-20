@@ -18,7 +18,7 @@ Usage:
 from core.ingestion.data_ingestor import DataIngestor, apply_telemetry_filters
 from core.ingestion.thermal_derivatives import compute_derivatives, TelemetryDerivativeEnricher
 from core.ingestion.influence_map import InfluenceMap
-from core.ingestion.telemetry_smoothing import MovingAverageFilter
+from core.ingestion.telemetry_smoothing import EwmaTelemetryFilter, MovingAverageFilter
 
 __all__ = [
     "DataIngestor",
@@ -26,5 +26,6 @@ __all__ = [
     "compute_derivatives",
     "TelemetryDerivativeEnricher",
     "InfluenceMap",
+    "EwmaTelemetryFilter",
     "MovingAverageFilter",
 ]

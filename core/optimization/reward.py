@@ -5,6 +5,11 @@ Formal reward function for optimization grading:
 Reward = (Energy_Saved * 0.4) + (Thermal_Stability * 0.4) - (Mechanical_Wear_Penalty * 0.2)
 
 Massive negative reward when Guardrail triggered - learn to stay away from safety limits.
+
+Note: ``RackRegistry.calibrate_rack`` (FOPDT step-response fit) does **not** call this
+function — it is not “learning” a lower fan floor from energy weighting. Low-RPM drift
+in production is dominated by the online efficiency / sweet-spot path unless a separate
+RL policy is trained against ``compute_reward``.
 """
 
 from dataclasses import dataclass, field
