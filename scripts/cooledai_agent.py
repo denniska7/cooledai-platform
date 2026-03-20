@@ -5,6 +5,10 @@ CooledAI Unified Agent — Hardware-Agnostic Thermal Controller
 Auto-discovers sensors, reports telemetry to the CooledAI portal, pulls
 remote config, and controls cooling via IPMI / PWM / GPU-fan fallback.
 
+Optional GPU dynamic TDP: ``--gpu-power-management`` / ``COOLEDAI_GPU_POWER_MGMT``
+uses ``nvidia-smi -pl`` with GPU temperature bands; see
+``docs/GPU_AND_CPU_POWER_PHASE2.md``.
+
 Designed to run on any Linux server (Dell, HP, Lenovo, SuperMicro, or
 consumer boards).  Zero external dependencies — Python 3.8+ stdlib only.
 
@@ -72,6 +76,42 @@ WARN_AFTER_FAILURES = 3
 GPU_FAN_PCT_TO_RPM_MAX = float(os.environ.get("COOLEDAI_GPU_FAN_PCT_RPM_MAX", "4200"))
 
 _running = True
+
+# GPU dynamic power limit (Phase 2) — optional; requires repo `core/` on sys.path
+_GPU_GPG_MOD: Any = None
+_GPU_PL_ENVELOPES: List[Any] = []
+_GPU_PL_STATE: Dict[str, Any] = {}
+
+
+def _try_load_gpu_power_governor() -> Any:
+    """Import core.optimization.gpu_power_governor if agent runs from repo checkout."""
+    p = Path(__file__).resolve()
+    for root in (p.parent.parent, p.parent):
+        if (root / "core" / "optimization" / "gpu_power_governor.py").is_file():
+            rs = str(root)
+            if rs not in sys.path:
+                sys.path.insert(0, rs)
+            try:
+                from core.optimization import gpu_power_governor as gpg
+
+                return gpg
+            except Exception as exc:
+                _log.debug("gpu_power_governor import failed: %s", exc)
+                return None
+    return None
+
+
+def _gpu_power_limits_cleanup() -> None:
+    """Restore default nvidia-smi power limits on shutdown / watchdog."""
+    global _GPU_GPG_MOD, _GPU_PL_ENVELOPES
+    gpg = _GPU_GPG_MOD
+    if not gpg or not _GPU_PL_ENVELOPES or _dry_run_flag:
+        return
+    try:
+        gpg.reset_all_gpus_to_default(_GPU_PL_ENVELOPES, dry_run=False)
+        _log.info("GPU power limits restored to driver defaults.")
+    except Exception as exc:
+        _log.debug("GPU power cleanup failed: %s", exc)
 
 
 # ===================================================================
@@ -722,9 +762,14 @@ def run_agent(
     dry_run: bool = False,
     ipmi_variant: Optional[str] = None,
     shutdown_on_critical: bool = False,
+    gpu_power_management: bool = False,
 ) -> None:
     global _running, _manual_control_active, _dry_run_flag
+    global _GPU_GPG_MOD, _GPU_PL_ENVELOPES, _GPU_PL_STATE
     _dry_run_flag = dry_run
+    _GPU_GPG_MOD = None
+    _GPU_PL_ENVELOPES = []
+    _GPU_PL_STATE = {"last_limits": {}, "last_tick": 0.0}
 
     # --- Discover ---
     caps = discover_sensors(dry_run, ipmi_variant=ipmi_variant)
@@ -737,8 +782,37 @@ def run_agent(
 
     # --- Safety hooks ---
     atexit.register(_cleanup)
+    atexit.register(_gpu_power_limits_cleanup)
     signal.signal(signal.SIGINT, lambda s, f: (_cleanup(), sys.exit(130)))
     signal.signal(signal.SIGTERM, lambda s, f: (_cleanup(), sys.exit(143)))
+
+    gpg_mod = _try_load_gpu_power_governor() if gpu_power_management else None
+    if gpu_power_management:
+        if gpg_mod is None:
+            _log.warning(
+                "GPU power management requested but gpu_power_governor is unavailable "
+                "(run agent from repo root so core/optimization is importable)."
+            )
+        elif not caps.nvidia_gpu:
+            _log.warning("GPU power management skipped — no NVIDIA GPU detected.")
+        else:
+            envs = gpg_mod.query_nvidia_power_envelopes()
+            if not envs:
+                _log.warning(
+                    "GPU power management skipped — nvidia-smi did not return power envelopes "
+                    "(driver / permissions)."
+                )
+            else:
+                _GPU_GPG_MOD = gpg_mod
+                _GPU_PL_ENVELOPES = list(envs)
+                full, soft, hard, _, _ = gpg_mod.load_governor_config_from_env()
+                _log.info(
+                    "GPU power management ENABLED — %d GPU(s), temp bands full≤%.0f soft≤%.0f hard≤%.0f °C",
+                    len(envs),
+                    full,
+                    soft,
+                    hard,
+                )
 
     # --- Load config ---
     cfg = load_cached_config()
@@ -746,9 +820,10 @@ def run_agent(
 
     _log.info(
         "Agent started — node=%s  api=%s  target=%.0f°C  critical=%.0f°C  "
-        "control=%s  dry_run=%s  shutdown_on_critical=%s",
+        "control=%s  dry_run=%s  shutdown_on_critical=%s  gpu_power_mgmt=%s",
         node_id, api_url, cfg.target_temp, cfg.critical_temp_c,
         has_control, dry_run, shutdown_on_critical,
+        bool(_GPU_PL_ENVELOPES),
     )
     if not token:
         _log.warning("API key is empty — telemetry POSTs will likely be rejected.")
@@ -764,6 +839,34 @@ def run_agent(
         # --- Read all sensors (Max-Voter) ---
         snap = read_sensors(caps, dry_run)
 
+        # --- GPU dynamic power cap (nvidia-smi -pl), independent of fan duty ---
+        gpg_live = _GPU_GPG_MOD
+        if gpg_live and _GPU_PL_ENVELOPES and snap.gpu_temps:
+            full, soft, hard, min_dw, min_int = gpg_live.load_governor_config_from_env()
+            nowm = time.monotonic()
+            if nowm - float(_GPU_PL_STATE["last_tick"]) >= min_int:
+                _GPU_PL_STATE["last_tick"] = nowm
+                targets = gpg_live.compute_all_targets(
+                    snap.gpu_temps,
+                    _GPU_PL_ENVELOPES,
+                    temp_full_power_c=full,
+                    temp_soft_start_c=soft,
+                    temp_hard_c=hard,
+                )
+                for idx, w in targets:
+                    prev = _GPU_PL_STATE["last_limits"].get(idx)
+                    if prev is not None and abs(w - prev) < min_dw:
+                        continue
+                    if gpg_live.set_gpu_power_limit_w(idx, int(w), dry_run=dry_run):
+                        _GPU_PL_STATE["last_limits"][idx] = w
+                        gt = snap.gpu_temps[idx] if idx < len(snap.gpu_temps) else float("nan")
+                        _log.info(
+                            "GPU %d power limit -> %d W (GPU temp %.1f°C)",
+                            idx,
+                            int(w),
+                            gt,
+                        )
+
         # --- Safety watchdog ---
         if snap.max_temp_c >= cfg.critical_temp_c:
             _log.critical(
@@ -773,6 +876,7 @@ def run_agent(
             )
             revert_fans_to_auto(caps, dry_run)
             _manual_control_active = False
+            _gpu_power_limits_cleanup()
             if shutdown_on_critical and not dry_run:
                 _log.critical(
                     "WATCHDOG: shutdown_on_critical enabled — initiating host shutdown."
@@ -937,6 +1041,12 @@ def main() -> None:
         default=_bool_from_env("COOLEDAI_SHUTDOWN_ON_CRITICAL", False),
         help="Shutdown host if critical temp is reached.",
     )
+    parser.add_argument(
+        "--gpu-power-management",
+        action="store_true",
+        default=_bool_from_env("COOLEDAI_GPU_POWER_MGMT", False),
+        help="Dynamic NVIDIA power cap via nvidia-smi -pl (requires root + repo core/).",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -953,6 +1063,7 @@ def main() -> None:
         dry_run=args.dry_run,
         ipmi_variant=args.ipmi_variant.strip() or None,
         shutdown_on_critical=args.shutdown_on_critical,
+        gpu_power_management=bool(args.gpu_power_management),
     )
     _log.info("Agent stopped.")
 
