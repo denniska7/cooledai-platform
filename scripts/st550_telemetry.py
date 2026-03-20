@@ -29,8 +29,8 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import random
 import re
-import socket
 import subprocess
 import sys
 import time
@@ -49,8 +49,10 @@ API_KEY = os.environ.get(
 NODE_ID = os.environ.get("COOLEDAI_NODE_ID", "ST550-CooledAI-Predictive")
 # 5s heartbeat to lighten network load (was 10s)
 POLL_INTERVAL = int(os.environ.get("COOLEDAI_POLL_S", "5"))
-MAX_RETRIES = 3
-RETRY_BACKOFF = 2  # seconds, doubles each retry
+# Railway / cold starts: longer timeouts + more attempts than LAN defaults.
+MAX_RETRIES = int(os.environ.get("COOLEDAI_TELEMETRY_RETRIES", "5"))
+RETRY_BACKOFF = float(os.environ.get("COOLEDAI_TELEMETRY_BACKOFF_S", "2"))
+REQUEST_TIMEOUT = float(os.environ.get("COOLEDAI_TELEMETRY_TIMEOUT_S", "35"))
 # Chassis CPU + fan tach (IPMI) — same signals the full cooledai_agent posts.
 # Control nodes often run only this script; without IPMI they would lack cpu/fan in the portal.
 SKIP_IPMI = os.environ.get("COOLEDAI_TELEMETRY_SKIP_IPMI", "").lower() in ("1", "true", "yes")
@@ -383,9 +385,25 @@ def _build_cpu_fan_records() -> list[dict]:
     return records
 
 
+def _record_breakdown(records: list[dict]) -> dict[str, int]:
+    """Count rows by suffix (gpu/cpu/fans) for clearer logs vs API received=N."""
+    counts: dict[str, int] = {}
+    for r in records:
+        nid = str(r.get("node_id", ""))
+        if "/gpu" in nid:
+            counts["gpu"] = counts.get("gpu", 0) + 1
+        elif "/cpu" in nid:
+            counts["cpu"] = counts.get("cpu", 0) + 1
+        elif "/fans" in nid:
+            counts["fans"] = counts.get("fans", 0) + 1
+        else:
+            counts["other"] = counts.get("other", 0) + 1
+    return counts
+
+
 # ── API posting ─────────────────────────────────────────────────────
 def _post_telemetry(session: requests.Session, records: list[dict]) -> None:
-    """POST the telemetry payload with retry + exponential back-off."""
+    """POST the telemetry payload with retry + exponential back-off + jitter."""
     payload = {
         "agent_id": NODE_ID,
         "telemetry": records,
@@ -395,16 +413,19 @@ def _post_telemetry(session: requests.Session, records: list[dict]) -> None:
         "X-API-Key": API_KEY,
     }
     url = f"{API_URL.rstrip('/')}/api/v1/telemetry"
+    breakdown = _record_breakdown(records)
+    # (connect timeout, read timeout) — slow TLS / Railway wakeups need headroom
+    timeout = (min(20.0, REQUEST_TIMEOUT), REQUEST_TIMEOUT)
 
     backoff = RETRY_BACKOFF
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            resp = session.post(url, json=payload, headers=headers, timeout=10)
+            resp = session.post(url, json=payload, headers=headers, timeout=timeout)
             print(
                 f"[telemetry] POST {url} — "
                 f"Status: {resp.status_code} | "
                 f"Body: {resp.text.strip()} | "
-                f"GPUs: {len(records)}"
+                f"records={len(records)} {breakdown}"
             )
             if resp.status_code < 300:
                 return
@@ -412,8 +433,8 @@ def _post_telemetry(session: requests.Session, records: list[dict]) -> None:
             print(f"[telemetry] Attempt {attempt}/{MAX_RETRIES} failed: {exc}")
 
         if attempt < MAX_RETRIES:
-            time.sleep(backoff)
-            backoff *= 2
+            time.sleep(backoff + random.uniform(0, 1.25))
+            backoff = min(backoff * 2.0, 90.0)
 
 
 # ── Main loop ───────────────────────────────────────────────────────
@@ -442,10 +463,25 @@ def main() -> None:
 
     gpu_count = _init_nvml()
 
+    chassis_warned = False
     while True:
         records = _read_gpu_temps(gpu_count)
         records.extend(_build_cpu_fan_records())
         if records:
+            if not chassis_warned:
+                chassis_warned = True
+                has_cpu = any("/cpu" in str(r.get("node_id", "")) for r in records)
+                has_fans = any("/fans" in str(r.get("node_id", "")) for r in records)
+                if not has_cpu:
+                    print(
+                        "[telemetry] WARN: no /cpu record — "
+                        "install ipmitool, run under sudo, or check /sys/class/thermal zones"
+                    )
+                if not has_fans:
+                    print(
+                        "[telemetry] WARN: no /fans record — "
+                        "need `sudo ipmitool sdr` fan tach readable by this process"
+                    )
             _post_telemetry(session, records)
         else:
             print("[telemetry] No GPU data this cycle")
