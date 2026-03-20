@@ -82,6 +82,9 @@ _GPU_GPG_MOD: Any = None
 _GPU_PL_ENVELOPES: List[Any] = []
 _GPU_PL_STATE: Dict[str, Any] = {}
 
+# Thermal calibrator — optional; available when running from repo checkout
+_THERMAL_CALIBRATOR: Any = None
+
 
 def _try_load_gpu_power_governor() -> Any:
     """Import core.optimization.gpu_power_governor if agent runs from repo checkout."""
@@ -97,6 +100,23 @@ def _try_load_gpu_power_governor() -> Any:
                 return gpg
             except Exception as exc:
                 _log.debug("gpu_power_governor import failed: %s", exc)
+                return None
+    return None
+
+
+def _try_load_thermal_calibrator() -> Any:
+    """Import ThermalCalibrator if agent runs from repo checkout."""
+    p = Path(__file__).resolve()
+    for root in (p.parent.parent, p.parent):
+        if (root / "core" / "optimization" / "thermal_calibrator.py").is_file():
+            rs = str(root)
+            if rs not in sys.path:
+                sys.path.insert(0, rs)
+            try:
+                from core.optimization.thermal_calibrator import ThermalCalibrator
+                return ThermalCalibrator
+            except Exception as exc:
+                _log.debug("ThermalCalibrator import failed: %s", exc)
                 return None
     return None
 
@@ -261,6 +281,8 @@ class ThermalSnapshot:
     fan_power_w: Optional[float] = None
     max_temp_c: float = 0.0
     source_of_max: str = ""
+    # FIX A/E: Peak GPU power within polling interval (raw max, not EWMA)
+    peak_gpu_power_w: Optional[float] = None
 
     def compute_max(self) -> None:
         best = 0.0
@@ -276,6 +298,9 @@ class ThermalSnapshot:
                 best, src = t, "chassis"
         self.max_temp_c = best
         self.source_of_max = src
+        # FIX A/E: Peak GPU power
+        if self.gpu_power_w:
+            self.peak_gpu_power_w = max(self.gpu_power_w)
 
 
 def read_sensors(caps: SensorCapabilities, dry_run: bool = False) -> ThermalSnapshot:
@@ -702,7 +727,7 @@ def fetch_optimize_control(
     fan_rpm = int(sum(fan_rpms) / len(fan_rpms)) if fan_rpms else 2000
     gpu_power = sum(snap.gpu_power_w) if snap.gpu_power_w else 50.0
     cpu_temp = max(snap.cpu_temps) if snap.cpu_temps else None
-    payload = {
+    payload: Dict[str, Any] = {
         "temp_c": snap.max_temp_c,
         "fan_rpm": float(fan_rpm),
         "gpu_power_w": gpu_power,
@@ -710,6 +735,9 @@ def fetch_optimize_control(
         "node_id": node_id,
         "max_fan_rpm": 7000.0,
     }
+    # FIX E/G: Include peak power for spike detection on server side
+    if snap.peak_gpu_power_w is not None:
+        payload["peak_power_w"] = snap.peak_gpu_power_w
     lcd = getattr(fetch_optimize_control, "_last_applied_duty", None)
     if lcd is not None:
         payload["last_commanded_duty"] = float(lcd)
@@ -814,6 +842,20 @@ def run_agent(
                     hard,
                 )
 
+    # --- Thermal calibrator (auto-discover thresholds) ---
+    global _THERMAL_CALIBRATOR
+    ThermalCalibratorCls = _try_load_thermal_calibrator()
+    if ThermalCalibratorCls is not None:
+        _THERMAL_CALIBRATOR = ThermalCalibratorCls()
+        _log.info(
+            "CooledAI calibrating — using bootstrap defaults for %.0fs. "
+            "System is protected but not yet optimized for this hardware.",
+            _THERMAL_CALIBRATOR._window_s,
+        )
+    else:
+        _THERMAL_CALIBRATOR = None
+        _log.debug("ThermalCalibrator not available — using static thresholds.")
+
     # --- Load config ---
     cfg = load_cached_config()
     telemetry_url = f"{api_url.rstrip('/')}/api/v1/telemetry"
@@ -838,6 +880,33 @@ def run_agent(
 
         # --- Read all sensors (Max-Voter) ---
         snap = read_sensors(caps, dry_run)
+
+        # --- Feed thermal calibrator ---
+        if _THERMAL_CALIBRATOR is not None:
+            fan_rpms_list = list(snap.fan_rpms.values()) if snap.fan_rpms else []
+            was_calibrated = _THERMAL_CALIBRATOR.is_calibrated
+            _THERMAL_CALIBRATOR.update(
+                fan_rpms=fan_rpms_list or None,
+                gpu_power_w=snap.gpu_power_w or None,
+                gpu_temp_c=snap.gpu_temps or None,
+                cpu_temp_c=snap.cpu_temps or None,
+            )
+            if not was_calibrated and _THERMAL_CALIBRATOR.is_calibrated:
+                p = _THERMAL_CALIBRATOR.profile
+                _log.info(
+                    "CooledAI calibration complete — thresholds set from observation: "
+                    "active_floor=%.0f RPM | spike_hold=%.0f RPM | trigger=%.1f°C | "
+                    "hysteresis=%.0f RPM | slew_up=%.0f RPM/cycle | slew_down=%.0f RPM/cycle | "
+                    "min_response=%.0f RPM | hold_duration=%.0fs",
+                    p.active_compute_fan_floor_rpm,
+                    p.spike_hold_fan_floor_rpm,
+                    p.spike_trigger_temp_c,
+                    p.hysteresis_rpm,
+                    p.slew_rate_up_rpm_per_cycle,
+                    p.slew_rate_down_rpm_per_cycle,
+                    p.min_response_quantum_rpm,
+                    p.spike_hold_duration_s,
+                )
 
         # --- GPU dynamic power cap (nvidia-smi -pl), independent of fan duty ---
         gpg_live = _GPU_GPG_MOD
@@ -926,6 +995,9 @@ def run_agent(
                 rec["utilization_pct"] = snap.gpu_util_pcts[i]
             if i < len(snap.gpu_power_w):
                 rec["power_draw_w"] = snap.gpu_power_w[i]
+            # FIX E/G: Include peak power alongside EWMA-smoothed value
+            if snap.peak_gpu_power_w is not None:
+                rec["peak_power_w"] = snap.peak_gpu_power_w
             records.append(rec)
         if snap.chassis_temps:
             records.append({

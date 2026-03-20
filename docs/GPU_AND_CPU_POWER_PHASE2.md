@@ -66,8 +66,12 @@ Potential savings (1.6–2.4% bill) require **validated** idle policies per CPU 
 
 ---
 
+**Note:** Governor temperature thresholds auto-calibrate via `gpu_power_governor.py`'s own calibration mechanism — independent of the fan-side `ThermalCalibrator` in `core/optimization/thermal_calibrator.py`. See `docs/THERMAL_CALIBRATION.md` for fan threshold auto-calibration details.
+
 ## Code
 
-- `core/optimization/gpu_power_governor.py` — curve + `nvidia-smi` helpers  
-- `scripts/cooledai_agent.py` — `--gpu-power-management` + env gate  
-- `tests/test_gpu_power_governor.py`  
+- `core/optimization/gpu_power_governor.py` — curve + `nvidia-smi` helpers
+- `core/optimization/thermal_calibrator.py` — fan threshold auto-calibration (separate from GPU PL)
+- `scripts/cooledai_agent.py` — `--gpu-power-management` + env gate
+- `tests/test_gpu_power_governor.py`
+- `tests/test_thermal_calibrator.py`

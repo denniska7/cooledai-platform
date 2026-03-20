@@ -46,8 +46,14 @@ from core.optimization.cooling_safety_policy import (
     policy_capacity_rpm,
     POWER_SLOPE_PRE_RAMP_MODERATE_W_S,
     POWER_SLOPE_PRE_RAMP_STEEP_W_S,
+    SUSTAINED_COMPUTE_MEAN_THRESHOLD_W,
 )
 from core.optimization.spike_hold_state import record_spike_if_hot, spike_hold_floor_rpm
+
+try:
+    from core.optimization.thermal_calibrator import CalibrationProfile
+except ImportError:
+    CalibrationProfile = None  # type: ignore[misc, assignment]
 
 try:
     from backend.safety.guardrails import snap_rpm_to_safe_boundary
@@ -168,6 +174,7 @@ def apply_guardrails(
     sustained_active_compute: bool = False,
     spike_hold_min_rpm: float = 0.0,
     rated_max_fan_rpm: Optional[float] = None,
+    calibration_profile: Optional[Any] = None,
 ) -> EfficiencyGap:
     """Apply ASHRAE-based safety guardrails to AI recommendations.
 
@@ -185,6 +192,7 @@ def apply_guardrails(
         power_draw: Current power draw (W); used to detect "under load".
         max_cooling: Maximum cooling capacity (for 100% = Emergency Mode).
         rated_max_fan_rpm: Chassis rated max RPM for policy floor caps (see merge_policy_floors).
+        calibration_profile: Optional CalibrationProfile for auto-calibrated floor values.
 
     Returns:
         EfficiencyGap with guardrails applied (may be modified).
@@ -211,6 +219,7 @@ def apply_guardrails(
         power_draw_w=power_draw,
         sustained_active=sustained_active_compute,
         spike_hold_min_rpm=spike_hold_min_rpm,
+        calibration_profile=calibration_profile,
     )
     gap.raw_metrics["policy_soft_floor_rpm_target"] = soft_floor_rpm
     if soft_floor_rpm > 0 and current_cooling > 1e-6 and proposed_cooling + 1e-6 < soft_floor_rpm:
@@ -515,9 +524,17 @@ class MechanicalLongevityLayer:
         Prevents chattering—tiny, frequent adjustments that wear fans.
         Protects physical lifespan (Enterprise requirement).
         If |delta| < deadband, set to 0 (no command).
+
+        FIX C: Spike/floor commands bypass hysteresis — when a policy floor
+        is driving the delta upward, suppressing it would defeat the floor.
         """
         if gap.emergency_mode:
             return gap  # Emergency bypasses hysteresis
+
+        # FIX C: Bypass hysteresis when a policy floor is actively raising cooling
+        floor_target = gap.raw_metrics.get("policy_soft_floor_rpm_target")
+        if floor_target is not None and float(floor_target) > 0 and gap.recommended_cooling_delta > 0:
+            return gap  # Policy floor driving delta up — do not suppress
 
         # Aggregate delta
         delta = gap.recommended_cooling_delta
@@ -619,6 +636,7 @@ class OptimizationBrain:
         learning_log_path: str = DEFAULT_LEARNING_LOG,
         shadow_mode: bool = False,
         power_optimizer: Optional[PowerCostOptimizer] = None,
+        calibration_profile: Optional[Any] = None,
     ):
         self.target_temp = target_temp
         self.lag_threshold = lag_threshold_seconds
@@ -629,7 +647,20 @@ class OptimizationBrain:
         self.predictor = predictor or TempPredictor()
         self.learning_log_path = learning_log_path
         self.shadow_mode = shadow_mode
-        self.power_optimizer = power_optimizer or PowerCostOptimizer()  # When True: do not send writes to hardware; log proposed actions to shadow_logs
+        self.power_optimizer = power_optimizer or PowerCostOptimizer()
+        self.calibration_profile = calibration_profile
+
+        # Sustained compute power history for absolute trigger (FIX B: 12s rolling mean)
+        self._sustained_power_history: List[float] = []
+        self._sustained_power_times: List[float] = []
+
+        # FIX A: Peak-hold power buffer (3-second max for spike detection)
+        self._peak_power_buffer: List[float] = []  # power values
+        self._peak_power_times: List[float] = []    # timestamps
+        self._PEAK_HOLD_WINDOW_S = 3.0
+
+        # FIX G: No-response event counter (cycles where no fan command fired)
+        self._no_response_count: int = 0
     
     def _nodes_to_arrays(self, nodes: List[BaseNode]) -> tuple:
         """
@@ -1046,6 +1077,50 @@ class OptimizationBrain:
 
         sustained_active = sustained_active_compute_signal(np.asarray(power, dtype=float))
 
+        # --- FIX A: Peak-hold power buffer (3-second max for spike detection) ---
+        cp = self.calibration_profile
+        now_mono = time.monotonic()
+
+        # Maintain 3-second peak-hold buffer
+        self._peak_power_buffer.append(current_power)
+        self._peak_power_times.append(now_mono)
+        peak_cutoff = now_mono - self._PEAK_HOLD_WINDOW_S
+        while self._peak_power_times and self._peak_power_times[0] < peak_cutoff:
+            self._peak_power_times.pop(0)
+            self._peak_power_buffer.pop(0)
+        peak_power_3s = max(self._peak_power_buffer) if self._peak_power_buffer else current_power
+
+        # --- FIX B: Rolling 12-second mean replaces consecutive counter ---
+        active_trigger_w = cp.active_compute_trigger_w if cp is not None else SUSTAINED_COMPUTE_MEAN_THRESHOLD_W
+        sustained_window_s = cp.sustained_compute_window_s if cp is not None else 12.0
+        self._sustained_power_history.append(current_power)
+        self._sustained_power_times.append(now_mono)
+        # Prune history older than sustained_window_s
+        cutoff = now_mono - sustained_window_s
+        while self._sustained_power_times and self._sustained_power_times[0] < cutoff:
+            self._sustained_power_times.pop(0)
+            self._sustained_power_history.pop(0)
+
+        # FIX F: Require minimum 15 samples before sustained compute decisions
+        _MIN_SUSTAINED_SAMPLES = 15
+        if len(self._sustained_power_history) >= _MIN_SUSTAINED_SAMPLES:
+            rolling_mean = float(np.mean(self._sustained_power_history))
+            if rolling_mean > active_trigger_w:
+                sustained_active = True
+        # FIX D: Peak power independently triggers active compute (no temp/confidence gate)
+        if peak_power_3s > active_trigger_w * 1.5:
+            sustained_active = True
+
+        # FIX G: Track trigger source for diagnostics
+        active_trigger_source = "none"
+        if sustained_active:
+            if peak_power_3s > active_trigger_w * 1.5:
+                active_trigger_source = "peak_power_3s"
+            elif len(self._sustained_power_history) >= _MIN_SUSTAINED_SAMPLES and float(np.mean(self._sustained_power_history)) > active_trigger_w:
+                active_trigger_source = "rolling_12s_mean"
+            else:
+                active_trigger_source = "legacy_tail"
+
         if thermal_session_key:
             record_spike_if_hot(thermal_session_key, float(np.max(thermal)), time.time())
         spike_floor_rpm = max(
@@ -1091,6 +1166,10 @@ class OptimizationBrain:
             "thermal_momentum": thermal_momentum,
             "thermal_rate_by_node": thermal_rate_by_node,
             "sustained_active_compute": sustained_active,
+            # FIX A: peak power over 3-second window
+            "peak_power_w": peak_power_3s,
+            # FIX G: trigger diagnostics
+            "active_trigger_source": active_trigger_source,
             "thermal_session_key": thermal_session_key,
             "spike_hold_min_rpm_request": spike_floor_rpm,
             "merged_policy_soft_floor_rpm": merge_policy_floors(
@@ -1099,10 +1178,13 @@ class OptimizationBrain:
                 power_draw_w=current_power,
                 sustained_active=sustained_active,
                 spike_hold_min_rpm=spike_floor_rpm,
+                calibration_profile=cp,
             ),
             "policy_capacity_rpm": capacity_for_policy,
             "rated_max_fan_rpm": rated_max_fan_rpm,
         }
+        if cp is not None:
+            gap.raw_metrics["calibration_profile"] = cp.to_dict()
         if influence_map is not None:
             gap.raw_metrics["influence_map"] = influence_map.to_dict()
 
@@ -1283,6 +1365,7 @@ class OptimizationBrain:
             sustained_active_compute=sustained_active,
             spike_hold_min_rpm=spike_floor_rpm,
             rated_max_fan_rpm=rated_max_fan_rpm,
+            calibration_profile=cp,
         )
 
         # Reward function (for RL / grading)
@@ -1357,6 +1440,19 @@ class OptimizationBrain:
         gap = enforce_policy_floor_after_all_layers(gap, current_cooling)
 
         gap.stagger_delays = get_staggered_start_delays(len(nodes) if nodes else 1)
+
+        # FIX G: Track no-response events (cycles where delta ≈ 0 despite active compute)
+        no_response_event = (
+            abs(gap.recommended_cooling_delta) < 1e-6
+            and sustained_active
+            and not gap.emergency_mode
+        )
+        if no_response_event:
+            self._no_response_count += 1
+        else:
+            self._no_response_count = 0
+        gap.raw_metrics["no_response_event"] = no_response_event
+        gap.raw_metrics["no_response_streak"] = self._no_response_count
 
         # Build and log Reasoning String (Glass Box audit)
         gap.reasoning_string = " | ".join(gap.reasoning_log) if gap.reasoning_log else gap.diagnostic_reasoning
