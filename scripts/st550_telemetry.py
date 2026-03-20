@@ -3,9 +3,11 @@
 ST550 GPU Telemetry Agent — lightweight, single-purpose.
 
 Reads GPU temperatures via pynvml (nvidia-ml-py3) and POSTs them to the
-CooledAI API every POLL_INTERVAL seconds.  Designed to survive driver
-hiccups, network blips, and cold-start race conditions after a power
-failure.
+CooledAI API every POLL_INTERVAL seconds.  Also attaches **CPU temp**
+(sysfs thermal zones + IPMI) and **chassis fan RPM** (ipmitool sdr) so
+control nodes without the full cooledai_agent still populate portal series
+(`control_cpu_temp_c`, `control_fan_rpm`). Run **start_telemetry.sh under sudo**
+so ipmitool can read the BMC.
 
 Network topology
 ----------------
@@ -27,11 +29,13 @@ from __future__ import annotations
 import importlib
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 # ── Configuration (env-overridable) ─────────────────────────────────
 API_URL = os.environ.get(
@@ -47,6 +51,9 @@ NODE_ID = os.environ.get("COOLEDAI_NODE_ID", "ST550-CooledAI-Predictive")
 POLL_INTERVAL = int(os.environ.get("COOLEDAI_POLL_S", "5"))
 MAX_RETRIES = 3
 RETRY_BACKOFF = 2  # seconds, doubles each retry
+# Chassis CPU + fan tach (IPMI) — same signals the full cooledai_agent posts.
+# Control nodes often run only this script; without IPMI they would lack cpu/fan in the portal.
+SKIP_IPMI = os.environ.get("COOLEDAI_TELEMETRY_SKIP_IPMI", "").lower() in ("1", "true", "yes")
 
 DATA_IFACE = "eno1np0"
 ROUTER_GW = "192.168.12.1"
@@ -254,6 +261,128 @@ def _read_gpu_temps(count: int) -> list[dict]:
     return records
 
 
+def _read_cpu_temps_sysfs() -> list[float]:
+    """CPU-ish thermal zones from sysfs (no extra packages)."""
+    out: list[float] = []
+    base = Path("/sys/class/thermal")
+    if not base.is_dir():
+        return out
+    for zone in sorted(base.glob("thermal_zone*")):
+        try:
+            typ = (zone / "type").read_text().strip().lower()
+            if not any(
+                k in typ
+                for k in ("cpu", "x86", "pkg", "core", "k10temp", "zen", "processor")
+            ):
+                continue
+            raw = int((zone / "temp").read_text().strip()) / 1000.0
+            if 15.0 < raw < 125.0:
+                out.append(raw)
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def _read_ipmi_cpu_fan() -> tuple[list[float], dict[str, int], float | None]:
+    """
+    Parse `ipmitool sdr` for CPU temperatures and fan tach (ST550 / Lenovo-style labels).
+    Requires root or ipmi group; skipped if command fails.
+    """
+    cpu_list: list[float] = []
+    fan_rpms: dict[str, int] = {}
+    fan_power: float | None = None
+
+    try:
+        out = subprocess.check_output(
+            ["ipmitool", "sdr"],
+            timeout=12,
+            stderr=subprocess.DEVNULL,
+        ).decode()
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return [], {}, None
+
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split("|")]
+        if len(parts) < 2:
+            continue
+        name = parts[0].strip()
+        name_lower = name.lower()
+        value_str = parts[1].strip()
+
+        if "sys fan pwr" in name_lower:
+            m = re.search(r"([\d.]+)\s*[Ww]", value_str)
+            if m:
+                fan_power = float(m.group(1))
+            continue
+
+        # CPU / package temperature (avoid DIMM)
+        if (
+            ("cpu" in name_lower or "processor" in name_lower)
+            and "dimm" not in name_lower
+        ):
+            m = re.search(r"([\d.]+)\s*degrees", value_str, re.IGNORECASE)
+            if m:
+                t = float(m.group(1))
+                if 15.0 < t < 125.0:
+                    cpu_list.append(t)
+            continue
+
+        # Chassis fan RPM
+        if "fan" in name_lower or "tach" in name_lower:
+            m = re.search(r"(\d+)\s*RPM", value_str, re.IGNORECASE)
+            if m:
+                fan_rpms[name] = int(m.group(1))
+            else:
+                m2 = re.search(r"\b(\d{3,5})\b", value_str)
+                if m2 and "na" not in value_str.lower():
+                    v = int(m2.group(1))
+                    if 200 <= v <= 20000:
+                        fan_rpms[name] = v
+
+    return cpu_list, fan_rpms, fan_power
+
+
+def _build_cpu_fan_records() -> list[dict]:
+    """Extra telemetry rows so API fills control_cpu_temp_c / control_fan_rpm like the pilot agent."""
+    now = datetime.now(timezone.utc).isoformat()
+    records: list[dict] = []
+
+    cpu_sysfs = _read_cpu_temps_sysfs()
+    cpu_ipmi: list[float] = []
+    fan_rpms: dict[str, int] = {}
+    fan_power: float | None = None
+
+    if not SKIP_IPMI:
+        cpu_ipmi, fan_rpms, fan_power = _read_ipmi_cpu_fan()
+
+    # Prefer max of sysfs + IPMI CPU readings
+    cpu_all = cpu_sysfs + cpu_ipmi
+    if cpu_all:
+        records.append(
+            {
+                "node_id": f"{NODE_ID}/cpu",
+                "timestamp": now,
+                "temperature_c": round(max(cpu_all), 1),
+                "sensor_count": len(cpu_all),
+            }
+        )
+
+    if fan_rpms:
+        tach = list(fan_rpms.values())
+        avg_rpm = int(sum(tach) / len(tach)) if tach else 0
+        fan_rec: dict = {
+            "node_id": f"{NODE_ID}/fans",
+            "timestamp": now,
+            "fan_rpms": fan_rpms,
+            "fan_rpm": max(0, avg_rpm),
+        }
+        if fan_power is not None:
+            fan_rec["raw_fan_wattage"] = round(fan_power, 1)
+        records.append(fan_rec)
+
+    return records
+
+
 # ── API posting ─────────────────────────────────────────────────────
 def _post_telemetry(session: requests.Session, records: list[dict]) -> None:
     """POST the telemetry payload with retry + exponential back-off."""
@@ -315,6 +444,7 @@ def main() -> None:
 
     while True:
         records = _read_gpu_temps(gpu_count)
+        records.extend(_build_cpu_fan_records())
         if records:
             _post_telemetry(session, records)
         else:

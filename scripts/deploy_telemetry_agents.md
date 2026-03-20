@@ -38,9 +38,10 @@ scp scripts/st550_telemetry.py scripts/start_telemetry.sh cooledaiadmin@192.168.
 ssh cooledaiadmin@192.168.12.100
 
 # 3. Install dependencies (one-time, if needed)
+sudo apt-get install -y ipmitool 2>/dev/null || true
 sudo python3 -m pip install --break-system-packages nvidia-ml-py3 requests
 
-# 4. Start telemetry (restarts any existing instance)
+# 4. Start telemetry (sudo + ipmitool → CPU temp + chassis fan RPM in API; not GPU-only)
 sudo bash ~/start_telemetry.sh --node-id ST550-CooledAI-Predictive
 
 # 5. Verify
@@ -62,9 +63,10 @@ scp scripts/st550_telemetry.py scripts/start_telemetry.sh cooledaiadmin@192.168.
 ssh cooledaiadmin@192.168.12.101
 
 # 3. Install dependencies (one-time)
+sudo apt-get install -y ipmitool 2>/dev/null || true
 sudo python3 -m pip install --break-system-packages nvidia-ml-py3 requests
 
-# 4. Start telemetry
+# 4. Start telemetry (**sudo** required so `ipmitool sdr` can read chassis fan RPM + CPU temp)
 sudo bash ~/start_telemetry.sh --node-id ST550-Control-Traditional
 
 # 5. Verify
