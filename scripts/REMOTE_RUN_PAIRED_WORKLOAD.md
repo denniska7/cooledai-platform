@@ -37,6 +37,28 @@ Both nodes need the same checkout so these paths exist:
 
 If the directory name differs, set `COOLEDAI_REMOTE_DIR` when running the helper scripts.
 
+### First time only: clone (you saw `No such file or directory`)
+
+On **each** node (pilot and control), the folder must exist. GitHub repo name is `cooledai-platform`; clone **into** `coolingai_simulator` so paths match the docs:
+
+```bash
+cd ~
+git clone https://github.com/denniska7/cooledai-platform.git coolingai_simulator
+cd ~/coolingai_simulator
+git pull origin main
+```
+
+- **Private repo:** use SSH instead:  
+  `git clone git@github.com:denniska7/cooledai-platform.git coolingai_simulator`  
+  (deploy key or your GitHub user key on that server).
+- **Older setup:** if you only copied scripts into `~` and never cloned, either clone as above **or** copy the missing `scripts/` tree from your Mac (see `COOLEDAI_NODE_SETUP.md`).
+
+After clone, updates are just:
+
+```bash
+cd ~/coolingai_simulator && git pull origin main
+```
+
 ## Automated (recommended)
 
 From **project root** on your Mac, after `git pull` on both servers:
