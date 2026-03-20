@@ -39,3 +39,7 @@ After deploying the API that returns `policy_soft_floor_rpm`, call `/api/v1/opti
 If these look correct but **fan tach** barely moves, suspect **IPMI / BIOS / PWM limits** on the host, not the optimizer.
 
 See also: `TELEMETRY_LOG_ACCESS.md` (curl example).
+
+## Run both nodes from your Mac (SSH)
+
+See **`REMOTE_RUN_PAIRED_WORKLOAD.md`** and `run_paired_workload_on_both_st550.sh` (requires SSH keys, no passwords in git).
