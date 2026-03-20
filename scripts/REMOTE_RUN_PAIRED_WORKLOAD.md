@@ -1,5 +1,14 @@
 # Run paired workload on both ST550s (from your Mac)
 
+## Canonical addresses
+
+| Node | Role | SSH target (default in helper scripts) |
+|------|------|----------------------------------------|
+| **Pilot** (cooledai-srv) | Predictive / CooledAI | `cooledaiadmin@100.92.29.44` (Tailscale) |
+| **Control** | Baseline | `cooledaiadmin@192.168.12.101` (LAN) |
+
+Optional: reach the pilot via **data-port LAN** `192.168.12.100` instead — set `COOLEDAI_PILOT_SSH=cooledaiadmin@192.168.12.100`.
+
 ## Security first
 
 - **Never commit SSH passwords or API keys to GitHub.** Run commands from your laptop and type passwords only when `ssh` / `sudo` prompt you—or use **SSH keys**.
@@ -43,7 +52,9 @@ From **project root** on your Mac, after `git pull` on both servers:
 ./scripts/run_paired_workload_on_both_st550.sh
 ```
 
-### Overrides (LAN IPs instead of Tailscale, etc.)
+### Overrides (pilot via LAN data port instead of Tailscale)
+
+Default pilot is **100.92.29.44**. To use LAN **.100** for pilot only:
 
 ```bash
 export COOLEDAI_PILOT_SSH='cooledaiadmin@192.168.12.100'
