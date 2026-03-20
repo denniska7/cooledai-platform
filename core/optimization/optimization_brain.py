@@ -454,14 +454,19 @@ class MechanicalLongevityLayer:
     ) -> float:
         """
         Dynamic slew rate: gentle when far from limit, aggressive when approaching spike.
-        Far from limit -> save motor wear (0.05). Approaching spike -> prioritize safety (0.25).
+        Far from limit -> save motor wear. Approaching spike -> prioritize safety.
+
+        Very large margins (>30°C) allow faster convergence to efficient setpoints
+        without repeated 5% baby-steps that keep fans high for minutes.
         """
         margin = max_safe_temp - current_thermal
         if margin <= 3.0:
             return 0.25  # Aggressive when close to limit
         if margin <= 10.0:
             return 0.15  # Moderate
-        return 0.05  # Gentle when far (save wear)
+        if margin > 30.0:
+            return 0.15  # Large margin: faster convergence to efficient setpoint
+        return 0.05  # Normal: gentle (save wear)
 
     def apply_slew_rate_limit(
         self,
