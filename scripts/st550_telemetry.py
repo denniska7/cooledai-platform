@@ -217,9 +217,14 @@ def _read_gpu_temps(count: int) -> list[dict]:
 
     NVML/pynvml often reports 0W when GPU is idle or between sampling windows.
     We apply a floor (10W) or utilization-based estimate to avoid 0W ruining charts.
+
+    FIX E: Each GPU record includes ``peak_power_w`` — the raw max power across
+    all GPUs in this polling cycle — so the optimization brain can detect
+    sub-interval spikes even when EWMA smoothing masks them.
     """
     now = datetime.now(timezone.utc).isoformat()
     records: list[dict] = []
+    raw_powers: list[float] = []
     for i in range(count):
         try:
             handle = pynvml.nvmlDeviceGetHandleByIndex(i)
@@ -237,6 +242,8 @@ def _read_gpu_temps(count: int) -> list[dict]:
                 power_w = float(power_mw) / 1000.0
             except pynvml.NVMLError:
                 pass  # Power not supported on some GPUs
+
+            raw_powers.append(power_w)
 
             # NVML often reports 0W when idle; avoid ruining telemetry charts
             if power_w <= 0:
@@ -260,6 +267,13 @@ def _read_gpu_temps(count: int) -> list[dict]:
             records.append(rec)
         except pynvml.NVMLError as exc:
             print(f"[telemetry] GPU {i} read error: {exc}")
+
+    # FIX E: Attach peak_power_w (max across all GPUs this cycle) to each record
+    if raw_powers:
+        peak = round(max(raw_powers), 2)
+        for rec in records:
+            rec["peak_power_w"] = peak
+
     return records
 
 
