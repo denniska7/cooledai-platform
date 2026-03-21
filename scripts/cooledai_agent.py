@@ -1279,7 +1279,7 @@ def run_agent(
             hw_rpm = int(sum(fan_rpms_list) / len(fan_rpms_list)) if fan_rpms_list else 0
             # Reconstruct target_rpm from duty + max
             target_rpm = int(round((duty / 100.0) * 7000.0)) if duty >= 0 else -1
-            _log.debug(
+            _log.info(
                 "[FAN_DIAG] target_duty=%d%% target_rpm=%d hw_rpm=%d "
                 "gpu_power_w=%.1f peak_power_w=%s method=%s "
                 "control_enabled=%s",
