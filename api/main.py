@@ -19,6 +19,7 @@ Endpoints:
 - GET /health - Health check
 """
 
+import atexit
 import os
 import secrets
 import sys
@@ -425,10 +426,13 @@ async def _start_digest_worker() -> None:
 
 @app.on_event("shutdown")
 async def _stop_digest_worker() -> None:
-    """Stop background digest worker."""
+    """Stop background digest worker and persist thermal history."""
     _report_stop_event.set()
     if _report_thread is not None and _report_thread.is_alive():
         _report_thread.join(timeout=2.0)
+    # Flush thermal history to disk so it survives restarts
+    _save_thermal_history()
+    logging.getLogger("api.main").info("Thermal history flushed to disk on shutdown.")
 
 
 # --- System State Machine ---
@@ -1546,6 +1550,65 @@ _tenant_accumulators: Dict[str, dict] = {}
 _thermal_history: Dict[str, list] = {}
 _MAX_THERMAL_HISTORY_POINTS = 60 * 24 * 60 * 12  # 60 days at 5s interval
 
+# ── Thermal history persistence ──────────────────────────────────────
+# Flush in-memory thermal history to JSON every 60 s so CSV exports
+# survive Railway redeploys and container restarts.
+_THERMAL_HISTORY_FILE = project_root / "data" / "thermal_history.json"
+_THERMAL_HISTORY_FLUSH_INTERVAL_S = 60.0
+_thermal_history_last_flush: float = 0.0
+_thermal_history_lock = threading.Lock()
+
+
+def _load_thermal_history() -> None:
+    """Load persisted thermal history from disk on startup."""
+    global _thermal_history
+    try:
+        if _THERMAL_HISTORY_FILE.exists():
+            raw = json.loads(_THERMAL_HISTORY_FILE.read_text())
+            # Convert lists back to tuples for each row
+            restored: Dict[str, list] = {}
+            for owner_id, rows in raw.items():
+                restored[owner_id] = [tuple(r) for r in rows]
+            _thermal_history = restored
+            total_rows = sum(len(v) for v in _thermal_history.values())
+            logging.getLogger("api.main").info(
+                "Thermal history loaded from disk: %d owners, %d total rows",
+                len(_thermal_history), total_rows,
+            )
+    except Exception as exc:
+        logging.getLogger("api.main").warning("Failed to load thermal history: %s", exc)
+
+
+def _save_thermal_history() -> None:
+    """Persist thermal history to disk (called periodically and on shutdown)."""
+    global _thermal_history_last_flush
+    try:
+        _THERMAL_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        # Convert tuples to lists for JSON serialization
+        serializable = {k: [list(r) for r in v] for k, v in _thermal_history.items()}
+        tmp = _THERMAL_HISTORY_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(serializable))
+        tmp.replace(_THERMAL_HISTORY_FILE)  # atomic rename
+        _thermal_history_last_flush = time.time()
+    except Exception as exc:
+        logging.getLogger("api.main").warning("Failed to save thermal history: %s", exc)
+
+
+def _maybe_flush_thermal_history() -> None:
+    """Flush to disk if enough time has passed since last flush."""
+    global _thermal_history_last_flush
+    now = time.time()
+    if now - _thermal_history_last_flush >= _THERMAL_HISTORY_FLUSH_INTERVAL_S:
+        with _thermal_history_lock:
+            # Double-check after acquiring lock
+            if now - _thermal_history_last_flush >= _THERMAL_HISTORY_FLUSH_INTERVAL_S:
+                _save_thermal_history()
+
+
+# Load persisted history on module import and register atexit flush
+_load_thermal_history()
+atexit.register(_save_thermal_history)
+
 # Fan power estimation — Fan Affinity Law: P ∝ RPM³
 _RATED_FAN_WATTS = float(os.environ.get("COOLEDAI_RATED_FAN_WATTS", "12"))
 _MAX_FAN_RPM = float(os.environ.get("COOLEDAI_MAX_FAN_RPM", "7000"))
@@ -1662,6 +1725,9 @@ def _append_thermal_history(owner_id: str, now_ts: float) -> None:
     )
     if len(history) > _MAX_THERMAL_HISTORY_POINTS:
         history.pop(0)
+
+    # Periodic flush to disk so exports survive restarts
+    _maybe_flush_thermal_history()
 
 
 def _history_row(row: tuple) -> Tuple[
