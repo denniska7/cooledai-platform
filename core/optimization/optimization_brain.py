@@ -1152,7 +1152,15 @@ class OptimizationBrain:
             active_trigger_source = "idle_gate_suppressed"
 
         if thermal_session_key:
-            record_spike_if_hot(thermal_session_key, float(np.max(thermal)), time.time())
+            _spike_trigger_c = cp.spike_trigger_temp_c if cp is not None else None
+            _spike_hold_dur = cp.spike_hold_duration_s if cp is not None else None
+            record_spike_if_hot(
+                thermal_session_key,
+                float(np.max(thermal)),
+                time.time(),
+                spike_trigger_temp_c=_spike_trigger_c,
+                spike_hold_duration_s=_spike_hold_dur,
+            )
         spike_floor_rpm = max(
             parse_policy_context(policy_context),
             spike_hold_floor_rpm(thermal_session_key, capacity_for_policy, time.time()),
