@@ -2646,6 +2646,8 @@ class AgentOptimizeControlInput(BaseModel):
     last_commanded_duty: Optional[float] = None
     # FIX E: Raw peak GPU power within polling interval (W) for spike detection
     peak_power_w: Optional[float] = None
+    # Calibration profile from agent's ThermalCalibrator (dict form)
+    calibration_profile: Optional[dict] = None
 
 
 def _build_nodes_for_agent_control(
@@ -2705,6 +2707,33 @@ async def agent_optimize_control(
     Returns target_duty (0-100) for fan control. Agent falls back to local
     curve when this endpoint is unreachable.
     """
+    # Update brain calibration profile from agent when available
+    if body.calibration_profile is not None:
+        try:
+            from core.optimization.thermal_calibrator import CalibrationProfile
+            cp_dict = body.calibration_profile
+            # Only recalibrate if this is a new/changed profile
+            existing_cp = getattr(_brain, "calibration_profile", None)
+            if existing_cp is None or (
+                hasattr(existing_cp, "temp_mean_c")
+                and abs(existing_cp.temp_mean_c - cp_dict.get("temp_mean_c", 0)) > 0.1
+            ):
+                new_cp = CalibrationProfile(**{
+                    k: v for k, v in cp_dict.items()
+                    if k in CalibrationProfile.__dataclass_fields__
+                })
+                _brain.calibration_profile = new_cp
+                _brain.predictor.force_recalibrate(new_cp)
+                logging.getLogger("api.main").info(
+                    "[PREDICTOR] Brain calibration profile updated from agent "
+                    "(temp_mean=%.1f°C, temp_stdev=%.2f°C)",
+                    new_cp.temp_mean_c, new_cp.temp_stdev_c,
+                )
+        except Exception as exc:
+            logging.getLogger("api.main").debug(
+                "Failed to update brain calibration profile: %s", exc
+            )
+
     nodes = _build_nodes_for_agent_control(owner_id, body)
     if len(nodes) < 2:
         # Not enough history; use simple duty from temp
