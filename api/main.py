@@ -1113,6 +1113,7 @@ def _run_optimization_with_state_machine(
     nodes: List[BaseNode],
     policy_context: Optional[dict] = None,
     thermal_session_key: Optional[str] = None,
+    current_cpu_temp_c: Optional[float] = None,
 ) -> OptimizationResponse:
     """
     Run optimization and apply System State Machine.
@@ -1158,6 +1159,7 @@ def _run_optimization_with_state_machine(
         upcoming_jobs=upcoming_jobs if upcoming_jobs else None,
         policy_context=policy_context,
         thermal_session_key=thermal_session_key,
+        current_cpu_temp_c=current_cpu_temp_c,
     )
 
     # Persist failing component findings to history (for GET /health/anomalies / Maintenance Task List)
@@ -2792,6 +2794,7 @@ async def agent_optimize_control(
             nodes,
             thermal_session_key=owner_id,
             policy_context={"rated_max_fan_rpm": float(body.max_fan_rpm)},
+            current_cpu_temp_c=body.cpu_temp_c,
         )
         delta = resp.recommended_cooling_delta
         current_rpm = body.fan_rpm
