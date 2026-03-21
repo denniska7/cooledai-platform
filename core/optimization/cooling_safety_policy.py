@@ -17,8 +17,11 @@ objectives if the network feeds control directly.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import TYPE_CHECKING, Any, Dict, Optional
+
+_log = logging.getLogger("cooledai.cooling_safety_policy")
 
 import numpy as np
 
@@ -140,11 +143,20 @@ def merge_policy_floors(
             floor = max(floor, active_floor_rpm)
         else:
             floor = max(floor, active_compute_fan_floor_rpm(cap))
+        _log.debug(
+            "[ACTIVE_COMPUTE_FLOOR] Applied: sustained_active=%s power_draw=%.1fW "
+            "floor=%.0f RPM capacity=%.0f RPM",
+            sustained_active, power_draw_w, floor, cap,
+        )
     if spike_hold_min_rpm > 0:
         if spike_floor_rpm is not None:
             floor = max(floor, min(spike_hold_min_rpm, spike_floor_rpm))
         else:
             floor = max(floor, min(spike_hold_min_rpm, cap * SPIKE_HOLD_MAX_FRAC_OF_RATED))
+        _log.debug(
+            "[SPIKE_HOLD_FLOOR] Applied: spike_hold_min_rpm=%.0f final_floor=%.0f RPM",
+            spike_hold_min_rpm, floor,
+        )
     return floor
 
 
