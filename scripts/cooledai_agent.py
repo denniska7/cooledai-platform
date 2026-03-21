@@ -91,6 +91,26 @@ _GPU_PL_STATE: Dict[str, Any] = {}
 # Thermal calibrator — optional; available when running from repo checkout
 _THERMAL_CALIBRATOR: Any = None
 
+# XCC Fan Controller — replaces IPMI bypass for Lenovo ThinkSystem servers
+_XCC_FAN_CONTROLLER: Any = None
+
+
+def _try_load_xcc_fan_controller() -> Any:
+    """Import XCCFanController if agent runs from repo checkout."""
+    p = Path(__file__).resolve()
+    for root in (p.parent.parent, p.parent):
+        if (root / "core" / "hardware" / "xcc_fan_controller.py").is_file():
+            rs = str(root)
+            if rs not in sys.path:
+                sys.path.insert(0, rs)
+            try:
+                from core.hardware.xcc_fan_controller import XCCFanController
+                return XCCFanController
+            except Exception as exc:
+                _log.debug("XCCFanController import failed: %s", exc)
+                return None
+    return None
+
 
 def _try_load_gpu_power_governor() -> Any:
     """Import core.optimization.gpu_power_governor if agent runs from repo checkout."""
@@ -339,6 +359,8 @@ class SensorCapabilities:
             parts.append(f"PWM({len(self.pwm_paths)})")
         if self.redfish:
             parts.append(f"Redfish({self.redfish.base_url})")
+        if _XCC_FAN_CONTROLLER is not None and _XCC_FAN_CONTROLLER.available:
+            parts.append("XCC_FAN(active)")
         return "Discovered: " + ("  ".join(parts) if parts else "NONE")
 
 
@@ -735,64 +757,55 @@ def _try_gpu_fan_set(duty: int, dry_run: bool) -> bool:
         return False
 
 
-def _try_ipmi_bypass(duty: int, rated_max_rpm: float, hw_rpm: float, dry_run: bool) -> bool:
-    """IPMI bypass: raw commands to override BIOS fan curve when hardware ignores normal commands.
+def _try_xcc_fan_set(duty: int, rated_max_rpm: float, hw_rpm: float, dry_run: bool) -> bool:
+    """XCC Redfish fan control: set fan speed via BMC when hardware ignores normal commands.
 
-    Uses Dell-style 0x30 0x30 raw commands (works on some Lenovo BMC firmware too).
+    Replaces the old IPMI bypass (ipmitool raw commands) which does not work on
+    Lenovo ST550 servers (no /dev/ipmi0 exposed to OS).
+
     Fires ONLY when target > 3500 RPM AND hardware is not responding (< 85% of target).
     """
+    global _XCC_FAN_CONTROLLER
+    if _XCC_FAN_CONTROLLER is None or not _XCC_FAN_CONTROLLER.available:
+        return False
+
     target_rpm = (duty / 100.0) * rated_max_rpm
     if target_rpm <= 3500:
         return False
-    if hw_rpm >= target_rpm * 0.85:
+    if hw_rpm > 0 and hw_rpm >= target_rpm * 0.85:
         return False  # hardware is responding adequately
 
-    hex_pct = min(100, int(round((target_rpm / rated_max_rpm) * 100)))
+    fan_pct = min(100, max(0, int(round((target_rpm / rated_max_rpm) * 100))))
 
     if dry_run:
-        _log.debug("[DRY-RUN] IPMI_BYPASS: would send duty=%d%% (target_rpm=%.0f, hw_rpm=%.0f)",
-                   hex_pct, target_rpm, hw_rpm)
+        _log.debug("[DRY-RUN] XCC_FAN: would send %d%% (target_rpm=%.0f, hw_rpm=%.0f)",
+                   fan_pct, target_rpm, hw_rpm)
         return True
 
-    _log.warning(
-        "IPMI_BYPASS_ACTIVATED: target_rpm=%.0f actual_hw_rpm=%.0f "
-        "— issuing raw 0x30 0x30 manual fan control (duty=%d%%)",
-        target_rpm, hw_rpm, hex_pct,
+    _log.info(
+        "XCC_FAN_OVERRIDE: target_rpm=%.0f actual_hw_rpm=%.0f "
+        "— setting XCC fan to %d%% via Redfish",
+        target_rpm, hw_rpm, fan_pct,
     )
-    try:
-        # Disable automatic fan control
-        subprocess.check_call(
-            ["ipmitool", "raw", "0x30", "0x30", "0x01", "0x00"],
-            timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        # Set fan duty
-        subprocess.check_call(
-            ["ipmitool", "raw", "0x30", "0x30", "0x02", "0xff", hex(hex_pct)],
-            timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        return True
-    except Exception as exc:
-        _log.debug("IPMI bypass failed: %s", exc)
-        return False
+    return _XCC_FAN_CONTROLLER.set_manual_fan_percent(fan_pct)
 
 
-def _restore_ipmi_auto(dry_run: bool) -> None:
-    """Restore automatic fan control after IPMI bypass is no longer needed."""
-    if dry_run:
-        _log.debug("[DRY-RUN] IPMI auto restore")
+def _restore_xcc_auto(dry_run: bool) -> None:
+    """Restore automatic fan control via XCC after override is no longer needed."""
+    global _XCC_FAN_CONTROLLER
+    if _XCC_FAN_CONTROLLER is None or not _XCC_FAN_CONTROLLER.available:
         return
-    try:
-        subprocess.check_call(
-            ["ipmitool", "raw", "0x30", "0x30", "0x01", "0x01"],
-            timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        _log.info("IPMI_BYPASS_RESTORED: automatic fan control re-enabled.")
-    except Exception as exc:
-        _log.debug("IPMI auto restore failed: %s", exc)
+    if dry_run:
+        _log.debug("[DRY-RUN] XCC auto restore")
+        return
+    if _XCC_FAN_CONTROLLER.restore_auto_control():
+        _log.info("XCC_FAN_RESTORED: automatic fan control re-enabled via Redfish.")
+    else:
+        _log.warning("XCC_FAN_RESTORE_FAILED: could not restore auto — BMC may need manual intervention.")
 
 
-# Track IPMI bypass state
-_ipmi_bypass_active = False
+# Track XCC fan override state (replaces _ipmi_bypass_active)
+_xcc_override_active = False
 
 
 def set_fan_duty(
@@ -802,41 +815,41 @@ def set_fan_duty(
     hw_rpm: float = 0.0,
     rated_max_rpm: float = 7000.0,
 ) -> str:
-    """Try IPMI -> PWM -> GPU fan.  Returns the method used or 'none'.
+    """Try XCC -> IPMI -> PWM -> GPU fan.  Returns the method used or 'none'.
+
+    XCC Redfish fan control is attempted first for Lenovo ThinkSystem servers
+    (where /dev/ipmi0 is not available). Falls back to IPMI, PWM, GPU fan.
 
     When target_rpm > 3500 AND hardware RPM is < 85% of target (not responding),
-    attempts a raw IPMI bypass to override the BIOS fan curve.
+    attempts XCC Redfish override (replaces old IPMI bypass).
     """
-    global _ipmi_bypass_active
+    global _xcc_override_active
 
-    if caps.ipmi and _try_ipmi_set_duty(caps, duty, dry_run):
-        # Normal IPMI worked — check if we need bypass for non-responsive hardware
-        target_rpm = (duty / 100.0) * rated_max_rpm
-        if target_rpm > 3500 and hw_rpm > 0 and hw_rpm < target_rpm * 0.85:
-            if _try_ipmi_bypass(duty, rated_max_rpm, hw_rpm, dry_run):
-                _ipmi_bypass_active = True
-                return "ipmi_bypass"
-        elif _ipmi_bypass_active and target_rpm < 2000:
+    target_rpm = (duty / 100.0) * rated_max_rpm
+
+    # --- XCC Redfish fan control (primary for Lenovo ST550) ---
+    if _XCC_FAN_CONTROLLER is not None and _XCC_FAN_CONTROLLER.available:
+        if target_rpm > 3500 and (hw_rpm <= 0 or hw_rpm < target_rpm * 0.85):
+            if _try_xcc_fan_set(duty, rated_max_rpm, hw_rpm, dry_run):
+                _xcc_override_active = True
+                return "xcc_redfish"
+        elif _xcc_override_active and target_rpm < 2000:
             # Target dropped low enough — restore auto
-            _restore_ipmi_auto(dry_run)
-            _ipmi_bypass_active = False
+            _restore_xcc_auto(dry_run)
+            _xcc_override_active = False
+
+    # --- Standard IPMI ---
+    if caps.ipmi and _try_ipmi_set_duty(caps, duty, dry_run):
         return "ipmi"
 
-    # Fallback: try bypass directly if IPMI variant commands failed
-    if caps.ipmi and hw_rpm > 0:
-        target_rpm = (duty / 100.0) * rated_max_rpm
-        if target_rpm > 3500 and hw_rpm < target_rpm * 0.85:
-            if _try_ipmi_bypass(duty, rated_max_rpm, hw_rpm, dry_run):
-                _ipmi_bypass_active = True
-                return "ipmi_bypass"
-        elif _ipmi_bypass_active and target_rpm < 2000:
-            _restore_ipmi_auto(dry_run)
-            _ipmi_bypass_active = False
-
+    # --- PWM ---
     if caps.pwm_paths and _try_pwm_set_duty(caps, duty, dry_run):
         return "pwm"
+
+    # --- GPU fan ---
     if (caps.nvidia_gpu or caps.amd_gpu) and _try_gpu_fan_set(duty, dry_run):
         return "gpu_fan"
+
     return "none"
 
 
@@ -845,6 +858,9 @@ def revert_fans_to_auto(caps: SensorCapabilities, dry_run: bool = False) -> None
     if dry_run:
         _log.info("[DRY-RUN] Reverting fans to auto.")
         return
+    # XCC Redfish restore (Lenovo ThinkSystem)
+    if _XCC_FAN_CONTROLLER is not None and _XCC_FAN_CONTROLLER.available:
+        _restore_xcc_auto(dry_run=False)
     if caps.ipmi:
         try:
             if caps.ipmi_variant == "dell":
@@ -1049,10 +1065,10 @@ _dry_run_flag = False
 
 
 def _cleanup(*_args: Any) -> None:
-    global _manual_control_active, _ipmi_bypass_active
-    if _ipmi_bypass_active:
-        _restore_ipmi_auto(_dry_run_flag)
-        _ipmi_bypass_active = False
+    global _manual_control_active, _xcc_override_active
+    if _xcc_override_active:
+        _restore_xcc_auto(_dry_run_flag)
+        _xcc_override_active = False
     if _manual_control_active:
         _log.warning("Cleanup: reverting fans to hardware auto.")
         caps = getattr(_cleanup, "_caps", SensorCapabilities())
@@ -1088,10 +1104,28 @@ def run_agent(
     elif redfish_url and dry_run:
         _log.info("[DRY-RUN] Redfish URL provided but skipped in dry-run mode.")
 
+    # --- XCC Fan Controller discovery (Lenovo ThinkSystem BMC) ---
+    global _XCC_FAN_CONTROLLER
+    XCCFanControllerCls = _try_load_xcc_fan_controller()
+    if XCCFanControllerCls is not None:
+        _XCC_FAN_CONTROLLER = XCCFanControllerCls()
+        if _XCC_FAN_CONTROLLER.available:
+            _log.info(
+                "XCC fan controller AVAILABLE — Redfish fan control enabled "
+                "(replaces IPMI bypass for Lenovo ThinkSystem)"
+            )
+        else:
+            _log.info("XCC fan controller loaded but BMC not reachable — XCC fan control disabled.")
+            _XCC_FAN_CONTROLLER = None
+    else:
+        _XCC_FAN_CONTROLLER = None
+        _log.debug("XCCFanController not available — IPMI/PWM/GPU fan fallback only.")
+
     _cleanup._caps = caps  # type: ignore[attr-defined]
     _log.info(caps.summary())
 
-    has_control = caps.ipmi or bool(caps.pwm_paths) or caps.nvidia_gpu
+    xcc_available = _XCC_FAN_CONTROLLER is not None and _XCC_FAN_CONTROLLER.available
+    has_control = caps.ipmi or bool(caps.pwm_paths) or caps.nvidia_gpu or xcc_available
     if not has_control:
         _log.warning("No fan control method available — running in REPORT-ONLY mode.")
 
@@ -1260,6 +1294,16 @@ def run_agent(
                     _log.debug("Optimize API unreachable — using local curve (hardware protected)")
             _fan_rpms_for_duty = list(snap.fan_rpms.values()) if snap.fan_rpms else []
             _hw_rpm_for_duty = float(sum(_fan_rpms_for_duty) / len(_fan_rpms_for_duty)) if _fan_rpms_for_duty else 0.0
+            # Enrich hw_rpm from XCC Redfish if IPMI tach is unavailable
+            if _hw_rpm_for_duty <= 0 and _XCC_FAN_CONTROLLER is not None and _XCC_FAN_CONTROLLER.available:
+                xcc_fans = _XCC_FAN_CONTROLLER.read_fan_speeds()
+                if xcc_fans:
+                    xcc_pcts = [f["reading_pct"] for f in xcc_fans if f.get("reading_pct") is not None]
+                    if xcc_pcts:
+                        avg_pct = sum(xcc_pcts) / len(xcc_pcts)
+                        # Convert XCC fan % to RPM estimate using rated max
+                        _hw_rpm_for_duty = (avg_pct / 100.0) * 7000.0
+                        _log.debug("[XCC_FAN] hw_rpm estimated from XCC: %.0f RPM (%.1f%%)", _hw_rpm_for_duty, avg_pct)
             method = set_fan_duty(caps, duty, dry_run, hw_rpm=_hw_rpm_for_duty)
             if method != "none":
                 _manual_control_active = True
@@ -1277,17 +1321,26 @@ def run_agent(
             run_agent._fan_diag_last_t = loop_start  # type: ignore[attr-defined]
             fan_rpms_list = list(snap.fan_rpms.values()) if snap.fan_rpms else []
             hw_rpm = int(sum(fan_rpms_list) / len(fan_rpms_list)) if fan_rpms_list else 0
+            # Enrich hw_rpm from XCC Redfish if IPMI tach unavailable
+            xcc_rpm_est = 0
+            if hw_rpm <= 0 and _XCC_FAN_CONTROLLER is not None and _XCC_FAN_CONTROLLER.available:
+                _xcc_diag_fans = _XCC_FAN_CONTROLLER.read_fan_speeds()
+                if _xcc_diag_fans:
+                    _xcc_pcts = [f["reading_pct"] for f in _xcc_diag_fans if f.get("reading_pct") is not None]
+                    if _xcc_pcts:
+                        xcc_rpm_est = int((sum(_xcc_pcts) / len(_xcc_pcts) / 100.0) * 7000.0)
             # Reconstruct target_rpm from duty + max
             target_rpm = int(round((duty / 100.0) * 7000.0)) if duty >= 0 else -1
             _log.info(
                 "[FAN_DIAG] target_duty=%d%% target_rpm=%d hw_rpm=%d "
-                "gpu_power_w=%.1f peak_power_w=%s method=%s "
-                "control_enabled=%s",
-                duty, target_rpm, hw_rpm,
+                "xcc_rpm_est=%d gpu_power_w=%.1f peak_power_w=%s method=%s "
+                "control_enabled=%s xcc_available=%s",
+                duty, target_rpm, hw_rpm, xcc_rpm_est,
                 sum(snap.gpu_power_w) if snap.gpu_power_w else 0.0,
                 snap.peak_gpu_power_w,
                 method,
                 cfg.control_enabled,
+                bool(_XCC_FAN_CONTROLLER and _XCC_FAN_CONTROLLER.available),
             )
 
         # --- Report telemetry ---
