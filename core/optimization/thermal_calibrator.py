@@ -79,6 +79,11 @@ class CalibrationProfile:
     temp_p99_c: float = 0.0
     spike_recovery_s: float = 60.0
 
+    # --- CPU thermal anchors ---
+    cpu_temp_mean_c: float = 0.0
+    cpu_temp_stdev_c: float = 0.0
+    cpu_safe_ceiling_c: float = 55.0  # bootstrap default — safe above normal ST550 range
+
     # --- hardware constants (queried once) ---
     fan_rated_max_rpm: float = 7000.0
     gpu_hw_thermal_limit_c: float = 83.0
@@ -110,6 +115,10 @@ class CalibrationProfile:
             "temp_p90_c": round(self.temp_p90_c, 2),
             "temp_p99_c": round(self.temp_p99_c, 2),
             "spike_recovery_s": round(self.spike_recovery_s, 1),
+            # CPU thermal anchors
+            "cpu_temp_mean_c": round(self.cpu_temp_mean_c, 2),
+            "cpu_temp_stdev_c": round(self.cpu_temp_stdev_c, 2),
+            "cpu_safe_ceiling_c": round(self.cpu_safe_ceiling_c, 2),
             # hardware
             "fan_rated_max_rpm": round(self.fan_rated_max_rpm, 1),
             "gpu_hw_thermal_limit_c": round(self.gpu_hw_thermal_limit_c, 1),
@@ -318,6 +327,7 @@ class ThermalCalibrator:
         fan_arr: np.ndarray,
         power_arr: np.ndarray,
         temp_arr: np.ndarray,
+        cpu_arr: Optional[np.ndarray] = None,
     ) -> CalibrationProfile:
         """Compute CalibrationProfile from observation arrays."""
         rated = self._fan_rated_max
@@ -338,6 +348,18 @@ class ThermalCalibrator:
             temp_std = 0.5  # Prevent degenerate thresholds
         temp_p90 = float(np.percentile(temp_arr, 90)) if len(temp_arr) > 0 else temp_mean + 5
         temp_p99 = float(np.percentile(temp_arr, 99)) if len(temp_arr) > 0 else temp_mean + 10
+
+        # CPU thermal stats
+        if cpu_arr is not None and len(cpu_arr) > 0:
+            cpu_mean = float(np.mean(cpu_arr))
+            cpu_std = float(np.std(cpu_arr))
+            if cpu_std < 0.5:
+                cpu_std = 0.5
+            cpu_ceiling = cpu_mean + 2.0 * cpu_std
+        else:
+            cpu_mean = 0.0
+            cpu_std = 0.0
+            cpu_ceiling = 55.0  # bootstrap default
 
         # Spike recovery: median seconds from temp peak back to (mean + 1σ)
         spike_recovery = self._estimate_spike_recovery(temp_arr, temp_mean, temp_std)
@@ -376,6 +398,10 @@ class ThermalCalibrator:
             temp_p90_c=temp_p90,
             temp_p99_c=temp_p99,
             spike_recovery_s=spike_recovery,
+            # CPU thermal
+            cpu_temp_mean_c=cpu_mean,
+            cpu_temp_stdev_c=cpu_std,
+            cpu_safe_ceiling_c=cpu_ceiling,
             # hardware
             fan_rated_max_rpm=rated,
             gpu_hw_thermal_limit_c=hw_limit,
@@ -428,14 +454,16 @@ class ThermalCalibrator:
         fan_arr = np.array(self._fan_rpms, dtype=float) if self._fan_rpms else np.array([0.0])
         power_arr = np.array(self._gpu_power_w, dtype=float) if self._gpu_power_w else np.array([10.0])
         temp_arr = np.array(self._gpu_temp_c, dtype=float) if self._gpu_temp_c else np.array([40.0])
+        cpu_arr = np.array(self._cpu_temp_c, dtype=float) if self._cpu_temp_c else None
 
-        self._profile = self._compute_thresholds(fan_arr, power_arr, temp_arr)
+        self._profile = self._compute_thresholds(fan_arr, power_arr, temp_arr, cpu_arr=cpu_arr)
         self._profile.calibration_state = CALIBRATION_STATE_CALIBRATED
         _log.info(
             "CooledAI calibration complete — thresholds set from observation: "
             "active_floor=%.0f RPM | spike_hold=%.0f RPM | trigger=%.1f°C | "
             "hysteresis=%.0f RPM | slew_up=%.0f RPM/cycle | slew_down=%.0f RPM/cycle | "
-            "min_response=%.0f RPM | hold_duration=%.0fs",
+            "min_response=%.0f RPM | hold_duration=%.0fs | "
+            "cpu_mean=%.1f°C | cpu_stdev=%.1f°C | cpu_ceiling=%.1f°C",
             self._profile.active_compute_fan_floor_rpm,
             self._profile.spike_hold_fan_floor_rpm,
             self._profile.spike_trigger_temp_c,
@@ -444,6 +472,9 @@ class ThermalCalibrator:
             self._profile.slew_rate_down_rpm_per_cycle,
             self._profile.min_response_quantum_rpm,
             self._profile.spike_hold_duration_s,
+            self._profile.cpu_temp_mean_c,
+            self._profile.cpu_temp_stdev_c,
+            self._profile.cpu_safe_ceiling_c,
         )
 
     def _recalibrate_ewma(self) -> None:
@@ -451,8 +482,9 @@ class ThermalCalibrator:
         fan_arr = np.array(self._fan_rpms, dtype=float) if self._fan_rpms else np.array([0.0])
         power_arr = np.array(self._gpu_power_w, dtype=float) if self._gpu_power_w else np.array([10.0])
         temp_arr = np.array(self._gpu_temp_c, dtype=float) if self._gpu_temp_c else np.array([40.0])
+        cpu_arr = np.array(self._cpu_temp_c, dtype=float) if self._cpu_temp_c else None
 
-        new_profile = self._compute_thresholds(fan_arr, power_arr, temp_arr)
+        new_profile = self._compute_thresholds(fan_arr, power_arr, temp_arr, cpu_arr=cpu_arr)
         old = self._profile
         alpha = 0.25
 
@@ -461,6 +493,7 @@ class ThermalCalibrator:
             "fan_idle_rpm", "fan_ceiling_rpm", "fan_range_rpm", "gpu_idle_w",
             "temp_mean_c", "temp_stdev_c", "temp_p90_c", "temp_p99_c",
             "spike_recovery_s",
+            "cpu_temp_mean_c", "cpu_temp_stdev_c", "cpu_safe_ceiling_c",
             "active_compute_fan_floor_rpm", "active_compute_trigger_w",
             "spike_hold_fan_floor_rpm", "spike_trigger_temp_c",
             "hysteresis_rpm", "slew_rate_up_rpm_per_cycle",

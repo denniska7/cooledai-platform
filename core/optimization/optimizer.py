@@ -255,6 +255,7 @@ class PowerCostOptimizer:
         power_slope_w_per_s: float = 0.0,
         sustained_active_compute: bool = False,
         current_power_w: float = 0.0,
+        spike_bypass: bool = False,
     ) -> OptimizationResult:
         """
         Find cooling delta that minimizes zone power while keeping temp safe.
@@ -425,8 +426,9 @@ class PowerCostOptimizer:
             reason = f"{reason} + active-load safety-net (rising power)"
 
         # Asymmetric slew rate limiting (calibration profile)
+        # Skip slew cap on upward moves when spike_bypass — fans need to jump immediately
         cp = self.calibration_profile
-        if cp is not None and max_cooling > 1e-6:
+        if cp is not None and max_cooling > 1e-6 and not spike_bypass:
             slew_up = getattr(cp, "slew_rate_up_rpm_per_cycle", 0)
             slew_down = getattr(cp, "slew_rate_down_rpm_per_cycle", 0)
             min_quantum = getattr(cp, "min_response_quantum_rpm", 0)

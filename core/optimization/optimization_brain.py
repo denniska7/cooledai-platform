@@ -295,9 +295,31 @@ def enforce_policy_floor_after_all_layers(
     Mechanical longevity (often ±5%/cycle when cool) and equipment safety can shrink
     ``recommended_cooling_delta`` so the command never reaches the guardrail floor.
     This step restores the **minimum RPM** implied by ``policy_soft_floor_rpm_target``.
+
+    When ``spike_bypass`` is set, uses ``spike_hold_fan_floor_rpm`` from the
+    calibration profile as the effective floor immediately — removes the one-cycle
+    delay between spike detection and floor enforcement.
     """
     if gap.emergency_mode:
         return gap
+
+    # When spike_bypass is active, use spike_hold_floor directly from profile
+    if gap.spike_bypass:
+        cp_dict = gap.raw_metrics.get("calibration_profile")
+        if cp_dict and isinstance(cp_dict, dict):
+            spike_floor = cp_dict.get("spike_hold_fan_floor_rpm", 0)
+            if spike_floor > 0 and current_cooling > 1e-6:
+                proposed = current_cooling * (1.0 + gap.recommended_cooling_delta)
+                if proposed + 0.5 < spike_floor:
+                    gap.recommended_cooling_delta = (spike_floor / current_cooling) - 1.0
+                    gap.hysteresis_hold = False
+                    gap.raw_metrics["policy_floor_forced_after_layers"] = True
+                    gap.reasoning_log.append(
+                        f"Spike bypass floor enforcement: raised command to ≥ {spike_floor:.0f} RPM "
+                        f"immediately (telemetry RPM {current_cooling:.0f})."
+                    )
+                return gap
+
     raw = gap.raw_metrics.get("policy_soft_floor_rpm_target")
     if raw is None:
         return gap
@@ -1036,6 +1058,7 @@ class OptimizationBrain:
         upcoming_jobs: Optional[List[Any]] = None,
         policy_context: Optional[Dict[str, Any]] = None,
         thermal_session_key: Optional[str] = None,
+        current_cpu_temp_c: Optional[float] = None,
     ) -> EfficiencyGap:
         """Analyze normalized node data and compute Efficiency Gap.
 
@@ -1299,6 +1322,15 @@ class OptimizationBrain:
             current_cooling_by_unit = {uid: per_unit for uid in cooling_unit_ids}
             max_cooling_by_unit = {uid: max_per_unit for uid in cooling_unit_ids}
 
+        # Pre-compute spike bypass flag so the optimizer can skip its slew cap
+        _is_spike_bypass = (
+            cp is not None
+            and peak_power_3s > active_trigger_w * 2.0
+            and not _current_is_idle
+            and cp.spike_hold_fan_floor_rpm > 0
+            and current_cooling < cp.spike_hold_fan_floor_rpm
+        )
+
         opt_result = self.power_optimizer.optimize_for_min_power(
             current_thermal=current_thermal,
             target_temp=self.target_temp,
@@ -1315,6 +1347,7 @@ class OptimizationBrain:
             power_slope_w_per_s=power_slope,
             sustained_active_compute=sustained_active,
             current_power_w=current_power,
+            spike_bypass=_is_spike_bypass,
         )
 
         gap.recommended_cooling_delta = opt_result.recommended_delta
@@ -1478,6 +1511,32 @@ class OptimizationBrain:
                         f"{active_trigger_w:.0f}W — jumping to spike_hold_floor "
                         f"{spike_floor:.0f} RPM (bypassing slew rate)."
                     )
+
+        # --- CPU THERMAL GUARD: raise fan floor when CPU exceeds safe ceiling ---
+        if (
+            current_cpu_temp_c is not None
+            and cp is not None
+            and hasattr(cp, "cpu_safe_ceiling_c")
+            and cp.cpu_safe_ceiling_c > 0
+            and current_cpu_temp_c > cp.cpu_safe_ceiling_c
+        ):
+            cpu_floor = cp.active_compute_fan_floor_rpm
+            current_floor = gap.raw_metrics.get("policy_soft_floor_rpm_target", 0)
+            new_floor = max(float(current_floor), cpu_floor)
+            gap.raw_metrics["policy_soft_floor_rpm_target"] = new_floor
+            if current_cooling > 1e-6 and current_cooling < new_floor:
+                gap.recommended_cooling_delta = max(
+                    gap.recommended_cooling_delta,
+                    (new_floor - current_cooling) / max_cooling,
+                )
+            _reasoning_logger.info(
+                "[BRAIN] cpu_thermal_guard: cpu=%.1f°C ceiling=%.1f°C floor_raised_to=%.0f",
+                current_cpu_temp_c, cp.cpu_safe_ceiling_c, new_floor,
+            )
+            gap.reasoning_log.append(
+                f"CPU thermal guard: CPU {current_cpu_temp_c:.1f}°C > ceiling "
+                f"{cp.cpu_safe_ceiling_c:.1f}°C — fan floor raised to {new_floor:.0f} RPM."
+            )
 
         # Mechanical Longevity with DYNAMIC slew rate (current_thermal for adaptive aggression)
         gap = apply_mechanical_longevity(
