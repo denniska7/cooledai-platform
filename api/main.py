@@ -2044,6 +2044,16 @@ async def export_thermal_history_csv(
     history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
     points = [row for row in history if start_ts <= row[0] <= end_ts]
 
+    if not points:
+        total = len(history)
+        raise HTTPException(
+            404,
+            f"No thermal data in the requested range. "
+            f"Total stored points: {total}. "
+            f"Data accumulates while both CooledAI and Control nodes are reporting. "
+            f"Try a shorter/more recent range, or wait for more data to collect."
+        )
+
     # CSV headers — readable for spreadsheet users
     headers = [
         "Timestamp_UTC",
@@ -2058,6 +2068,8 @@ async def export_thermal_history_csv(
         "Control_CPU_Temp_C",
         "CooledAI_GPU_Power_W",
         "Control_GPU_Power_W",
+        "CooledAI_Peak_Power_W",
+        "Control_Peak_Power_W",
     ]
 
     rows = []
@@ -2068,6 +2080,8 @@ async def export_thermal_history_csv(
         baseline_cpu = out[6] if len(out) > 6 else None
         pilot_gpu_pwr = out[7] if len(out) > 7 else None
         baseline_gpu_pwr = out[8] if len(out) > 8 else None
+        pilot_peak_pwr = out[9] if len(out) > 9 else None
+        baseline_peak_pwr = out[10] if len(out) > 10 else None
         dt = datetime.fromtimestamp(ts, tz=timezone.utc)
         delta = round(bt - pt, 2) if (pt is not None and bt is not None) else ""
         rows.append([
@@ -2083,6 +2097,8 @@ async def export_thermal_history_csv(
             round(baseline_cpu, 2) if baseline_cpu is not None else "",
             round(pilot_gpu_pwr, 1) if pilot_gpu_pwr is not None else "",
             round(baseline_gpu_pwr, 1) if baseline_gpu_pwr is not None else "",
+            round(pilot_peak_pwr, 1) if pilot_peak_pwr is not None else "",
+            round(baseline_peak_pwr, 1) if baseline_peak_pwr is not None else "",
         ])
 
     import csv
