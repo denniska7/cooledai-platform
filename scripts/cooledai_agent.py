@@ -5,6 +5,10 @@ CooledAI Unified Agent — Hardware-Agnostic Thermal Controller
 Auto-discovers sensors, reports telemetry to the CooledAI portal, pulls
 remote config, and controls cooling via IPMI / PWM / GPU-fan fallback.
 
+Optional Redfish/XCC enrichment: ``--redfish-url`` / ``COOLEDAI_REDFISH_URL``
+reads fan percentages and ambient/exhaust/CPU temperatures from the Lenovo
+XCC BMC over the USB-ethernet management interface for richer telemetry.
+
 Optional GPU dynamic TDP: ``--gpu-power-management`` / ``COOLEDAI_GPU_POWER_MGMT``
 uses ``nvidia-smi -pl`` with GPU temperature bands; see
 ``docs/GPU_AND_CPU_POWER_PHASE2.md``.
@@ -36,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import base64
 import glob
 import json
 import logging
@@ -45,6 +50,7 @@ import random
 import re
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -158,6 +164,147 @@ def _sd_notify_watchdog() -> bool:
 
 
 # ===================================================================
+# Redfish / XCC Client (Lenovo ThinkSystem BMC)
+# ===================================================================
+# The Lenovo XCC exposes a Redfish API over the USB-ethernet management
+# interface (typically 169.254.95.118).  This gives us:
+#   - Fan speeds as percent (more granular than IPMI SDR RPM)
+#   - Ambient, exhaust, CPU, DTS temperatures
+#   - BIOS operating-mode visibility
+# Direct fan-speed PATCH is not supported (405), but reading enriches
+# telemetry and enables smarter optimization decisions.
+
+_REDFISH_SSL_CTX: Optional[ssl.SSLContext] = None
+
+
+def _redfish_ssl_ctx() -> ssl.SSLContext:
+    """Lazy-init a permissive SSL context for self-signed XCC certs."""
+    global _REDFISH_SSL_CTX
+    if _REDFISH_SSL_CTX is None:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        _REDFISH_SSL_CTX = ctx
+    return _REDFISH_SSL_CTX
+
+
+@dataclass
+class RedfishClient:
+    """Lightweight Redfish client for Lenovo XCC (stdlib only)."""
+
+    base_url: str  # e.g. "https://169.254.95.118"
+    username: str = "USERID"
+    password: str = "***REDACTED_BMC_PASS***"
+    timeout_s: float = 5.0
+    _auth_header: str = ""
+
+    def __post_init__(self) -> None:
+        cred = f"{self.username}:{self.password}".encode()
+        self._auth_header = f"Basic {base64.b64encode(cred).decode()}"
+
+    def get(self, path: str) -> Optional[Dict[str, Any]]:
+        """GET a Redfish resource.  Returns parsed JSON or None on error."""
+        url = self.base_url.rstrip("/") + path
+        req = urllib.request.Request(
+            url, headers={"Authorization": self._auth_header}
+        )
+        try:
+            with urllib.request.urlopen(
+                req, context=_redfish_ssl_ctx(), timeout=self.timeout_s
+            ) as resp:
+                return json.loads(resp.read().decode())
+        except Exception as exc:
+            _log.debug("Redfish GET %s failed: %s", path, exc)
+            return None
+
+    def is_reachable(self) -> bool:
+        """Quick connectivity check via service root."""
+        return self.get("/redfish/v1/") is not None
+
+    def read_thermal(self) -> Optional[Dict[str, Any]]:
+        """Read /redfish/v1/Chassis/1/Thermal/ — fans + temperatures."""
+        return self.get("/redfish/v1/Chassis/1/Thermal/")
+
+    def read_bios_attrs(self) -> Optional[Dict[str, Any]]:
+        """Read current BIOS attributes."""
+        data = self.get("/redfish/v1/Systems/1/Bios/")
+        if data:
+            return data.get("Attributes", {})
+        return None
+
+
+def _discover_redfish(
+    redfish_url: str,
+    redfish_user: str,
+    redfish_pass: str,
+) -> Optional[RedfishClient]:
+    """Probe the XCC Redfish endpoint.  Returns client if reachable."""
+    if not redfish_url:
+        return None
+    client = RedfishClient(
+        base_url=redfish_url,
+        username=redfish_user,
+        password=redfish_pass,
+    )
+    try:
+        if client.is_reachable():
+            _log.info("Redfish XCC reachable at %s", redfish_url)
+            # Log BIOS operating mode for operator visibility
+            attrs = client.read_bios_attrs()
+            if attrs:
+                mode = attrs.get("OperatingModes_ChooseOperatingMode", "?")
+                _log.info("BIOS OperatingMode: %s", mode)
+            return client
+    except Exception as exc:
+        _log.debug("Redfish discovery failed: %s", exc)
+    _log.info("Redfish XCC not reachable at %s — continuing without it", redfish_url)
+    return None
+
+
+@dataclass
+class RedfishThermalSnapshot:
+    """Parsed Redfish Thermal data."""
+
+    fan_pcts: Dict[str, float] = field(default_factory=dict)  # "Fan 1" -> 56.0
+    temps: Dict[str, float] = field(default_factory=dict)  # "Ambient" -> 25.0
+    ambient_temp: Optional[float] = None
+    exhaust_temp: Optional[float] = None
+    cpu_temps: List[float] = field(default_factory=list)
+
+
+def _read_redfish_thermal(client: RedfishClient) -> Optional[RedfishThermalSnapshot]:
+    """Read and parse XCC thermal data."""
+    data = client.read_thermal()
+    if data is None:
+        return None
+    snap = RedfishThermalSnapshot()
+
+    # Fans — XCC returns Reading as percent (0-100)
+    for fan in data.get("Fans", []):
+        name = fan.get("FanName") or fan.get("Name") or fan.get("MemberId", "?")
+        reading = fan.get("Reading")
+        if reading is not None:
+            snap.fan_pcts[name] = float(reading)
+
+    # Temperatures
+    for temp_entry in data.get("Temperatures", []):
+        reading = temp_entry.get("ReadingCelsius")
+        if reading is None or reading < -50:
+            continue
+        name = temp_entry.get("Name", "")
+        snap.temps[name] = float(reading)
+        name_lower = name.lower()
+        if "ambient" in name_lower:
+            snap.ambient_temp = float(reading)
+        elif "exhaust" in name_lower:
+            snap.exhaust_temp = float(reading)
+        elif "cpu" in name_lower and "dts" not in name_lower:
+            snap.cpu_temps.append(float(reading))
+
+    return snap
+
+
+# ===================================================================
 # Sensor Discovery
 # ===================================================================
 
@@ -173,6 +320,9 @@ class SensorCapabilities:
     # IPMI command variant discovered at startup
     ipmi_variant: str = ""  # "dell" or "lenovo"
 
+    # Redfish / XCC client (Lenovo ThinkSystem BMC)
+    redfish: Optional[RedfishClient] = None
+
     def summary(self) -> str:
         parts: List[str] = []
         if self.cpu_sysfs_zones:
@@ -187,6 +337,8 @@ class SensorCapabilities:
             parts.append(f"IPMI({self.ipmi_variant or 'ok'})")
         if self.pwm_paths:
             parts.append(f"PWM({len(self.pwm_paths)})")
+        if self.redfish:
+            parts.append(f"Redfish({self.redfish.base_url})")
         return "Discovered: " + ("  ".join(parts) if parts else "NONE")
 
 
@@ -283,6 +435,12 @@ class ThermalSnapshot:
     source_of_max: str = ""
     # FIX A/E: Peak GPU power within polling interval (raw max, not EWMA)
     peak_gpu_power_w: Optional[float] = None
+
+    # Redfish enrichment (XCC BMC data)
+    redfish_fan_pcts: Dict[str, float] = field(default_factory=dict)
+    redfish_temps: Dict[str, float] = field(default_factory=dict)
+    redfish_ambient_temp: Optional[float] = None
+    redfish_exhaust_temp: Optional[float] = None
 
     def compute_max(self) -> None:
         best = 0.0
@@ -444,6 +602,24 @@ def read_sensors(caps: SensorCapabilities, dry_run: bool = False) -> ThermalSnap
         except Exception as exc:
             _log.debug("ipmitool sdr failed: %s", exc)
 
+    # Redfish XCC — enriched thermal data (ambient, exhaust, CPU, fan %)
+    if caps.redfish is not None:
+        rf = _read_redfish_thermal(caps.redfish)
+        if rf is not None:
+            snap.redfish_fan_pcts = rf.fan_pcts
+            snap.redfish_temps = rf.temps
+            snap.redfish_ambient_temp = rf.ambient_temp
+            snap.redfish_exhaust_temp = rf.exhaust_temp
+            # Merge Redfish CPU temps if sysfs/lm-sensors missed them
+            if not snap.cpu_temps and rf.cpu_temps:
+                snap.cpu_temps = rf.cpu_temps
+            # Merge Redfish ambient/exhaust into chassis temps if IPMI missed them
+            if not snap.chassis_temps:
+                if rf.ambient_temp is not None:
+                    snap.chassis_temps.append(rf.ambient_temp)
+                if rf.exhaust_temp is not None:
+                    snap.chassis_temps.append(rf.exhaust_temp)
+
     snap.compute_max()
     return snap
 
@@ -559,14 +735,104 @@ def _try_gpu_fan_set(duty: int, dry_run: bool) -> bool:
         return False
 
 
+def _try_ipmi_bypass(duty: int, rated_max_rpm: float, hw_rpm: float, dry_run: bool) -> bool:
+    """IPMI bypass: raw commands to override BIOS fan curve when hardware ignores normal commands.
+
+    Uses Dell-style 0x30 0x30 raw commands (works on some Lenovo BMC firmware too).
+    Fires ONLY when target > 3500 RPM AND hardware is not responding (< 85% of target).
+    """
+    target_rpm = (duty / 100.0) * rated_max_rpm
+    if target_rpm <= 3500:
+        return False
+    if hw_rpm >= target_rpm * 0.85:
+        return False  # hardware is responding adequately
+
+    hex_pct = min(100, int(round((target_rpm / rated_max_rpm) * 100)))
+
+    if dry_run:
+        _log.debug("[DRY-RUN] IPMI_BYPASS: would send duty=%d%% (target_rpm=%.0f, hw_rpm=%.0f)",
+                   hex_pct, target_rpm, hw_rpm)
+        return True
+
+    _log.warning(
+        "IPMI_BYPASS_ACTIVATED: target_rpm=%.0f actual_hw_rpm=%.0f "
+        "— issuing raw 0x30 0x30 manual fan control (duty=%d%%)",
+        target_rpm, hw_rpm, hex_pct,
+    )
+    try:
+        # Disable automatic fan control
+        subprocess.check_call(
+            ["ipmitool", "raw", "0x30", "0x30", "0x01", "0x00"],
+            timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        # Set fan duty
+        subprocess.check_call(
+            ["ipmitool", "raw", "0x30", "0x30", "0x02", "0xff", hex(hex_pct)],
+            timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return True
+    except Exception as exc:
+        _log.debug("IPMI bypass failed: %s", exc)
+        return False
+
+
+def _restore_ipmi_auto(dry_run: bool) -> None:
+    """Restore automatic fan control after IPMI bypass is no longer needed."""
+    if dry_run:
+        _log.debug("[DRY-RUN] IPMI auto restore")
+        return
+    try:
+        subprocess.check_call(
+            ["ipmitool", "raw", "0x30", "0x30", "0x01", "0x01"],
+            timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        _log.info("IPMI_BYPASS_RESTORED: automatic fan control re-enabled.")
+    except Exception as exc:
+        _log.debug("IPMI auto restore failed: %s", exc)
+
+
+# Track IPMI bypass state
+_ipmi_bypass_active = False
+
+
 def set_fan_duty(
     caps: SensorCapabilities,
     duty: int,
     dry_run: bool = False,
+    hw_rpm: float = 0.0,
+    rated_max_rpm: float = 7000.0,
 ) -> str:
-    """Try IPMI -> PWM -> GPU fan.  Returns the method used or 'none'."""
+    """Try IPMI -> PWM -> GPU fan.  Returns the method used or 'none'.
+
+    When target_rpm > 3500 AND hardware RPM is < 85% of target (not responding),
+    attempts a raw IPMI bypass to override the BIOS fan curve.
+    """
+    global _ipmi_bypass_active
+
     if caps.ipmi and _try_ipmi_set_duty(caps, duty, dry_run):
+        # Normal IPMI worked — check if we need bypass for non-responsive hardware
+        target_rpm = (duty / 100.0) * rated_max_rpm
+        if target_rpm > 3500 and hw_rpm > 0 and hw_rpm < target_rpm * 0.85:
+            if _try_ipmi_bypass(duty, rated_max_rpm, hw_rpm, dry_run):
+                _ipmi_bypass_active = True
+                return "ipmi_bypass"
+        elif _ipmi_bypass_active and target_rpm < 2000:
+            # Target dropped low enough — restore auto
+            _restore_ipmi_auto(dry_run)
+            _ipmi_bypass_active = False
         return "ipmi"
+
+    # Fallback: try bypass directly if IPMI variant commands failed
+    if caps.ipmi and hw_rpm > 0:
+        target_rpm = (duty / 100.0) * rated_max_rpm
+        if target_rpm > 3500 and hw_rpm < target_rpm * 0.85:
+            if _try_ipmi_bypass(duty, rated_max_rpm, hw_rpm, dry_run):
+                _ipmi_bypass_active = True
+                return "ipmi_bypass"
+        elif _ipmi_bypass_active and target_rpm < 2000:
+            _restore_ipmi_auto(dry_run)
+            _ipmi_bypass_active = False
+
     if caps.pwm_paths and _try_pwm_set_duty(caps, duty, dry_run):
         return "pwm"
     if (caps.nvidia_gpu or caps.amd_gpu) and _try_gpu_fan_set(duty, dry_run):
@@ -738,6 +1004,14 @@ def fetch_optimize_control(
     # FIX E/G: Include peak power for spike detection on server side
     if snap.peak_gpu_power_w is not None:
         payload["peak_power_w"] = snap.peak_gpu_power_w
+    # Redfish enrichment for optimization engine
+    if snap.redfish_ambient_temp is not None:
+        payload["ambient_temp_c"] = snap.redfish_ambient_temp
+    if snap.redfish_exhaust_temp is not None:
+        payload["exhaust_temp_c"] = snap.redfish_exhaust_temp
+    if snap.redfish_fan_pcts:
+        avg_rf = sum(snap.redfish_fan_pcts.values()) / len(snap.redfish_fan_pcts)
+        payload["bmc_fan_pct_avg"] = round(avg_rf, 1)
     lcd = getattr(fetch_optimize_control, "_last_applied_duty", None)
     if lcd is not None:
         payload["last_commanded_duty"] = float(lcd)
@@ -775,7 +1049,10 @@ _dry_run_flag = False
 
 
 def _cleanup(*_args: Any) -> None:
-    global _manual_control_active
+    global _manual_control_active, _ipmi_bypass_active
+    if _ipmi_bypass_active:
+        _restore_ipmi_auto(_dry_run_flag)
+        _ipmi_bypass_active = False
     if _manual_control_active:
         _log.warning("Cleanup: reverting fans to hardware auto.")
         caps = getattr(_cleanup, "_caps", SensorCapabilities())
@@ -791,6 +1068,9 @@ def run_agent(
     ipmi_variant: Optional[str] = None,
     shutdown_on_critical: bool = False,
     gpu_power_management: bool = False,
+    redfish_url: str = "",
+    redfish_user: str = "USERID",
+    redfish_pass: str = "***REDACTED_BMC_PASS***",
 ) -> None:
     global _running, _manual_control_active, _dry_run_flag
     global _GPU_GPG_MOD, _GPU_PL_ENVELOPES, _GPU_PL_STATE
@@ -801,6 +1081,13 @@ def run_agent(
 
     # --- Discover ---
     caps = discover_sensors(dry_run, ipmi_variant=ipmi_variant)
+
+    # --- Redfish / XCC discovery ---
+    if redfish_url and not dry_run:
+        caps.redfish = _discover_redfish(redfish_url, redfish_user, redfish_pass)
+    elif redfish_url and dry_run:
+        _log.info("[DRY-RUN] Redfish URL provided but skipped in dry-run mode.")
+
     _cleanup._caps = caps  # type: ignore[attr-defined]
     _log.info(caps.summary())
 
@@ -858,14 +1145,21 @@ def run_agent(
 
     # --- Load config ---
     cfg = load_cached_config()
+    # Env override: COOLEDAI_CONTROL_ENABLED=false disables fan control (report-only)
+    _ctrl_env = os.environ.get("COOLEDAI_CONTROL_ENABLED", "").strip().lower()
+    if _ctrl_env in ("0", "false", "no", "off"):
+        cfg.control_enabled = False
+        _log.info("Control DISABLED via COOLEDAI_CONTROL_ENABLED env — report-only mode.")
     telemetry_url = f"{api_url.rstrip('/')}/api/v1/telemetry"
 
     _log.info(
         "Agent started — node=%s  api=%s  target=%.0f°C  critical=%.0f°C  "
-        "control=%s  dry_run=%s  shutdown_on_critical=%s  gpu_power_mgmt=%s",
+        "control=%s  dry_run=%s  shutdown_on_critical=%s  gpu_power_mgmt=%s  "
+        "redfish=%s",
         node_id, api_url, cfg.target_temp, cfg.critical_temp_c,
         has_control, dry_run, shutdown_on_critical,
         bool(_GPU_PL_ENVELOPES),
+        bool(caps.redfish),
     )
     if not token:
         _log.warning("API key is empty — telemetry POSTs will likely be rejected.")
@@ -964,7 +1258,9 @@ def run_agent(
                 duty = target_duty_pct(snap.max_temp_c, cfg.target_temp)
                 if consecutive_post_failures == 0:
                     _log.debug("Optimize API unreachable — using local curve (hardware protected)")
-            method = set_fan_duty(caps, duty, dry_run)
+            _fan_rpms_for_duty = list(snap.fan_rpms.values()) if snap.fan_rpms else []
+            _hw_rpm_for_duty = float(sum(_fan_rpms_for_duty) / len(_fan_rpms_for_duty)) if _fan_rpms_for_duty else 0.0
+            method = set_fan_duty(caps, duty, dry_run, hw_rpm=_hw_rpm_for_duty)
             if method != "none":
                 _manual_control_active = True
                 fetch_optimize_control._last_applied_duty = int(duty)  # type: ignore[attr-defined]
@@ -973,6 +1269,26 @@ def run_agent(
         else:
             duty = -1
             method = "report_only"
+
+        # --- [FAN_DIAG] Periodic fan diagnostic (every 10s) ---
+        _fan_diag_interval = 10.0
+        _fan_diag_last_t = getattr(run_agent, "_fan_diag_last_t", 0.0)
+        if loop_start - _fan_diag_last_t >= _fan_diag_interval:
+            run_agent._fan_diag_last_t = loop_start  # type: ignore[attr-defined]
+            fan_rpms_list = list(snap.fan_rpms.values()) if snap.fan_rpms else []
+            hw_rpm = int(sum(fan_rpms_list) / len(fan_rpms_list)) if fan_rpms_list else 0
+            # Reconstruct target_rpm from duty + max
+            target_rpm = int(round((duty / 100.0) * 7000.0)) if duty >= 0 else -1
+            _log.debug(
+                "[FAN_DIAG] target_duty=%d%% target_rpm=%d hw_rpm=%d "
+                "gpu_power_w=%.1f peak_power_w=%s method=%s "
+                "control_enabled=%s",
+                duty, target_rpm, hw_rpm,
+                sum(snap.gpu_power_w) if snap.gpu_power_w else 0.0,
+                snap.peak_gpu_power_w,
+                method,
+                cfg.control_enabled,
+            )
 
         # --- Report telemetry ---
         records = []
@@ -1024,7 +1340,31 @@ def run_agent(
                 )
             if snap.fan_power_w is not None:
                 fan_rec["raw_fan_wattage"] = round(snap.fan_power_w, 1)
+            # Enrich fan record with Redfish fan percentages
+            if snap.redfish_fan_pcts:
+                fan_rec["redfish_fan_pcts"] = {
+                    k: round(v, 1) for k, v in snap.redfish_fan_pcts.items()
+                }
+                avg_rf_pct = sum(snap.redfish_fan_pcts.values()) / len(snap.redfish_fan_pcts)
+                fan_rec["redfish_fan_pct_avg"] = round(avg_rf_pct, 1)
             records.append(fan_rec)
+
+        # Redfish enrichment record (ambient, exhaust, all XCC temps)
+        if snap.redfish_temps:
+            rf_rec: Dict[str, Any] = {
+                "node_id": f"{node_id}/redfish",
+                "timestamp": now_iso,
+                "redfish_temps": {k: round(v, 1) for k, v in snap.redfish_temps.items()},
+            }
+            if snap.redfish_ambient_temp is not None:
+                rf_rec["ambient_temp_c"] = round(snap.redfish_ambient_temp, 1)
+            if snap.redfish_exhaust_temp is not None:
+                rf_rec["exhaust_temp_c"] = round(snap.redfish_exhaust_temp, 1)
+            if snap.redfish_fan_pcts:
+                rf_rec["fan_pcts"] = {
+                    k: round(v, 1) for k, v in snap.redfish_fan_pcts.items()
+                }
+            records.append(rf_rec)
 
         payload = {"agent_id": node_id, "telemetry": records}
         ok = post_with_backoff(telemetry_url, payload, token, max_attempts=3)
@@ -1052,6 +1392,9 @@ def run_agent(
                         "Config updated: target_temp %.0f -> %.0f",
                         cfg.target_temp, remote_cfg.target_temp,
                     )
+                # Preserve env override for control_enabled
+                if _ctrl_env in ("0", "false", "no", "off"):
+                    remote_cfg.control_enabled = False
                 cfg = remote_cfg
             last_config_fetch = now_mono
 
@@ -1119,6 +1462,22 @@ def main() -> None:
         default=_bool_from_env("COOLEDAI_GPU_POWER_MGMT", False),
         help="Dynamic NVIDIA power cap via nvidia-smi -pl (requires root + repo core/).",
     )
+    parser.add_argument(
+        "--redfish-url",
+        default=os.environ.get("COOLEDAI_REDFISH_URL", ""),
+        help="Redfish/XCC base URL (e.g. https://169.254.95.118). "
+        "Enables enriched thermal telemetry from Lenovo XCC BMC.",
+    )
+    parser.add_argument(
+        "--redfish-user",
+        default=os.environ.get("COOLEDAI_REDFISH_USER", "USERID"),
+        help="Redfish username (default: USERID).",
+    )
+    parser.add_argument(
+        "--redfish-pass",
+        default=os.environ.get("COOLEDAI_REDFISH_PASS", "***REDACTED_BMC_PASS***"),
+        help="Redfish password.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -1136,6 +1495,9 @@ def main() -> None:
         ipmi_variant=args.ipmi_variant.strip() or None,
         shutdown_on_critical=args.shutdown_on_critical,
         gpu_power_management=bool(args.gpu_power_management),
+        redfish_url=args.redfish_url.strip(),
+        redfish_user=args.redfish_user.strip(),
+        redfish_pass=args.redfish_pass,
     )
     _log.info("Agent stopped.")
 

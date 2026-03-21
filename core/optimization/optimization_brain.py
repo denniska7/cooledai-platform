@@ -1113,13 +1113,31 @@ class OptimizationBrain:
 
         # FIX F: Require minimum 15 samples before sustained compute decisions
         _MIN_SUSTAINED_SAMPLES = 15
-        if len(self._sustained_power_history) >= _MIN_SUSTAINED_SAMPLES:
-            rolling_mean = float(np.mean(self._sustained_power_history))
-            if rolling_mean > active_trigger_w:
+
+        # --- IDLE GATE: if current power is clearly below trigger, force sustained_active=False ---
+        # This prevents stale high-power samples in the rolling window from keeping the
+        # active-compute floor engaged during genuinely idle periods.
+        # Use a generous multiplier (0.85) so we only suppress when clearly idle.
+        _idle_gate_w = active_trigger_w * 0.85
+        _current_is_idle = current_power < _idle_gate_w
+
+        if not _current_is_idle:
+            if len(self._sustained_power_history) >= _MIN_SUSTAINED_SAMPLES:
+                rolling_mean = float(np.mean(self._sustained_power_history))
+                if rolling_mean > active_trigger_w:
+                    sustained_active = True
+            # FIX D: Peak power independently triggers active compute (no temp/confidence gate)
+            if peak_power_3s > active_trigger_w * 1.5:
                 sustained_active = True
-        # FIX D: Peak power independently triggers active compute (no temp/confidence gate)
-        if peak_power_3s > active_trigger_w * 1.5:
-            sustained_active = True
+        else:
+            # Current power is below idle gate — suppress sustained_active even if
+            # legacy tail or old rolling mean would have triggered it.
+            sustained_active = False
+            _reasoning_logger.debug(
+                "[IDLE_GATE] sustained_active forced False: current_power=%.1fW < idle_gate=%.1fW "
+                "(active_trigger=%.1fW)",
+                current_power, _idle_gate_w, active_trigger_w,
+            )
 
         # FIX G: Track trigger source for diagnostics
         active_trigger_source = "none"
@@ -1130,6 +1148,8 @@ class OptimizationBrain:
                 active_trigger_source = "rolling_12s_mean"
             else:
                 active_trigger_source = "legacy_tail"
+        elif _current_is_idle:
+            active_trigger_source = "idle_gate_suppressed"
 
         if thermal_session_key:
             record_spike_if_hot(thermal_session_key, float(np.max(thermal)), time.time())
