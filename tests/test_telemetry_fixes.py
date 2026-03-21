@@ -268,6 +268,7 @@ class TestFixG_TelemetryFields:
         gap = brain.analyze(_make_nodes(power=5.0))
         assert gap.raw_metrics["active_trigger_source"] in (
             "none", "peak_power_3s", "rolling_12s_mean", "legacy_tail",
+            "idle_gate_suppressed",
         )
 
     def test_no_response_streak_increments(self):
