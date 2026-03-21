@@ -2102,6 +2102,24 @@ async def export_thermal_history_csv(
     )
 
 
+@app.get("/api/v1/thermal-history/status", dependencies=[Depends(_require_api_key)])
+async def thermal_history_status():
+    """Debug endpoint: how many thermal history points are stored (API-key auth)."""
+    owner_id = FIXED_OWNER_ID
+    history = _thermal_history.get(owner_id, [])
+    now = time.time()
+    recent = [r for r in history if r[0] >= now - 3600]
+    return {
+        "owner_id": owner_id,
+        "total_points": len(history),
+        "points_last_hour": len(recent),
+        "oldest_ts": datetime.fromtimestamp(history[0][0], tz=timezone.utc).isoformat() if history else None,
+        "newest_ts": datetime.fromtimestamp(history[-1][0], tz=timezone.utc).isoformat() if history else None,
+        "persistence_file": str(_THERMAL_HISTORY_FILE),
+        "last_flush_s_ago": round(now - _thermal_history_last_flush, 1) if _thermal_history_last_flush > 0 else None,
+    }
+
+
 @app.get("/api/v1/stats")
 async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id)):
     """Live power-savings stats scoped to the authenticated owner's nodes.
