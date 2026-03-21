@@ -306,6 +306,53 @@ class TempPredictor:
                 registry.calibrate_rack(rack_id)
                 calibrated_racks.add(rack_id)
 
+    def force_recalibrate(self, profile: object) -> None:
+        """Reset predictor state after ThermalCalibrator completes calibration.
+
+        Clears stale WLS history in the RackRegistry telemetry buffers and seeds
+        EWMA baselines with the calibrated profile's temp_mean_c so the predictor
+        starts from a known-good baseline rather than pre-calibration data.
+
+        Args:
+            profile: CalibrationProfile with temp_mean_c, temp_stdev_c, etc.
+        """
+        import logging
+        _log = logging.getLogger("cooledai.predictor")
+
+        # Update MAX_EXTRAP_SLOPE from profile (Problem 2 Fix 2 — profile-driven cap)
+        global MAX_EXTRAP_SLOPE_C_PER_S
+        temp_stdev = getattr(profile, "temp_stdev_c", None)
+        if temp_stdev is not None and temp_stdev > 0:
+            MAX_EXTRAP_SLOPE_C_PER_S = min(2.5, temp_stdev * 0.4)
+            _log.info(
+                "[PREDICTOR] force_recalibrate: MAX_EXTRAP_SLOPE updated to %.3f °C/s "
+                "(from profile temp_stdev=%.2f°C)",
+                MAX_EXTRAP_SLOPE_C_PER_S, temp_stdev,
+            )
+
+        # Clear WLS history in registry telemetry buffers
+        registry = self._get_registry()
+        if registry is not None:
+            buf = getattr(registry, "_telemetry_buffer", None)
+            if buf is not None and isinstance(buf, dict):
+                buf.clear()
+                _log.info("[PREDICTOR] force_recalibrate: cleared registry telemetry buffers")
+
+            # Reset FOPDT calibrations so they restart from fresh data
+            racks = getattr(registry, "_racks", None)
+            if racks is not None and isinstance(racks, dict):
+                for rack_id, rack in racks.items():
+                    fopdt = getattr(rack, "fopdt", None)
+                    if fopdt is not None:
+                        fopdt.n_samples = 0
+
+        temp_mean = getattr(profile, "temp_mean_c", None)
+        _log.info(
+            "[PREDICTOR] force_recalibrate: predictor reset complete "
+            "(baseline temp=%.1f°C)",
+            temp_mean if temp_mean is not None else 0.0,
+        )
+
     def _predict_fopdt_if_available(
         self,
         nodes: List[BaseNode],

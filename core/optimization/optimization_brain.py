@@ -123,6 +123,7 @@ class EfficiencyGap:
     anti_short_cycle_hold: bool = False   # True when MIN_OFF/MIN_RUN forces hold
     slew_rate_limited: bool = False       # True when delta was clamped for thermal shock
     hysteresis_hold: bool = False         # True when delta < 5% (chatter prevention)
+    spike_bypass: bool = False            # True when spike bypass jumped past slew rate
     stagger_delays: List[float] = field(default_factory=list)  # Per-unit start delays (s)
 
     # Predictive & reward
@@ -405,6 +406,8 @@ class MechanicalLongevityLayer:
         """
         if gap.emergency_mode:
             return gap  # Emergency bypasses anti-short-cycle
+        if gap.spike_bypass:
+            return gap  # Spike bypass: jump to target in one cycle
 
         self._update_unit_state(unit_id, current_cooling, max_cooling)
         now = time.monotonic()
@@ -493,6 +496,8 @@ class MechanicalLongevityLayer:
         """
         if gap.emergency_mode:
             return gap  # Emergency bypasses slew limit
+        if gap.spike_bypass:
+            return gap  # Spike bypass: jump to target in one cycle
 
         rate = self.max_change_rate
         if current_thermal is not None:
@@ -535,6 +540,8 @@ class MechanicalLongevityLayer:
         """
         if gap.emergency_mode:
             return gap  # Emergency bypasses hysteresis
+        if gap.spike_bypass:
+            return gap  # Spike bypass: jump to target in one cycle
 
         # FIX C: Bypass hysteresis when a policy floor is actively raising cooling
         floor_target = gap.raw_metrics.get("policy_soft_floor_rpm_target")
@@ -1445,6 +1452,32 @@ class OptimizationBrain:
         )
         gap.reward = reward_result.total_reward
         gap.reward_result = reward_result
+
+        # --- SPIKE BYPASS: when peak power is a true spike (>2× trigger), bypass slew rate ---
+        # The slew rate limit exists to prevent oscillation during gradual ramps — it should
+        # not apply to sudden spike events where fans need to jump immediately.
+        if (
+            cp is not None
+            and peak_power_3s > active_trigger_w * 2.0
+            and not _current_is_idle
+            and cp.spike_hold_fan_floor_rpm > 0
+        ):
+            # Compute delta to jump current_cooling directly to spike_hold_floor
+            spike_floor = cp.spike_hold_fan_floor_rpm
+            if max_cooling > 0 and current_cooling < spike_floor:
+                spike_delta = (spike_floor - current_cooling) / max_cooling
+                if spike_delta > gap.recommended_cooling_delta:
+                    gap.recommended_cooling_delta = spike_delta
+                    gap.spike_bypass = True
+                    _reasoning_logger.info(
+                        "[BRAIN] spike_bypass: peak=%.0fW target_rpm=%.0f",
+                        peak_power_3s, spike_floor,
+                    )
+                    gap.reasoning_log.append(
+                        f"Spike bypass: peak power {peak_power_3s:.0f}W > 2× trigger "
+                        f"{active_trigger_w:.0f}W — jumping to spike_hold_floor "
+                        f"{spike_floor:.0f} RPM (bypassing slew rate)."
+                    )
 
         # Mechanical Longevity with DYNAMIC slew rate (current_thermal for adaptive aggression)
         gap = apply_mechanical_longevity(

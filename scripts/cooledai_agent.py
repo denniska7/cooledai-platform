@@ -768,20 +768,38 @@ def _try_gpu_fan_set(duty: int, dry_run: bool) -> bool:
         return False
 
 
+def _get_xcc_override_threshold_rpm() -> float:
+    """Profile-driven XCC override threshold: fan_idle_rpm + 40% of fan_range_rpm.
+
+    Falls back to 3500 RPM when calibration profile is not yet available.
+    """
+    try:
+        if (_THERMAL_CALIBRATOR is not None
+                and _THERMAL_CALIBRATOR.is_calibrated
+                and hasattr(_THERMAL_CALIBRATOR, "profile")
+                and _THERMAL_CALIBRATOR.profile is not None):
+            p = _THERMAL_CALIBRATOR.profile
+            return p.fan_idle_rpm + (p.fan_range_rpm * 0.40)
+    except Exception:
+        pass
+    return 3500.0
+
+
 def _try_xcc_fan_set(duty: int, rated_max_rpm: float, hw_rpm: float, dry_run: bool) -> bool:
     """XCC Redfish fan control: set fan speed via BMC when hardware ignores normal commands.
 
     Replaces the old IPMI bypass (ipmitool raw commands) which does not work on
     Lenovo ST550 servers (no /dev/ipmi0 exposed to OS).
 
-    Fires ONLY when target > 3500 RPM AND hardware is not responding (< 85% of target).
+    Fires when target > profile-driven threshold AND hardware is not responding (< 85% of target).
     """
     global _XCC_FAN_CONTROLLER
     if _XCC_FAN_CONTROLLER is None or not _XCC_FAN_CONTROLLER.available:
         return False
 
     target_rpm = (duty / 100.0) * rated_max_rpm
-    if target_rpm <= 3500:
+    threshold_rpm = _get_xcc_override_threshold_rpm()
+    if target_rpm <= threshold_rpm:
         return False
     if hw_rpm > 0 and hw_rpm >= target_rpm * 0.85:
         return False  # hardware is responding adequately
@@ -817,6 +835,49 @@ def _restore_xcc_auto(dry_run: bool) -> None:
 
 # Track XCC fan override state (replaces _ipmi_bypass_active)
 _xcc_override_active = False
+_xcc_override_activated_at: float = 0.0  # monotonic time when override was activated
+
+
+def _auto_release_xcc_if_spike_over(dry_run: bool) -> None:
+    """Auto-release XCC override after spike_hold_duration when GPU power drops below trigger.
+
+    Prevents the override from being held indefinitely after a transient spike.
+    """
+    global _xcc_override_active, _xcc_override_activated_at
+
+    if not _xcc_override_active or _xcc_override_activated_at <= 0:
+        return
+
+    try:
+        if (_THERMAL_CALIBRATOR is None
+                or not _THERMAL_CALIBRATOR.is_calibrated
+                or _THERMAL_CALIBRATOR.profile is None):
+            return
+        p = _THERMAL_CALIBRATOR.profile
+        elapsed = time.monotonic() - _xcc_override_activated_at
+        if elapsed < p.spike_hold_duration_s:
+            return  # Still within hold window
+
+        # Check if GPU power has dropped below active_compute_trigger
+        # Use the most recent GPU power from the last sensor snapshot
+        gpu_power_below_trigger = False
+        if hasattr(p, "active_compute_trigger_w") and p.active_compute_trigger_w > 0:
+            # We read GPU power from the last snapshot stored in the global
+            last_gpu_power = getattr(_auto_release_xcc_if_spike_over, "_last_gpu_power", None)
+            if last_gpu_power is not None and last_gpu_power < p.active_compute_trigger_w:
+                gpu_power_below_trigger = True
+
+        if gpu_power_below_trigger:
+            _log.info(
+                "XCC_FAN_AUTO_RELEASE: override held %.0fs (spike_hold=%.0fs), "
+                "GPU power below trigger — restoring auto fan control.",
+                elapsed, p.spike_hold_duration_s,
+            )
+            _restore_xcc_auto(dry_run)
+            _xcc_override_active = False
+            _xcc_override_activated_at = 0.0
+    except Exception as exc:
+        _log.debug("XCC auto-release check failed: %s", exc)
 
 
 def set_fan_duty(
@@ -831,23 +892,34 @@ def set_fan_duty(
     XCC Redfish fan control is attempted first for Lenovo ThinkSystem servers
     (where /dev/ipmi0 is not available). Falls back to IPMI, PWM, GPU fan.
 
-    When target_rpm > 3500 AND hardware RPM is < 85% of target (not responding),
-    attempts XCC Redfish override (replaces old IPMI bypass).
+    When target_rpm exceeds the profile-driven threshold AND hardware RPM is < 85%
+    of target (not responding), attempts XCC Redfish override.
+
+    Auto-releases override after spike_hold_duration when GPU power drops below
+    active_compute_trigger.
     """
-    global _xcc_override_active
+    global _xcc_override_active, _xcc_override_activated_at
 
     target_rpm = (duty / 100.0) * rated_max_rpm
 
     # --- XCC Redfish fan control (primary for Lenovo ST550) ---
     if _XCC_FAN_CONTROLLER is not None and _XCC_FAN_CONTROLLER.available:
-        if target_rpm > 3500 and (hw_rpm <= 0 or hw_rpm < target_rpm * 0.85):
+        threshold_rpm = _get_xcc_override_threshold_rpm()
+        if target_rpm > threshold_rpm and (hw_rpm <= 0 or hw_rpm < target_rpm * 0.85):
             if _try_xcc_fan_set(duty, rated_max_rpm, hw_rpm, dry_run):
+                if not _xcc_override_active:
+                    _xcc_override_activated_at = time.monotonic()
                 _xcc_override_active = True
                 return "xcc_redfish"
         elif _xcc_override_active and target_rpm < 2000:
             # Target dropped low enough — restore auto
             _restore_xcc_auto(dry_run)
             _xcc_override_active = False
+            _xcc_override_activated_at = 0.0
+
+        # Auto-release: after spike_hold_duration, if GPU power dropped below trigger
+        if _xcc_override_active and _xcc_override_activated_at > 0:
+            _auto_release_xcc_if_spike_over(dry_run)
 
     # --- Standard IPMI ---
     if caps.ipmi and _try_ipmi_set_duty(caps, duty, dry_run):
@@ -1039,6 +1111,15 @@ def fetch_optimize_control(
     if snap.redfish_fan_pcts:
         avg_rf = sum(snap.redfish_fan_pcts.values()) / len(snap.redfish_fan_pcts)
         payload["bmc_fan_pct_avg"] = round(avg_rf, 1)
+    # Send calibration profile to API so predictor can recalibrate
+    if (_THERMAL_CALIBRATOR is not None
+            and _THERMAL_CALIBRATOR.is_calibrated
+            and hasattr(_THERMAL_CALIBRATOR, "profile")
+            and _THERMAL_CALIBRATOR.profile is not None):
+        try:
+            payload["calibration_profile"] = _THERMAL_CALIBRATOR.profile.to_dict()
+        except Exception:
+            pass
     lcd = getattr(fetch_optimize_control, "_last_applied_duty", None)
     if lcd is not None:
         payload["last_commanded_duty"] = float(lcd)
@@ -1344,6 +1425,9 @@ def run_agent(
                         # Convert XCC fan % to RPM estimate using rated max
                         _hw_rpm_for_duty = (avg_pct / 100.0) * 7000.0
                         _log.debug("[XCC_FAN] hw_rpm estimated from XCC: %.0f RPM (%.1f%%)", _hw_rpm_for_duty, avg_pct)
+            # Feed GPU power for XCC auto-release check
+            if snap.gpu_power_w:
+                _auto_release_xcc_if_spike_over._last_gpu_power = max(snap.gpu_power_w)  # type: ignore[attr-defined]
             method = set_fan_duty(caps, duty, dry_run, hw_rpm=_hw_rpm_for_duty)
             if method != "none":
                 _manual_control_active = True
