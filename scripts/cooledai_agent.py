@@ -88,6 +88,9 @@ _GPU_GPG_MOD: Any = None
 _GPU_PL_ENVELOPES: List[Any] = []
 _GPU_PL_STATE: Dict[str, Any] = {}
 
+# GPU Power Governor (Phase 2 class-based) — replaces free-function wiring
+_GPU_GOVERNOR: Any = None
+
 # Thermal calibrator — optional; available when running from repo checkout
 _THERMAL_CALIBRATOR: Any = None
 
@@ -149,7 +152,15 @@ def _try_load_thermal_calibrator() -> Any:
 
 def _gpu_power_limits_cleanup() -> None:
     """Restore default nvidia-smi power limits on shutdown / watchdog."""
-    global _GPU_GPG_MOD, _GPU_PL_ENVELOPES
+    global _GPU_GPG_MOD, _GPU_PL_ENVELOPES, _GPU_GOVERNOR
+    # Phase 2 governor (preferred)
+    if _GPU_GOVERNOR is not None:
+        try:
+            _GPU_GOVERNOR.reset_to_defaults()
+        except Exception as exc:
+            _log.debug("GPU governor cleanup failed: %s", exc)
+        return
+    # Legacy free-function path
     gpg = _GPU_GPG_MOD
     if not gpg or not _GPU_PL_ENVELOPES or _dry_run_flag:
         return
@@ -1135,6 +1146,7 @@ def run_agent(
     signal.signal(signal.SIGINT, lambda s, f: (_cleanup(), sys.exit(130)))
     signal.signal(signal.SIGTERM, lambda s, f: (_cleanup(), sys.exit(143)))
 
+    global _GPU_GOVERNOR
     gpg_mod = _try_load_gpu_power_governor() if gpu_power_management else None
     if gpu_power_management:
         if gpg_mod is None:
@@ -1154,14 +1166,27 @@ def run_agent(
             else:
                 _GPU_GPG_MOD = gpg_mod
                 _GPU_PL_ENVELOPES = list(envs)
-                full, soft, hard, _, _ = gpg_mod.load_governor_config_from_env()
-                _log.info(
-                    "GPU power management ENABLED — %d GPU(s), temp bands full≤%.0f soft≤%.0f hard≤%.0f °C",
-                    len(envs),
-                    full,
-                    soft,
-                    hard,
-                )
+                # Create Phase 2 GPUPowerGovernor class
+                try:
+                    _GPU_GOVERNOR = gpg_mod.GPUPowerGovernor.from_env(
+                        envelopes=envs, dry_run=dry_run,
+                    )
+                    _log.info(
+                        "GPU power governor ENABLED (Phase 2) — %d GPU(s), "
+                        "performance_mode=%s, calibration_window=%.0fs",
+                        len(envs),
+                        _GPU_GOVERNOR.performance_mode if _GPU_GOVERNOR else "?",
+                        _GPU_GOVERNOR._calibration_window_s if _GPU_GOVERNOR else 0,
+                    )
+                except Exception as exc:
+                    _log.warning("GPUPowerGovernor init failed: %s — falling back to free-function path", exc)
+                    _GPU_GOVERNOR = None
+                    full, soft, hard, _, _ = gpg_mod.load_governor_config_from_env()
+                    _log.info(
+                        "GPU power management ENABLED (legacy) — %d GPU(s), "
+                        "temp bands full≤%.0f soft≤%.0f hard≤%.0f °C",
+                        len(envs), full, soft, hard,
+                    )
 
     # --- Thermal calibrator (auto-discover thresholds) ---
     global _THERMAL_CALIBRATOR
@@ -1237,8 +1262,25 @@ def run_agent(
                 )
 
         # --- GPU dynamic power cap (nvidia-smi -pl), independent of fan duty ---
-        gpg_live = _GPU_GPG_MOD
-        if gpg_live and _GPU_PL_ENVELOPES and snap.gpu_temps:
+        if _GPU_GOVERNOR is not None and snap.gpu_temps:
+            # Feed profile from thermal calibrator when it becomes available
+            if (_THERMAL_CALIBRATOR is not None
+                    and _THERMAL_CALIBRATOR.is_calibrated
+                    and hasattr(_THERMAL_CALIBRATOR, "profile")
+                    and _THERMAL_CALIBRATOR.profile is not None):
+                _GPU_GOVERNOR.update_from_profile(_THERMAL_CALIBRATOR.profile)
+            # Phase 2 governor handles calibration, parity guard, hysteresis, logging
+            gpu_power_list = list(snap.gpu_power_w) if snap.gpu_power_w else None
+            changes = _GPU_GOVERNOR.tick(snap.gpu_temps, gpu_power_list)
+            for idx, w, reason in changes:
+                gt = snap.gpu_temps[idx] if idx < len(snap.gpu_temps) else float("nan")
+                _log.info(
+                    "GPU %d power limit -> %d W (GPU temp %.1f°C, reason=%s)",
+                    idx, int(w), gt, reason,
+                )
+        elif _GPU_GPG_MOD and _GPU_PL_ENVELOPES and snap.gpu_temps:
+            # Legacy free-function fallback (no GPUPowerGovernor class available)
+            gpg_live = _GPU_GPG_MOD
             full, soft, hard, min_dw, min_int = gpg_live.load_governor_config_from_env()
             nowm = time.monotonic()
             if nowm - float(_GPU_PL_STATE["last_tick"]) >= min_int:
@@ -1259,9 +1301,7 @@ def run_agent(
                         gt = snap.gpu_temps[idx] if idx < len(snap.gpu_temps) else float("nan")
                         _log.info(
                             "GPU %d power limit -> %d W (GPU temp %.1f°C)",
-                            idx,
-                            int(w),
-                            gt,
+                            idx, int(w), gt,
                         )
 
         # --- Safety watchdog ---
