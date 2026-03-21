@@ -2638,7 +2638,27 @@ async def agent_optimize_control(
                 peaks.append(float(_history_row(row)[1]))
             except (TypeError, ValueError, IndexError):
                 continue
-        record_spike_if_hot(owner_id, max(peaks) if peaks else float(body.temp_c))
+        # Use calibrated spike trigger from brain's profile when available;
+        # otherwise derive from recent history (P95 + 5°C) so normal operating
+        # temps (e.g. 60°C on Quadro P2000) don't permanently trigger the hold.
+        _spike_trigger_c = None
+        _spike_hold_dur = None
+        _brain_cp = getattr(_brain, "calibration_profile", None)
+        if _brain_cp is not None:
+            _spike_trigger_c = getattr(_brain_cp, "spike_trigger_temp_c", None)
+            _spike_hold_dur = getattr(_brain_cp, "spike_hold_duration_s", None)
+        if _spike_trigger_c is None and len(peaks) >= 5:
+            # Derive: P90 of recent peaks + 5°C margin (avoid using 42°C default
+            # which is below normal GPU operating temp on many cards)
+            import numpy as _np
+            _spike_trigger_c = float(_np.percentile(peaks, 90)) + 5.0
+            _spike_trigger_c = max(42.0, min(80.0, _spike_trigger_c))  # clamp
+        record_spike_if_hot(
+            owner_id,
+            max(peaks) if peaks else float(body.temp_c),
+            spike_trigger_temp_c=_spike_trigger_c,
+            spike_hold_duration_s=_spike_hold_dur,
+        )
         resp = _run_optimization_with_state_machine(
             nodes,
             thermal_session_key=owner_id,

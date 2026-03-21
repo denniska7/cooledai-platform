@@ -20,8 +20,19 @@ _lock = threading.Lock()
 _until: Dict[str, float] = {}
 
 
-def record_spike_if_hot(session_key: str, max_temp_c: float, now: Optional[float] = None) -> None:
-    """If ``max_temp_c`` exceeds the hold threshold, extend hold window for ``session_key``."""
+def record_spike_if_hot(
+    session_key: str,
+    max_temp_c: float,
+    now: Optional[float] = None,
+    spike_trigger_temp_c: Optional[float] = None,
+    spike_hold_duration_s: Optional[float] = None,
+) -> None:
+    """If ``max_temp_c`` exceeds the hold threshold, extend hold window for ``session_key``.
+
+    When ``spike_trigger_temp_c`` is provided (from CalibrationProfile), use it
+    instead of the hardcoded default.  This prevents the hold from being
+    permanently engaged when normal operating temps exceed the 42°C default.
+    """
     if not session_key:
         return
     from core.optimization.cooling_safety_policy import (
@@ -29,10 +40,13 @@ def record_spike_if_hot(session_key: str, max_temp_c: float, now: Optional[float
         SPIKE_HOLD_ENTER_TEMP_C,
     )
 
+    threshold = spike_trigger_temp_c if spike_trigger_temp_c is not None else SPIKE_HOLD_ENTER_TEMP_C
+    duration = spike_hold_duration_s if spike_hold_duration_s is not None else SPIKE_HOLD_DURATION_S
+
     t = time.time() if now is None else float(now)
-    if max_temp_c > SPIKE_HOLD_ENTER_TEMP_C:
+    if max_temp_c > threshold:
         with _lock:
-            _until[session_key] = t + SPIKE_HOLD_DURATION_S
+            _until[session_key] = t + duration
 
 
 def spike_hold_floor_rpm(
