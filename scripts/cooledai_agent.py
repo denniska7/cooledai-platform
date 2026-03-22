@@ -819,6 +819,63 @@ def _try_xcc_fan_set(duty: int, rated_max_rpm: float, hw_rpm: float, dry_run: bo
     return _XCC_FAN_CONTROLLER.set_manual_fan_percent(fan_pct)
 
 
+def _probe_xcc_health() -> bool:
+    """Lightweight XCC health check — returns True if BMC is responsive."""
+    if _XCC_FAN_CONTROLLER is None or not _XCC_FAN_CONTROLLER.available:
+        return False
+    try:
+        fans = _XCC_FAN_CONTROLLER.read_fan_speeds()
+        return bool(fans)
+    except Exception:
+        return False
+
+
+def _xcc_failsafe_watchdog(dry_run: bool, current_duty_pct: int = 50) -> None:
+    """30-second XCC failsafe watchdog — verifies connectivity, activates failsafe or reconnects."""
+    global _optimization_owns_control, _last_successful_xcc_command_ts
+    global _xcc_watchdog_last_check
+
+    now = time.monotonic()
+    if now - _xcc_watchdog_last_check < _XCC_WATCHDOG_INTERVAL_S:
+        return
+    _xcc_watchdog_last_check = now
+
+    if _XCC_FAN_CONTROLLER is None:
+        return
+
+    if _optimization_owns_control:
+        # Check for command gap
+        gap = now - _last_successful_xcc_command_ts
+        if gap > _XCC_FAILSAFE_TIMEOUT_S:
+            _log.warning(
+                "[XCC_FAN] WARNING: command_gap=%.0fs — verifying connectivity",
+                gap,
+            )
+            if _probe_xcc_health():
+                _last_successful_xcc_command_ts = now
+                _log.info("[XCC_FAN] Probe succeeded — connectivity OK")
+            else:
+                _log.warning(
+                    "[XCC_FAN] FAILSAFE_ACTIVATED — XCC auto mode restored "
+                    "after connectivity loss"
+                )
+                _restore_xcc_auto(dry_run)
+                _optimization_owns_control = False
+    else:
+        # Reconnect loop: try to retake control
+        if _XCC_FAN_CONTROLLER.available and _probe_xcc_health():
+            if not dry_run:
+                pct = max(30, min(100, current_duty_pct))
+                if _XCC_FAN_CONTROLLER.set_manual_fan_percent(pct):
+                    _optimization_owns_control = True
+                    _last_successful_xcc_command_ts = now
+                    _log.info(
+                        "[XCC_FAN] RECONNECTED — optimization_owns_control=True "
+                        "(fan_pct=%d)",
+                        pct,
+                    )
+
+
 def _restore_xcc_auto(dry_run: bool) -> None:
     """Restore automatic fan control via XCC after override is no longer needed."""
     global _XCC_FAN_CONTROLLER
@@ -836,6 +893,16 @@ def _restore_xcc_auto(dry_run: bool) -> None:
 # Track XCC fan override state (replaces _ipmi_bypass_active)
 _xcc_override_active = False
 _xcc_override_activated_at: float = 0.0  # monotonic time when override was activated
+
+# XCC failsafe architecture (FIX 2)
+_optimization_owns_control: bool = False
+_last_successful_xcc_command_ts: float = 0.0
+_XCC_FAILSAFE_TIMEOUT_S = float(os.environ.get("COOLEDAI_XCC_FAILSAFE_TIMEOUT_S", "120"))
+_XCC_WATCHDOG_INTERVAL_S = 30.0
+_xcc_watchdog_last_check: float = 0.0
+
+# Calibration persistence path (FIX 3)
+CALIB_PROFILE_FILE = SAFE_CONFIG_DIR / "calibration_profile.json"
 
 
 def _auto_release_xcc_if_spike_over(dry_run: bool) -> None:
@@ -898,7 +965,7 @@ def set_fan_duty(
     Auto-releases override after spike_hold_duration when GPU power drops below
     active_compute_trigger.
     """
-    global _xcc_override_active, _xcc_override_activated_at
+    global _xcc_override_active, _xcc_override_activated_at, _last_successful_xcc_command_ts
 
     target_rpm = (duty / 100.0) * rated_max_rpm
 
@@ -910,6 +977,7 @@ def set_fan_duty(
                 if not _xcc_override_active:
                     _xcc_override_activated_at = time.monotonic()
                 _xcc_override_active = True
+                _last_successful_xcc_command_ts = time.monotonic()
                 return "xcc_redfish"
         elif _xcc_override_active and target_rpm < 2000:
             # Target dropped low enough — restore auto
@@ -1157,15 +1225,27 @@ _dry_run_flag = False
 
 
 def _cleanup(*_args: Any) -> None:
-    global _manual_control_active, _xcc_override_active
-    if _xcc_override_active:
-        _restore_xcc_auto(_dry_run_flag)
-        _xcc_override_active = False
+    global _manual_control_active, _xcc_override_active, _optimization_owns_control
+    # 1. Save calibration profile before anything else
+    if _THERMAL_CALIBRATOR is not None and _THERMAL_CALIBRATOR.is_calibrated:
+        try:
+            _THERMAL_CALIBRATOR.save_profile(str(CALIB_PROFILE_FILE))
+        except Exception as exc:
+            _log.debug("Calibration profile save on cleanup failed: %s", exc)
+    # 2. Reset GPU power governor
+    _gpu_power_limits_cleanup()
+    # 3. Revert standard fan control (IPMI/PWM/GPU)
     if _manual_control_active:
         _log.warning("Cleanup: reverting fans to hardware auto.")
         caps = getattr(_cleanup, "_caps", SensorCapabilities())
         revert_fans_to_auto(caps, dry_run=_dry_run_flag)
         _manual_control_active = False
+    # 4. Restore XCC auto LAST (BMC takes over after all other resets)
+    if _xcc_override_active or _optimization_owns_control:
+        _restore_xcc_auto(_dry_run_flag)
+        _xcc_override_active = False
+        _optimization_owns_control = False
+        _log.info("[XCC_FAN] clean_shutdown — XCC auto mode restored")
 
 
 def run_agent(
@@ -1198,6 +1278,7 @@ def run_agent(
 
     # --- XCC Fan Controller discovery (Lenovo ThinkSystem BMC) ---
     global _XCC_FAN_CONTROLLER
+    global _optimization_owns_control, _last_successful_xcc_command_ts
     XCCFanControllerCls = _try_load_xcc_fan_controller()
     if XCCFanControllerCls is not None:
         _XCC_FAN_CONTROLLER = XCCFanControllerCls()
@@ -1206,6 +1287,22 @@ def run_agent(
                 "XCC fan controller AVAILABLE — Redfish fan control enabled "
                 "(replaces IPMI bypass for Lenovo ThinkSystem)"
             )
+            # FIX 2: Immediately take ownership of fan control from BMC
+            if not dry_run:
+                startup_pct = 50  # safe bootstrap fan %
+                if _XCC_FAN_CONTROLLER.set_manual_fan_percent(startup_pct):
+                    _optimization_owns_control = True
+                    _last_successful_xcc_command_ts = time.monotonic()
+                    _log.info(
+                        "[XCC_FAN] optimization_owns_control=True — "
+                        "XCC auto mode suspended at startup (fan_pct=%d)",
+                        startup_pct,
+                    )
+                else:
+                    _log.warning(
+                        "[XCC_FAN] Failed to take control at startup — "
+                        "BMC auto mode still active"
+                    )
         else:
             _log.info("XCC fan controller loaded but BMC not reachable — XCC fan control disabled.")
             _XCC_FAN_CONTROLLER = None
@@ -1274,11 +1371,21 @@ def run_agent(
     ThermalCalibratorCls = _try_load_thermal_calibrator()
     if ThermalCalibratorCls is not None:
         _THERMAL_CALIBRATOR = ThermalCalibratorCls()
-        _log.info(
-            "CooledAI calibrating — using bootstrap defaults for %.0fs. "
-            "System is protected but not yet optimized for this hardware.",
-            _THERMAL_CALIBRATOR._window_s,
-        )
+        # FIX 3: Try loading saved calibration profile
+        calib_path = os.environ.get("COOLEDAI_CALIBRATION_PATH", str(CALIB_PROFILE_FILE))
+        if _THERMAL_CALIBRATOR.load_profile(calib_path):
+            _log.info(
+                "CooledAI loaded cached calibration — "
+                "active_floor=%.0f RPM | spike_hold=%.0f RPM",
+                _THERMAL_CALIBRATOR.profile.active_compute_fan_floor_rpm,
+                _THERMAL_CALIBRATOR.profile.spike_hold_fan_floor_rpm,
+            )
+        else:
+            _log.info(
+                "CooledAI calibrating — using bootstrap defaults for %.0fs. "
+                "System is protected but not yet optimized for this hardware.",
+                _THERMAL_CALIBRATOR._window_s,
+            )
     else:
         _THERMAL_CALIBRATOR = None
         _log.debug("ThermalCalibrator not available — using static thresholds.")
@@ -1307,6 +1414,7 @@ def run_agent(
     last_config_fetch = 0.0
     consecutive_post_failures = 0
     watchdog_armed = False  # Only after first successful telemetry
+    _in_calibration_window = (_THERMAL_CALIBRATOR is not None and not _THERMAL_CALIBRATOR.is_calibrated)
 
     while _running:
         loop_start = time.monotonic()
@@ -1326,6 +1434,7 @@ def run_agent(
                 cpu_temp_c=snap.cpu_temps or None,
             )
             if not was_calibrated and _THERMAL_CALIBRATOR.is_calibrated:
+                _in_calibration_window = False  # calibration done — release idle stepping
                 p = _THERMAL_CALIBRATOR.profile
                 _log.info(
                     "CooledAI calibration complete — thresholds set from observation: "
@@ -1341,6 +1450,11 @@ def run_agent(
                     p.min_response_quantum_rpm,
                     p.spike_hold_duration_s,
                 )
+                # FIX 3: Persist calibration profile
+                _THERMAL_CALIBRATOR.save_profile(str(CALIB_PROFILE_FILE))
+            # FIX 3: Save after EWMA recalibration too
+            elif _THERMAL_CALIBRATOR.is_calibrated and getattr(_THERMAL_CALIBRATOR, "_recalibrated_this_tick", False):
+                _THERMAL_CALIBRATOR.save_profile(str(CALIB_PROFILE_FILE))
 
         # --- GPU dynamic power cap (nvidia-smi -pl), independent of fan duty ---
         if _GPU_GOVERNOR is not None and snap.gpu_temps:
@@ -1428,6 +1542,28 @@ def run_agent(
             # Feed GPU power for XCC auto-release check
             if snap.gpu_power_w:
                 _auto_release_xcc_if_spike_over._last_gpu_power = max(snap.gpu_power_w)  # type: ignore[attr-defined]
+
+            # --- Calibration idle stepping (circular reference fix) ---
+            # During the observation window, if GPU is idle the optimizer would
+            # command ~3500 RPM — the calibrator would measure that as
+            # fan_idle_rpm, inflating the anchor.  Instead, force fans to the
+            # bootstrap floor so the calibrator sees true hardware idle speed.
+            if _in_calibration_window and _THERMAL_CALIBRATOR is not None:
+                _cal_trigger = _THERMAL_CALIBRATOR.profile.active_compute_trigger_w
+                _cal_gpu_power = max(snap.gpu_power_w) if snap.gpu_power_w else 0.0
+                if _cal_gpu_power < _cal_trigger:
+                    _bootstrap_rpm = getattr(_THERMAL_CALIBRATOR, "_bootstrap_floor", None)
+                    if _bootstrap_rpm is not None and _bootstrap_rpm > 0:
+                        _bootstrap_duty = int(round((_bootstrap_rpm / 7000.0) * 100.0))
+                        _bootstrap_duty = max(15, min(100, _bootstrap_duty))
+                        _log.info(
+                            "[THERMAL_CAL] calibration_idle_step: gpu_power=%.1fW "
+                            "fan_forced_to=%d%% (%.0f RPM) — letting calibrator "
+                            "observe true idle",
+                            _cal_gpu_power, _bootstrap_duty, _bootstrap_rpm,
+                        )
+                        duty = _bootstrap_duty
+
             method = set_fan_duty(caps, duty, dry_run, hw_rpm=_hw_rpm_for_duty)
             if method != "none":
                 _manual_control_active = True
@@ -1437,6 +1573,10 @@ def run_agent(
         else:
             duty = -1
             method = "report_only"
+
+        # --- XCC failsafe watchdog (FIX 2) ---
+        if _XCC_FAN_CONTROLLER is not None:
+            _xcc_failsafe_watchdog(dry_run, current_duty_pct=max(30, duty) if duty >= 0 else 50)
 
         # --- [FAN_DIAG] Periodic fan diagnostic (every 10s) ---
         _fan_diag_interval = 10.0

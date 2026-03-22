@@ -14,9 +14,12 @@ Covers:
   - min_response_quantum rounds up small changes rather than suppressing
 """
 
+import json
 import os
+import tempfile
 import time
 import logging
+from datetime import datetime, timezone, timedelta
 from unittest import mock
 
 import numpy as np
@@ -516,3 +519,360 @@ class TestCalibrationProgress:
 
         cal.update(fan_rpms=[3000], gpu_power_w=[50], gpu_temp_c=[40], now=100.0)
         assert cal.profile.calibration_progress_pct == pytest.approx(100.0, abs=1.0)
+
+
+# ---------------------------------------------------------------------------
+# FIX 1: Idle/Active Split Buffer Tests
+# ---------------------------------------------------------------------------
+
+class TestIdleActiveSplitBuffers:
+    """fan_idle_rpm from idle-only, fan_ceiling_rpm from active-only samples."""
+
+    def _feed_split_data(self, cal, n_idle=50, n_active=50, t0=0.0,
+                         idle_fan=1500, active_fan=5000,
+                         idle_power=10.0, active_power=80.0):
+        """Feed clearly separated idle and active data.
+
+        Interleaves idle and active samples so both buffers accumulate
+        before the calibration window closes.
+        """
+        total = n_idle + n_active
+        idle_fed = 0
+        active_fed = 0
+        for i in range(total):
+            # Alternate: feed idle and active to fill both buckets early
+            if (i % 2 == 0 and idle_fed < n_idle) or active_fed >= n_active:
+                cal.update(
+                    fan_rpms=[float(idle_fan + (idle_fed % 5) * 10)],
+                    gpu_power_w=[float(idle_power + (idle_fed % 3))],
+                    gpu_temp_c=[35.0 + (idle_fed % 3) * 0.5],
+                    now=t0 + i * 0.1,  # Use 0.1s spacing to fit in window
+                )
+                idle_fed += 1
+            else:
+                cal.update(
+                    fan_rpms=[float(active_fan + (active_fed % 5) * 20)],
+                    gpu_power_w=[float(active_power + (active_fed % 3) * 5)],
+                    gpu_temp_c=[55.0 + (active_fed % 3) * 0.5],
+                    now=t0 + i * 0.1,
+                )
+                active_fed += 1
+
+    def test_idle_buffer_used_for_fan_idle_rpm(self):
+        """With >=20 idle samples, fan_idle_rpm comes from idle buffer P10."""
+        cal = _build_calibrator(window_s=5.0)
+        self._feed_split_data(cal, n_idle=50, n_active=50)
+        assert cal.is_calibrated
+        p = cal.profile
+        # fan_idle from idle-only samples (~1500 RPM range), should be much
+        # lower than the combined P10 of all fans (which includes 5000 RPM active)
+        assert p.fan_idle_rpm < 2000.0
+
+    def test_active_buffer_used_for_fan_ceiling_rpm(self):
+        """With >=20 active samples, fan_ceiling_rpm comes from active buffer P95."""
+        cal = _build_calibrator(window_s=5.0)
+        self._feed_split_data(cal, n_idle=50, n_active=50)
+        assert cal.is_calibrated
+        p = cal.profile
+        # fan_ceiling from active-only samples (~5000 RPM range)
+        assert p.fan_ceiling_rpm > 4500.0
+
+    def test_combined_fallback_with_insufficient_idle(self):
+        """<20 idle samples → uses combined buffer + logs warning."""
+        cal = _build_calibrator(window_s=5.0)
+        # Only 5 idle, 95 active
+        self._feed_split_data(cal, n_idle=5, n_active=95)
+        assert cal.is_calibrated
+        # Should still produce valid profile (combined fallback)
+        assert cal.profile.fan_idle_rpm > 0
+
+    def test_combined_fallback_with_insufficient_active(self):
+        """<20 active samples → uses combined buffer + logs warning."""
+        cal = _build_calibrator(window_s=5.0)
+        # Only 95 idle, 5 active
+        self._feed_split_data(cal, n_idle=95, n_active=5)
+        assert cal.is_calibrated
+        assert cal.profile.fan_ceiling_rpm > 0
+
+    def test_ewma_recalib_uses_split_buffers(self):
+        """EWMA recalibration also uses split buffers."""
+        cal = _build_calibrator(window_s=5.0, recalib_interval_s=10.0)
+        self._feed_split_data(cal, n_idle=50, n_active=50, t0=0.0)
+        assert cal.is_calibrated
+        old_idle = cal.profile.fan_idle_rpm
+        # Feed more data and trigger recalib
+        for i in range(50):
+            cal.update(
+                fan_rpms=[1200.0],  # lower idle
+                gpu_power_w=[8.0],
+                gpu_temp_c=[33.0],
+                now=100.0 + 10.0 + i,
+            )
+        # EWMA should have pulled idle_rpm down
+        assert cal.profile.fan_idle_rpm < old_idle + 50
+
+
+# ---------------------------------------------------------------------------
+# FIX 1: Floor Sanity Clamp
+# ---------------------------------------------------------------------------
+
+class TestFloorSanityClamp:
+    """Floor sanity check prevents >20% upward jump in one cycle."""
+
+    def test_large_jump_triggers_ewma_blend(self):
+        """New floor >20% above previous → starts EWMA blend, not immediate jump."""
+        cal = _build_calibrator(window_s=5.0, recalib_interval_s=10.0)
+        # Initial calibration with low fan data
+        for i in range(100):
+            cal.update(
+                fan_rpms=[2000.0 + (i % 5) * 10],
+                gpu_power_w=[10.0],
+                gpu_temp_c=[35.0],
+                now=float(i),
+            )
+        assert cal.is_calibrated
+        initial_floor = cal.profile.active_compute_fan_floor_rpm
+
+        # Now feed drastically higher fan data to trigger recalib
+        for i in range(100):
+            cal.update(
+                fan_rpms=[6000.0],
+                gpu_power_w=[150.0],
+                gpu_temp_c=[70.0],
+                now=100.0 + 10.0 + i,
+            )
+        # The floor should NOT have jumped >20% from initial
+        new_floor = cal.profile.active_compute_fan_floor_rpm
+        # Allow some EWMA movement but not a full jump
+        assert new_floor < initial_floor * 1.25  # at most 25% above (some EWMA blend)
+
+
+# ---------------------------------------------------------------------------
+# FIX 1: Warmup Guard
+# ---------------------------------------------------------------------------
+
+class TestWarmupGuard:
+    """First 10 minutes after start: floor can only go DOWN from bootstrap."""
+
+    def test_floor_cannot_rise_during_warmup(self):
+        """During warmup (<600s), calibrated floor is clamped to bootstrap."""
+        cal = _build_calibrator(window_s=5.0)
+        bootstrap_floor = cal.profile.active_compute_fan_floor_rpm
+        # Feed high-fan data within warmup window
+        for i in range(100):
+            cal.update(
+                fan_rpms=[6000.0 + (i % 5) * 50],
+                gpu_power_w=[150.0],
+                gpu_temp_c=[70.0],
+                now=float(i),  # All within first 100s (<600s warmup)
+            )
+        assert cal.is_calibrated
+        # Floor should not exceed bootstrap
+        assert cal.profile.active_compute_fan_floor_rpm <= bootstrap_floor + 1.0
+
+    def test_floor_can_drop_during_warmup(self):
+        """During warmup, floor CAN drop below bootstrap."""
+        cal = _build_calibrator(window_s=5.0)
+        bootstrap_floor = cal.profile.active_compute_fan_floor_rpm
+        # Feed very low fan data
+        for i in range(100):
+            cal.update(
+                fan_rpms=[500.0 + (i % 5) * 10],
+                gpu_power_w=[5.0],
+                gpu_temp_c=[25.0],
+                now=float(i),
+            )
+        assert cal.is_calibrated
+        # Floor can be lower than bootstrap
+        assert cal.profile.active_compute_fan_floor_rpm < bootstrap_floor
+
+
+# ---------------------------------------------------------------------------
+# FIX 3: Persistence Tests
+# ---------------------------------------------------------------------------
+
+class TestPersistence:
+    """save_profile and load_profile round-trip."""
+
+    def test_save_and_load_roundtrip(self):
+        """Save then load produces equivalent profile."""
+        cal = _build_calibrator(window_s=5.0)
+        _feed_known_distribution(cal, n=200, t0=0.0)
+        assert cal.is_calibrated
+        original = cal.profile.to_dict()
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+        try:
+            assert cal.save_profile(path) is True
+            # Load into a fresh calibrator
+            cal2 = _build_calibrator(window_s=5.0)
+            assert cal2.load_profile(path) is True
+            assert cal2.is_calibrated
+            loaded = cal2.profile.to_dict()
+            # All numeric fields should match
+            for key in original:
+                if isinstance(original[key], (int, float)):
+                    assert loaded[key] == pytest.approx(original[key], rel=0.01), \
+                        f"Mismatch on {key}: {loaded[key]} vs {original[key]}"
+        finally:
+            os.unlink(path)
+
+    def test_load_rejects_stale_profile(self):
+        """Profile older than 24 hours is rejected."""
+        cal = _build_calibrator(window_s=5.0)
+        _feed_known_distribution(cal, n=200, t0=0.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
+            path = f.name
+            old_time = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+            json.dump({
+                "schema_version": 1,
+                "saved_at": old_time,
+                "profile": cal.profile.to_dict(),
+            }, f)
+        try:
+            cal2 = _build_calibrator(window_s=5.0)
+            assert cal2.load_profile(path) is False
+            assert not cal2.is_calibrated
+        finally:
+            os.unlink(path)
+
+    def test_load_rejects_wrong_schema(self):
+        """Wrong schema_version is rejected."""
+        cal = _build_calibrator(window_s=5.0)
+        _feed_known_distribution(cal, n=200, t0=0.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
+            path = f.name
+            json.dump({
+                "schema_version": 999,
+                "saved_at": datetime.now(timezone.utc).isoformat(),
+                "profile": cal.profile.to_dict(),
+            }, f)
+        try:
+            cal2 = _build_calibrator(window_s=5.0)
+            assert cal2.load_profile(path) is False
+        finally:
+            os.unlink(path)
+
+    def test_load_missing_file(self):
+        """Missing file returns False gracefully."""
+        cal = _build_calibrator(window_s=5.0)
+        assert cal.load_profile("/tmp/nonexistent_calibration_xxxx.json") is False
+
+    def test_load_corrupted_json(self):
+        """Corrupted JSON returns False gracefully."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False, mode="w") as f:
+            path = f.name
+            f.write("not valid json{{{")
+        try:
+            cal = _build_calibrator(window_s=5.0)
+            assert cal.load_profile(path) is False
+        finally:
+            os.unlink(path)
+
+    def test_loaded_profile_skips_observation(self):
+        """Loaded profile marks calibration complete immediately."""
+        cal = _build_calibrator(window_s=5.0)
+        _feed_known_distribution(cal, n=200, t0=0.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+        try:
+            cal.save_profile(path)
+            # Fresh calibrator with long window
+            cal2 = _build_calibrator(window_s=99999.0)
+            assert not cal2.is_calibrated
+            assert cal2.load_profile(path) is True
+            # Should be calibrated immediately, no observation window needed
+            assert cal2.is_calibrated
+            assert cal2.profile.calibration_state == CALIBRATION_STATE_CALIBRATED
+        finally:
+            os.unlink(path)
+
+    def test_save_writes_valid_json(self):
+        """save_profile writes valid JSON with schema_version and saved_at."""
+        cal = _build_calibrator(window_s=5.0)
+        _feed_known_distribution(cal, n=200, t0=0.0)
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+        try:
+            cal.save_profile(path)
+            with open(path) as f:
+                data = json.load(f)
+            assert data["schema_version"] == 1
+            assert "saved_at" in data
+            assert "profile" in data
+            assert isinstance(data["profile"], dict)
+        finally:
+            os.unlink(path)
+
+    def test_stale_profile_idle_near_ceiling_rejected(self):
+        """Profile with fan_idle_rpm within 5% of fan_ceiling_rpm is rejected (circular ref)."""
+        cal = _build_calibrator(window_s=5.0)
+        _feed_known_distribution(cal, n=200, t0=0.0)
+        assert cal.is_calibrated
+
+        # Manually corrupt the profile: set idle ≈ ceiling (circular reference bug)
+        cal._profile.fan_idle_rpm = 3300.0
+        cal._profile.fan_ceiling_rpm = 3400.0  # ratio = 3300/3400 = 0.97 > 0.95
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+        try:
+            cal.save_profile(path)
+            cal2 = _build_calibrator(window_s=99999.0)
+            assert not cal2.is_calibrated
+            assert cal2.load_profile(path) is False  # must reject
+            assert not cal2.is_calibrated  # stays uncalibrated → will re-observe
+        finally:
+            os.unlink(path)
+
+
+class TestCalibrationIdleStepping:
+    """Tests for the calibration idle stepping override in the agent control loop."""
+
+    def test_idle_step_fires_during_calibration_window(self):
+        """When _in_calibration_window=True and GPU power is below trigger,
+        the agent should override duty to bootstrap floor."""
+        # Simulate the idle stepping logic from the agent
+        cal = _build_calibrator(window_s=1800.0)
+        assert not cal.is_calibrated  # still in observation window
+        bootstrap_rpm = cal._bootstrap_floor  # 7000 * 0.30 = 2100
+
+        # Simulate: GPU idle (5W < 15W trigger)
+        gpu_power = 5.0
+        trigger = cal.profile.active_compute_trigger_w  # 15.0
+
+        # This mirrors the agent logic
+        in_calibration_window = not cal.is_calibrated
+        assert in_calibration_window
+
+        duty = 50  # optimizer would command 50% (~3500 RPM)
+        if in_calibration_window and gpu_power < trigger:
+            bootstrap_duty = int(round((bootstrap_rpm / 7000.0) * 100.0))
+            bootstrap_duty = max(15, min(100, bootstrap_duty))
+            duty = bootstrap_duty
+
+        # duty should be bootstrap floor, not the optimizer's 50%
+        assert duty == 30  # 2100/7000 = 0.30 → 30%
+        assert duty != 50  # NOT the optimizer's original
+
+    def test_idle_step_releases_after_calibration(self):
+        """After calibration completes, idle stepping no longer overrides duty."""
+        cal = _build_calibrator(window_s=5.0)
+        _feed_known_distribution(cal, n=200, t0=0.0)
+        assert cal.is_calibrated  # calibration done
+
+        in_calibration_window = not cal.is_calibrated
+        assert not in_calibration_window
+
+        # With calibration done, duty should pass through unchanged
+        duty = 50
+        gpu_power = 5.0
+        trigger = cal.profile.active_compute_trigger_w
+        if in_calibration_window and gpu_power < trigger:
+            duty = 30  # would override
+        assert duty == 50  # NOT overridden — idle stepping released

@@ -3,7 +3,7 @@
 # Usage: cd /path/to/coolingai_simulator && expect scripts/deploy_to_100.exp
 
 set timeout 180
-set pass "Admin123"
+set pass "Admin1996"
 set host "cooledaiadmin@192.168.12.100"
 # Delay before sending password so remote is ready (avoids dropped chars)
 set send_delay 10
