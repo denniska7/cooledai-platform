@@ -751,15 +751,16 @@ class ThermalCalibrator:
             _log.warning("[THERMAL_CAL] Failed to reconstruct profile: %s", exc)
             return False
 
-        # Sanity check: fan_idle_rpm must NOT be within 5% of fan_ceiling_rpm.
+        # Sanity check: fan_idle_rpm must NOT be within 10% of fan_ceiling_rpm.
         # This indicates the observation window suffered the circular reference
-        # bug (optimizer commanded speed recorded as idle).
+        # bug (optimizer commanded speed recorded as idle).  A valid system has
+        # meaningful separation between idle and ceiling RPM.
         if loaded.fan_ceiling_rpm > 0:
             ratio = loaded.fan_idle_rpm / loaded.fan_ceiling_rpm
-            if ratio > 0.95:
+            if ratio > 0.90:
                 _log.warning(
                     "[THERMAL_CAL] Stale profile rejected: fan_idle_rpm=%.0f is "
-                    "within 5%% of fan_ceiling_rpm=%.0f (ratio=%.3f) — "
+                    "within 10%% of fan_ceiling_rpm=%.0f (ratio=%.3f) — "
                     "circular reference detected, re-observing",
                     loaded.fan_idle_rpm, loaded.fan_ceiling_rpm, ratio,
                 )

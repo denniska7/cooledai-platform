@@ -12,6 +12,7 @@ Covers:
 
 import sys
 import time
+from unittest import mock
 import numpy as np
 import pytest
 from pathlib import Path
@@ -284,6 +285,37 @@ class TestSpikeBypassOptimizer:
             f"Bypass delta should be uncapped (~0.12), got {result_bypass.recommended_delta}"
         )
         assert result_bypass.recommended_delta > result_normal.recommended_delta
+
+    def test_spike_bypass_applied_log_fires(self):
+        """[OPTIMIZER] spike_bypass_applied log should fire when spike_bypass=True."""
+        profile = _make_profile(
+            slew_rate_up_rpm_per_cycle=30.0,
+            slew_rate_down_rpm_per_cycle=20.0,
+            min_response_quantum_rpm=10.0,
+        )
+        opt = PowerCostOptimizer(calibration_profile=profile)
+
+        kwargs = dict(
+            current_thermal=75.0,
+            target_temp=65.0,
+            max_safe_temp=80.0,
+            current_cooling=2000.0,
+            max_cooling=7000.0,
+            over_provisioning=0.0,
+            temp_rising=True,
+            oscillation=False,
+            sustained_active_compute=True,
+            current_power_w=100.0,
+        )
+
+        import logging
+        with mock.patch.object(logging.getLogger("cooledai.optimizer"), "info") as mock_info:
+            opt.optimize_for_min_power(**kwargs, spike_bypass=True)
+            # Verify [OPTIMIZER] spike_bypass_applied was logged
+            log_messages = [str(call) for call in mock_info.call_args_list]
+            assert any("spike_bypass_applied" in msg for msg in log_messages), (
+                f"Expected [OPTIMIZER] spike_bypass_applied log, got: {log_messages}"
+            )
 
 
 # --------------------------------------------------------------------------

@@ -428,6 +428,13 @@ class PowerCostOptimizer:
         # Asymmetric slew rate limiting (calibration profile)
         # Skip slew cap on upward moves when spike_bypass — fans need to jump immediately
         cp = self.calibration_profile
+        if spike_bypass and cp is not None:
+            target_rpm = current_cooling * (1.0 + delta) if current_cooling > 1e-6 else max_cooling * delta
+            _log.info(
+                "[OPTIMIZER] spike_bypass_applied: target_rpm=%.0f delta=%.4f "
+                "slew_cap_skipped=True",
+                target_rpm, delta,
+            )
         if cp is not None and max_cooling > 1e-6 and not spike_bypass:
             slew_up = getattr(cp, "slew_rate_up_rpm_per_cycle", 0)
             slew_down = getattr(cp, "slew_rate_down_rpm_per_cycle", 0)
