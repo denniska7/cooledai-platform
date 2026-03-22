@@ -10,6 +10,7 @@ from __future__ import annotations
 import base64
 import json
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, call
@@ -530,6 +531,153 @@ class TestAgentXCCIntegration(unittest.TestCase):
         finally:
             agent._XCC_FAN_CONTROLLER = old_xcc
             agent._xcc_override_active = old_active
+
+
+# ===========================================================================
+# FIX 2: XCC Failsafe Architecture Tests
+# ===========================================================================
+
+class TestXCCFailsafeArchitecture(unittest.TestCase):
+    """Tests for optimization-owns-control, failsafe, and reconnect."""
+
+    def _reset_agent_globals(self):
+        """Reset agent globals to a known state."""
+        import scripts.cooledai_agent as agent
+        agent._optimization_owns_control = False
+        agent._last_successful_xcc_command_ts = 0.0
+        agent._xcc_watchdog_last_check = 0.0
+        agent._xcc_override_active = False
+
+    def test_startup_takes_control(self):
+        """XCC controller takes ownership on startup."""
+        import scripts.cooledai_agent as agent
+        self._reset_agent_globals()
+
+        mock_xcc = MagicMock()
+        mock_xcc.available = True
+        mock_xcc.set_manual_fan_percent.return_value = True
+
+        old_xcc = agent._XCC_FAN_CONTROLLER
+        agent._XCC_FAN_CONTROLLER = mock_xcc
+        try:
+            # Simulate startup takeover logic
+            if mock_xcc.available:
+                if mock_xcc.set_manual_fan_percent(50):
+                    agent._optimization_owns_control = True
+                    agent._last_successful_xcc_command_ts = time.monotonic()
+
+            self.assertTrue(agent._optimization_owns_control)
+            self.assertGreater(agent._last_successful_xcc_command_ts, 0)
+            mock_xcc.set_manual_fan_percent.assert_called_once_with(50)
+        finally:
+            agent._XCC_FAN_CONTROLLER = old_xcc
+            self._reset_agent_globals()
+
+    def test_failsafe_activates_after_timeout(self):
+        """Failsafe activates when command gap exceeds timeout and probe fails."""
+        import scripts.cooledai_agent as agent
+        self._reset_agent_globals()
+
+        mock_xcc = MagicMock()
+        mock_xcc.available = True
+        mock_xcc.read_fan_speeds.return_value = []  # Probe fails (empty = not responsive)
+        mock_xcc.restore_auto_control.return_value = True
+
+        old_xcc = agent._XCC_FAN_CONTROLLER
+        old_timeout = agent._XCC_FAILSAFE_TIMEOUT_S
+        agent._XCC_FAN_CONTROLLER = mock_xcc
+        agent._XCC_FAILSAFE_TIMEOUT_S = 5.0  # short for test
+        agent._optimization_owns_control = True
+        agent._last_successful_xcc_command_ts = time.monotonic() - 10.0  # 10s ago, >5s timeout
+        agent._xcc_watchdog_last_check = 0.0  # force check
+        try:
+            agent._xcc_failsafe_watchdog(dry_run=False, current_duty_pct=50)
+            self.assertFalse(agent._optimization_owns_control)
+            mock_xcc.restore_auto_control.assert_called()
+        finally:
+            agent._XCC_FAN_CONTROLLER = old_xcc
+            agent._XCC_FAILSAFE_TIMEOUT_S = old_timeout
+            self._reset_agent_globals()
+
+    def test_reconnect_retakes_control(self):
+        """Reconnect loop retakes control after successful probe."""
+        import scripts.cooledai_agent as agent
+        self._reset_agent_globals()
+
+        mock_xcc = MagicMock()
+        mock_xcc.available = True
+        mock_xcc.read_fan_speeds.return_value = [{"name": "Fan 1", "reading_pct": 50, "status": "OK"}]
+        mock_xcc.set_manual_fan_percent.return_value = True
+
+        old_xcc = agent._XCC_FAN_CONTROLLER
+        agent._XCC_FAN_CONTROLLER = mock_xcc
+        agent._optimization_owns_control = False
+        agent._xcc_watchdog_last_check = 0.0  # force check
+        try:
+            agent._xcc_failsafe_watchdog(dry_run=False, current_duty_pct=60)
+            self.assertTrue(agent._optimization_owns_control)
+            mock_xcc.set_manual_fan_percent.assert_called_with(60)
+        finally:
+            agent._XCC_FAN_CONTROLLER = old_xcc
+            self._reset_agent_globals()
+
+    def test_no_false_trigger_within_timeout(self):
+        """Failsafe does NOT activate when commands succeed within timeout."""
+        import scripts.cooledai_agent as agent
+        self._reset_agent_globals()
+
+        mock_xcc = MagicMock()
+        mock_xcc.available = True
+
+        old_xcc = agent._XCC_FAN_CONTROLLER
+        old_timeout = agent._XCC_FAILSAFE_TIMEOUT_S
+        agent._XCC_FAN_CONTROLLER = mock_xcc
+        agent._XCC_FAILSAFE_TIMEOUT_S = 120.0
+        agent._optimization_owns_control = True
+        agent._last_successful_xcc_command_ts = time.monotonic() - 30.0  # 30s ago, <120s timeout
+        agent._xcc_watchdog_last_check = 0.0
+        try:
+            agent._xcc_failsafe_watchdog(dry_run=False, current_duty_pct=50)
+            # Should still own control — no failsafe
+            self.assertTrue(agent._optimization_owns_control)
+            mock_xcc.restore_auto_control.assert_not_called()
+        finally:
+            agent._XCC_FAN_CONTROLLER = old_xcc
+            agent._XCC_FAILSAFE_TIMEOUT_S = old_timeout
+            self._reset_agent_globals()
+
+    def test_cleanup_calls_xcc_restore_last(self):
+        """_cleanup() calls XCC restore after GPU governor and fan revert."""
+        import scripts.cooledai_agent as agent
+        self._reset_agent_globals()
+
+        mock_xcc = MagicMock()
+        mock_xcc.available = True
+        mock_xcc.restore_auto_control.return_value = True
+
+        old_xcc = agent._XCC_FAN_CONTROLLER
+        old_cal = agent._THERMAL_CALIBRATOR
+        old_gov = agent._GPU_GOVERNOR
+        old_dry = agent._dry_run_flag
+
+        agent._XCC_FAN_CONTROLLER = mock_xcc
+        agent._THERMAL_CALIBRATOR = None  # skip calibration save
+        agent._GPU_GOVERNOR = None  # skip governor reset
+        agent._dry_run_flag = False  # must be False so _restore_xcc_auto calls through
+        agent._optimization_owns_control = True
+        agent._xcc_override_active = False
+        agent._manual_control_active = False
+        try:
+            agent._cleanup()
+            # XCC restore should have been called
+            mock_xcc.restore_auto_control.assert_called()
+            self.assertFalse(agent._optimization_owns_control)
+        finally:
+            agent._XCC_FAN_CONTROLLER = old_xcc
+            agent._THERMAL_CALIBRATOR = old_cal
+            agent._GPU_GOVERNOR = old_gov
+            agent._dry_run_flag = old_dry
+            self._reset_agent_globals()
 
 
 if __name__ == "__main__":

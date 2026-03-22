@@ -8,8 +8,8 @@ Complete setup for the **cooledai-srv** (pilot) node with predictive cooling, du
 
 | Node | Role | Host | Notes |
 |------|------|------|-------|
-| **cooledai-srv** | Pilot (Predictive) | `100.92.29.44` (Tailscale) | Predictive engine, fan control, dual Ollama |
-| **cooledai-control** | Control (Baseline) | `192.168.12.101` | Traditional cooling, dual Ollama |
+| **cooledai-srv** | Pilot (Predictive) | `100.92.29.44` (Tailscale) / `192.168.12.100` (LAN) | Predictive engine, fan control, dual Ollama |
+| **cooledai-control** | Control (Baseline) | `100.123.202.94` (Tailscale) / `192.168.12.101` (LAN) | Traditional cooling, dual Ollama |
 
 ---
 
