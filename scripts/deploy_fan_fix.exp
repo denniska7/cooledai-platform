@@ -1,0 +1,34 @@
+#!/usr/bin/expect -f
+set timeout 60
+set pass "***REDACTED_SSH_PASS***"
+
+# SCP the updated agent
+spawn scp -o StrictHostKeyChecking=no scripts/cooledai_agent.py cooledaiadmin@100.92.29.44:/tmp/
+expect "password:" { send "$pass\r" }
+expect eof
+
+# SSH in and deploy
+spawn ssh -o StrictHostKeyChecking=no cooledaiadmin@100.92.29.44
+expect "password:" { send "$pass\r" }
+expect -re {\$ }
+
+send "cat > /tmp/deploy_fan.sh << 'EOF'\n"
+send "#!/bin/bash\n"
+send "cp /tmp/cooledai_agent.py /opt/cooledai/cooledai_agent.py\n"
+send "rm -f /var/lib/cooledai/calibration_profile.json\n"
+send "systemctl restart cooledai-agent\n"
+send "echo FAN_FIX_DEPLOYED\n"
+send "EOF\n"
+expect -re {\$ }
+
+send "chmod +x /tmp/deploy_fan.sh && sudo /tmp/deploy_fan.sh\r"
+expect {
+    "password for" { send "$pass\r"; exp_continue }
+    "FAN_FIX_DEPLOYED" { puts "\n>>> Fan fix deployed and agent restarted" }
+    timeout { puts "\n>>> TIMEOUT" }
+}
+expect -re {\$ }
+sleep 1
+
+send "exit\r"
+expect eof

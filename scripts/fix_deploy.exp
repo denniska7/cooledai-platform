@@ -1,0 +1,40 @@
+#!/usr/bin/expect -f
+set timeout 60
+set pass "***REDACTED_SSH_PASS***"
+set host "cooledaiadmin@100.92.29.44"
+
+spawn ssh -o StrictHostKeyChecking=no $host
+expect "password:" { send "$pass\r" }
+expect -re {\$ }
+
+# Check if files were deployed
+send "ls -la /tmp/thermal_calibrator.py /tmp/optimizer.py /tmp/cooledai_agent.py 2>&1\r"
+expect -re {\$ }
+sleep 1
+
+# Check current deployed file timestamps
+send "ls -la /opt/cooledai/core/optimization/thermal_calibrator.py /opt/cooledai/core/optimization/optimizer.py /opt/cooledai/scripts/cooledai_agent.py 2>&1\r"
+expect -re {\$ }
+sleep 1
+
+# Do the actual deploy with sudo -S (read password from stdin)
+send "echo '***REDACTED_SSH_PASS***' | sudo -S bash -c 'cp /tmp/thermal_calibrator.py /opt/cooledai/core/optimization/thermal_calibrator.py && cp /tmp/optimizer.py /opt/cooledai/core/optimization/optimizer.py && cp /tmp/cooledai_agent.py /opt/cooledai/scripts/cooledai_agent.py && rm -f /var/lib/cooledai/calibration_profile.json && systemctl restart cooledai-agent && echo DEPLOY_OK' 2>&1\r"
+expect {
+    "DEPLOY_OK" { puts "\n>>> Files deployed, profile deleted, agent restarted" }
+    timeout { puts "\n>>> TIMEOUT on deploy" }
+}
+expect -re {\$ }
+sleep 1
+
+# Verify profile deleted
+send "ls -la /var/lib/cooledai/calibration_profile.json 2>&1\r"
+expect -re {\$ }
+sleep 1
+
+# Verify new file timestamps
+send "ls -la /opt/cooledai/core/optimization/thermal_calibrator.py 2>&1\r"
+expect -re {\$ }
+sleep 1
+
+send "exit\r"
+expect eof

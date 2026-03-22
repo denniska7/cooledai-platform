@@ -1,0 +1,35 @@
+#!/usr/bin/expect -f
+set timeout 60
+set pass "***REDACTED_SSH_PASS***"
+spawn ssh -o StrictHostKeyChecking=no cooledaiadmin@100.92.29.44
+expect "password:" { send "$pass\r" }
+expect -re {\$ }
+
+# Check profile timestamp
+send "stat /var/lib/cooledai/calibration_profile.json 2>&1\r"
+expect -re {\$ }
+sleep 1
+
+# Check recent agent logs
+send "sudo journalctl -u cooledai-agent --since '5 minutes ago' --no-pager 2>&1 | head -40\r"
+expect {
+    "password for" { send "$pass\r"; exp_continue }
+    -re {\$ } { }
+}
+sleep 2
+
+# Delete profile again and restart
+send "sudo bash -c 'rm -f /var/lib/cooledai/calibration_profile.json && sleep 1 && systemctl restart cooledai-agent'\r"
+expect {
+    "password for" { send "$pass\r"; exp_continue }
+    -re {\$ } { }
+}
+sleep 2
+
+# Verify it's gone
+send "stat /var/lib/cooledai/calibration_profile.json 2>&1\r"
+expect -re {\$ }
+sleep 1
+
+send "exit\r"
+expect eof

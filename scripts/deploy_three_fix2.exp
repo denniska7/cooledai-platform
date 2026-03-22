@@ -1,0 +1,40 @@
+#!/usr/bin/expect -f
+set timeout 120
+set pass "***REDACTED_SSH_PASS***"
+set host "cooledaiadmin@100.92.29.44"
+
+# SCP files
+spawn scp -o StrictHostKeyChecking=no \
+    core/optimization/thermal_calibrator.py \
+    core/optimization/optimizer.py \
+    scripts/cooledai_agent.py \
+    $host:/tmp/
+expect "password:" { send "$pass\r" }
+expect eof
+
+# SSH and deploy
+spawn ssh -o StrictHostKeyChecking=no $host
+expect "password:" { send "$pass\r" }
+expect -re {\$ }
+
+# Single sudo bash block to avoid multiple password prompts
+send "sudo bash -c '\
+cp /tmp/thermal_calibrator.py /opt/cooledai/core/optimization/thermal_calibrator.py && \
+cp /tmp/optimizer.py /opt/cooledai/core/optimization/optimizer.py && \
+cp /tmp/cooledai_agent.py /opt/cooledai/scripts/cooledai_agent.py && \
+rm -f /var/lib/cooledai/calibration_profile.json && \
+systemctl restart cooledai-agent && \
+echo ALL_DONE'\r"
+expect {
+    "password for" { send "$pass\r"; exp_continue }
+    "ALL_DONE" { puts "\n>>> Deploy + restart successful" }
+    timeout { puts "\n>>> TIMEOUT"; exit 1 }
+}
+expect -re {\$ }
+
+# Check logs after 15s
+send "sleep 15 && sudo journalctl -u cooledai-agent --since '20 seconds ago' --no-pager 2>&1 | grep -E 'THERMAL_CAL|calibration|bootstrap|XCC_FAN|spike_bypass|Started' | head -20\r"
+expect -re {\$ }
+sleep 3
+send "exit\r"
+expect eof
