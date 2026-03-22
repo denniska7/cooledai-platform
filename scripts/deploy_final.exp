@@ -1,0 +1,43 @@
+#!/usr/bin/expect -f
+set timeout 60
+set pass "Admin1996"
+spawn ssh -o StrictHostKeyChecking=no cooledaiadmin@100.92.29.44
+expect "password:" { send "$pass\r" }
+expect -re {\$ }
+
+send "echo 'Admin1996' | sudo -S bash << 'ENDSCRIPT'\r"
+expect -re {\$ |# |> }
+send "cp /tmp/thermal_calibrator.py /opt/cooledai/core/optimization/thermal_calibrator.py\r"
+expect -re {\$ |# |> }
+send "cp /tmp/optimizer.py /opt/cooledai/core/optimization/optimizer.py\r"
+expect -re {\$ |# |> }
+send "cp /tmp/cooledai_agent.py /opt/cooledai/cooledai_agent.py\r"
+expect -re {\$ |# |> }
+send "rm -f /var/lib/cooledai/calibration_profile.json\r"
+expect -re {\$ |# |> }
+send "systemctl restart cooledai-agent\r"
+expect -re {\$ |# |> }
+send "echo ALLDONE\r"
+expect -re {\$ |# |> }
+send "ENDSCRIPT\r"
+expect -re {\$ }
+sleep 2
+
+# Verify
+send "ls -la /opt/cooledai/cooledai_agent.py /opt/cooledai/core/optimization/optimizer.py /opt/cooledai/core/optimization/thermal_calibrator.py 2>&1\r"
+expect -re {\$ }
+sleep 1
+
+send "ls /var/lib/cooledai/calibration_profile.json 2>&1\r"
+expect -re {\$ }
+sleep 1
+
+send "sudo systemctl status cooledai-agent --no-pager 2>&1 | head -10\r"
+expect {
+    "password for" { send "$pass\r"; exp_continue }
+    -re {\$ } { }
+}
+sleep 1
+
+send "exit\r"
+expect eof

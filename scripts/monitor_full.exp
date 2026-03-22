@@ -1,0 +1,37 @@
+#!/usr/bin/expect -f
+set timeout 60
+set pass "Admin1996"
+spawn ssh -o StrictHostKeyChecking=no cooledaiadmin@100.92.29.44
+expect "password:" { send "$pass\r" }
+expect -re {\$ }
+
+# Agent uptime
+send "sudo systemctl status cooledai-agent --no-pager 2>&1 | grep Active\r"
+expect {
+    "password for" { send "$pass\r"; exp_continue }
+    -re {\$ } { }
+}
+sleep 1
+
+# FAN_DIAG — last 10 entries (check method column)
+send "sudo journalctl -u cooledai-agent --since '2 minutes ago' --no-pager 2>&1 | grep FAN_DIAG | tail -10\r"
+expect -re {\$ }
+sleep 2
+
+# Calibration idle stepping — still firing?
+send "sudo journalctl -u cooledai-agent --since '2 minutes ago' --no-pager 2>&1 | grep -c 'calibration_idle_step'\r"
+expect -re {\$ }
+sleep 1
+
+# XCC commands succeeding?
+send "sudo journalctl -u cooledai-agent --since '2 minutes ago' --no-pager 2>&1 | grep -c 'SUCCESS'\r"
+expect -re {\$ }
+sleep 1
+
+# Any errors?
+send "sudo journalctl -u cooledai-agent --since '2 minutes ago' --no-pager 2>&1 | grep -iE 'ERROR|FAIL|failed' | tail -5\r"
+expect -re {\$ }
+sleep 1
+
+send "exit\r"
+expect eof

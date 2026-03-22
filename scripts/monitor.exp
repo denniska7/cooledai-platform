@@ -1,0 +1,37 @@
+#!/usr/bin/expect -f
+set timeout 60
+set pass "Admin1996"
+spawn ssh -o StrictHostKeyChecking=no cooledaiadmin@100.92.29.44
+expect "password:" { send "$pass\r" }
+expect -re {\$ }
+
+# How long has agent been running?
+send "sudo systemctl status cooledai-agent --no-pager 2>&1 | head -8\r"
+expect {
+    "password for" { send "$pass\r"; exp_continue }
+    -re {\$ } { }
+}
+sleep 1
+
+# Check if calibration completed
+send "sudo journalctl -u cooledai-agent --since '35 minutes ago' --no-pager 2>&1 | grep -E 'calibration complete|idle_samples|active_samples|Stale profile|calibration_idle_step|method=ipmi|method=xcc|method=none|THERMAL_CAL.*Saved' | tail -30\r"
+expect -re {\$ }
+sleep 2
+
+# Check current profile
+send "cat /var/lib/cooledai/calibration_profile.json 2>&1\r"
+expect -re {\$ }
+sleep 1
+
+# Check last 20 FAN_DIAG entries to see if method != none
+send "sudo journalctl -u cooledai-agent --since '2 minutes ago' --no-pager 2>&1 | grep FAN_DIAG | tail -10\r"
+expect -re {\$ }
+sleep 1
+
+# Check for XCC commands actually going through
+send "sudo journalctl -u cooledai-agent --since '2 minutes ago' --no-pager 2>&1 | grep -E 'XCC_FAN.*method=|XCC_FAN.*fan_pct|set_fan_duty|command_gap' | tail -10\r"
+expect -re {\$ }
+sleep 1
+
+send "exit\r"
+expect eof

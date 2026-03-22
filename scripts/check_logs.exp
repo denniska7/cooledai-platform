@@ -1,0 +1,23 @@
+#!/usr/bin/expect -f
+set timeout 60
+set pass "Admin1996"
+set host "cooledaiadmin@100.92.29.44"
+
+spawn ssh -o StrictHostKeyChecking=no $host
+expect "password:" { send "$pass\r" }
+expect -re {\$ }
+
+send "sudo journalctl -u cooledai-agent --since '3 minutes ago' --no-pager 2>&1 | grep -iE 'THERMAL_CAL|calibration|bootstrap|XCC_FAN|spike_bypass|Started|idle_step|observation' | head -30\r"
+expect {
+    "password for" { send "$pass\r"; exp_continue }
+    -re {\$ } { }
+    timeout { puts "TIMEOUT" }
+}
+sleep 1
+
+send "ls -la /var/lib/cooledai/calibration_profile.json 2>&1\r"
+expect -re {\$ }
+sleep 1
+
+send "exit\r"
+expect eof
