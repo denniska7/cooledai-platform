@@ -969,7 +969,25 @@ def set_fan_duty(
 
     target_rpm = (duty / 100.0) * rated_max_rpm
 
-    # --- XCC Redfish fan control (primary for Lenovo ST550) ---
+    # --- XCC IPMI-over-LAN (primary path when optimization owns control) ---
+    # When _optimization_owns_control is True, we took over at startup via XCC
+    # IPMI-over-LAN (set_manual_fan_percent).  ALL subsequent commands must use
+    # the same path — local ipmitool won't work because /dev/ipmi0 doesn't
+    # exist on Lenovo ST550.  This replaces the old "override-only" XCC logic
+    # that required target > threshold to fire.
+    if _optimization_owns_control and _XCC_FAN_CONTROLLER is not None and _XCC_FAN_CONTROLLER.available:
+        fan_pct = max(0, min(100, duty))
+        if dry_run:
+            _log.debug("[DRY-RUN] XCC_FAN: would send %d%% (target_rpm=%.0f)", fan_pct, target_rpm)
+            return "xcc_ipmi_lan"
+        ok = _XCC_FAN_CONTROLLER.set_manual_fan_percent(fan_pct)
+        if ok:
+            _last_successful_xcc_command_ts = time.monotonic()
+            return "xcc_ipmi_lan"
+        else:
+            _log.warning("[XCC_FAN] set_manual_fan_percent(%d) failed — falling through to IPMI/PWM", fan_pct)
+
+    # --- XCC Redfish override (spike scenarios where hw not responding) ---
     if _XCC_FAN_CONTROLLER is not None and _XCC_FAN_CONTROLLER.available:
         threshold_rpm = _get_xcc_override_threshold_rpm()
         if target_rpm > threshold_rpm and (hw_rpm <= 0 or hw_rpm < target_rpm * 0.85):
