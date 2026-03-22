@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev"],
+      "port": 3000
+    },
+    {
+      "name": "api",
+      "runtimeExecutable": "uvicorn",
+      "runtimeArgs": ["api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"],
+      "port": 8000
+    },
+    {
+      "name": "streamlit-dashboard",
+      "runtimeExecutable": "streamlit",
+      "runtimeArgs": ["run", "frontend/dashboard.py"],
+      "port": 8501
+    }
+  ]
+}
