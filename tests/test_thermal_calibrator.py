@@ -810,14 +810,15 @@ class TestPersistence:
             os.unlink(path)
 
     def test_stale_profile_idle_near_ceiling_rejected(self):
-        """Profile with fan_idle_rpm within 5% of fan_ceiling_rpm is rejected (circular ref)."""
+        """Profile with fan_idle_rpm within 10% of fan_ceiling_rpm is rejected (circular ref)."""
         cal = _build_calibrator(window_s=5.0)
         _feed_known_distribution(cal, n=200, t0=0.0)
         assert cal.is_calibrated
 
         # Manually corrupt the profile: set idle ≈ ceiling (circular reference bug)
+        # ratio = 3300/3400 = 0.97 > 0.90 threshold → rejected
         cal._profile.fan_idle_rpm = 3300.0
-        cal._profile.fan_ceiling_rpm = 3400.0  # ratio = 3300/3400 = 0.97 > 0.95
+        cal._profile.fan_ceiling_rpm = 3400.0
 
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             path = f.name
@@ -827,6 +828,49 @@ class TestPersistence:
             assert not cal2.is_calibrated
             assert cal2.load_profile(path) is False  # must reject
             assert not cal2.is_calibrated  # stays uncalibrated → will re-observe
+        finally:
+            os.unlink(path)
+
+
+    def test_profile_idle_at_89pct_of_ceiling_accepted(self):
+        """Profile with fan_idle_rpm at 89% of ceiling should be accepted (below 90% threshold)."""
+        cal = _build_calibrator(window_s=5.0)
+        _feed_known_distribution(cal, n=200, t0=0.0)
+        assert cal.is_calibrated
+
+        # Set idle/ceiling with meaningful separation: ratio = 2670/3000 = 0.89 < 0.90
+        cal._profile.fan_idle_rpm = 2670.0
+        cal._profile.fan_ceiling_rpm = 3000.0
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+        try:
+            cal.save_profile(path)
+            cal2 = _build_calibrator(window_s=99999.0)
+            assert not cal2.is_calibrated
+            assert cal2.load_profile(path) is True  # should accept
+            assert cal2.is_calibrated
+        finally:
+            os.unlink(path)
+
+    def test_profile_idle_at_91pct_of_ceiling_rejected(self):
+        """Profile with fan_idle_rpm at 91% of ceiling should be rejected (above 90% threshold)."""
+        cal = _build_calibrator(window_s=5.0)
+        _feed_known_distribution(cal, n=200, t0=0.0)
+        assert cal.is_calibrated
+
+        # Set idle/ceiling too close: ratio = 3640/4000 = 0.91 > 0.90
+        cal._profile.fan_idle_rpm = 3640.0
+        cal._profile.fan_ceiling_rpm = 4000.0
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+        try:
+            cal.save_profile(path)
+            cal2 = _build_calibrator(window_s=99999.0)
+            assert not cal2.is_calibrated
+            assert cal2.load_profile(path) is False  # must reject
+            assert not cal2.is_calibrated
         finally:
             os.unlink(path)
 
