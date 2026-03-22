@@ -1,0 +1,87 @@
+#!/usr/bin/expect -f
+# Install Tailscale on node .100 and .101 for remote access (e.g. from a coffee shop).
+# Usage:
+#   1. Generate an auth key: https://login.tailscale.com/admin/settings/keys
+#      - Use "Reusable" so one key works for both nodes
+#      - Consider "Disable key expiry" for servers
+#   2. Run: TAILSCALE_AUTHKEY=tskey-auth-xxxx expect scripts/install_tailscale.exp
+#      Or: expect scripts/install_tailscale.exp
+#      (if no key, script will prompt)
+#
+# Run from your Mac while on the same network as the nodes (192.168.12.x).
+
+set timeout 300
+set pass_100 "***REDACTED_SSH_PASS***"
+set pass_101 "***REDACTED_SSH_PASS***"
+set send_delay 10
+
+# Auth key is required for headless servers
+if {![info exists env(TAILSCALE_AUTHKEY)] || $env(TAILSCALE_AUTHKEY) == ""} {
+    puts "TAILSCALE_AUTHKEY not set."
+    puts "1. Get an auth key: https://login.tailscale.com/admin/settings/keys"
+    puts "   (Use Reusable, consider Disable key expiry for servers)"
+    puts "2. Run: TAILSCALE_AUTHKEY=tskey-auth-xxxx expect scripts/install_tailscale.exp"
+    exit 1
+}
+set authkey $env(TAILSCALE_AUTHKEY)
+
+proc install_on_node {host node_name pass} {
+    global authkey send_delay
+    puts "\n========== Installing Tailscale on $node_name ($host) =========="
+    spawn ssh -o StrictHostKeyChecking=no $host
+    expect "password:"
+    sleep $send_delay
+    send "$pass\r"
+    expect -re {\$ |# }
+
+    # Install Tailscale (official script works on Ubuntu/Debian)
+    send "curl -fsSL https://tailscale.com/install.sh | sh\r"
+    expect {
+        "password for" { sleep $send_delay; send "$pass\r"; exp_continue }
+        -re {\$ |# } { }
+        timeout { puts "Timeout during install"; send "exit\r"; expect eof; return 1 }
+    }
+    expect -re {\$ |# }
+
+    # Connect to Tailscale with auth key (headless - no browser)
+    send "sudo tailscale up --authkey=$authkey --accept-routes\r"
+    expect {
+        "password for" { sleep $send_delay; send "$pass\r"; exp_continue }
+        -re {\$ |# } { }
+        timeout { puts "Timeout during tailscale up"; send "exit\r"; expect eof; return 1 }
+    }
+    expect -re {\$ |# }
+
+    # Show the Tailscale IP
+    send "tailscale ip -4\r"
+    expect -re {\$ |# }
+    send "tailscale status\r"
+    expect -re {\$ |# }
+
+    send "exit\r"
+    expect eof
+    return 0
+}
+
+# Optional: NODE=100 or NODE=101 to install on just one node
+set node_filter ""
+if {[info exists env(NODE)] && $env(NODE) != ""} {
+    set node_filter $env(NODE)
+    puts "Installing Tailscale on Node .$node_filter only"
+} else {
+    puts "Tailscale install for nodes .100 and .101"
+}
+puts "Auth key: [string range $authkey 0 15]..."
+puts ""
+
+if {$node_filter == "" || $node_filter == "100"} {
+    install_on_node "cooledaiadmin@192.168.12.100" "Node .100 (Pilot)" $pass_100
+}
+if {$node_filter == "" || $node_filter == "101"} {
+    install_on_node "cooledaiadmin@192.168.12.101" "Node .101 (Control)" $pass_101
+}
+
+puts "\n========== Done =========="
+puts "Check https://login.tailscale.com/admin/machines for your nodes."
+puts "From your Mac (with Tailscale), SSH via: ssh cooledaiadmin@<tailscale-ip-of-node>"
+puts "Or use MagicDNS: ssh cooledaiadmin@<hostname> (if MagicDNS is enabled)"
