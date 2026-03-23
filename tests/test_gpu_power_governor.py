@@ -457,5 +457,187 @@ class TestGPUGovLogging(unittest.TestCase):
             self.assertIn(field, log_line)
 
 
+# ===================================================================
+# FIX 1: Efficiency gate tests
+# ===================================================================
+
+
+class TestEfficiencyGate(unittest.TestCase):
+    """Efficiency mode should block TDP reduction when load is high."""
+
+    def _make_profile(self, spike=68.0, active_trigger=100.0):
+        p = MagicMock()
+        p.temp_mean_c = 55.0
+        p.temp_stdev_c = 3.0
+        p.temp_p90_c = 75.0
+        p.spike_trigger_temp_c = spike
+        p.active_compute_trigger_w = active_trigger
+        return p
+
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_gate_blocks_when_power_high(self, mock_set) -> None:
+        """High power draw (>= trigger × 1.5) blocks TDP reduction."""
+        gov = _make_governor(performance_mode=False)
+        gov.update_from_profile(self._make_profile(spike=68.0, active_trigger=100.0))
+
+        # Temp 60°C is in blend zone (full≈56.5, soft=68), power=180W > 100×1.5=150W
+        results = gov.tick([60.0], [180.0])
+        for idx, w, reason in results:
+            self.assertEqual(w, 200.0)
+            self.assertEqual(reason, "efficiency_gate_blocked")
+
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_gate_blocks_when_near_spike_temp(self, mock_set) -> None:
+        """Temp within 3°C of spike trigger blocks TDP reduction."""
+        gov = _make_governor(performance_mode=False)
+        gov.update_from_profile(self._make_profile(spike=68.0, active_trigger=100.0))
+
+        # Temp 66°C >= spike(68) - 3 = 65°C, power=80W (low)
+        results = gov.tick([66.0], [80.0])
+        for idx, w, reason in results:
+            self.assertEqual(w, 200.0)
+            self.assertEqual(reason, "efficiency_gate_blocked")
+
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_gate_blocks_when_power_ramping(self, mock_set) -> None:
+        """Rising power trend (30s window) blocks TDP reduction."""
+        gov = _make_governor(performance_mode=False)
+        gov.update_from_profile(self._make_profile(spike=68.0, active_trigger=100.0))
+
+        # Fill power history with ramping pattern: low → high
+        for p in [50, 55, 60, 65, 70, 80, 90, 100, 110, 120]:
+            gov._power_history.append(float(p))
+
+        # Temp 58°C (in blend zone), power=80W (< 150W), but ramping up
+        results = gov.tick([58.0], [80.0])
+        for idx, w, reason in results:
+            self.assertEqual(w, 200.0)
+            self.assertEqual(reason, "efficiency_gate_blocked")
+
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_gate_allows_reduction_when_all_clear(self, mock_set) -> None:
+        """When all 3 conditions pass, TDP reduction is allowed."""
+        gov = _make_governor(performance_mode=False)
+        gov.update_from_profile(self._make_profile(spike=68.0, active_trigger=100.0))
+
+        # Fill power history with flat/declining pattern
+        for p in [80, 78, 76, 74, 72, 70, 68, 66, 64, 62]:
+            gov._power_history.append(float(p))
+
+        # Temp 58°C (in blend zone, < 68-3=65), power=60W (< 100×1.5=150), trend down
+        results = gov.tick([58.0], [60.0])
+        for idx, w, reason in results:
+            self.assertLess(w, 200.0)
+            self.assertEqual(reason, "temperature_band")
+
+
+# ===================================================================
+# FIX 2: Continuous learning tests
+# ===================================================================
+
+
+class TestMiniRecalibration(unittest.TestCase):
+    """Rolling mini-recalibration should EWMA-smooth observed stats."""
+
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_mini_recal_updates_idle_peak(self, mock_set) -> None:
+        gov = _make_governor(performance_mode=True)
+        # Pre-set calibration values
+        gov._observed_idle_w = 80.0
+        gov._observed_peak_w = 200.0
+
+        # Fill recent samples with shifted power distribution
+        for _ in range(50):
+            gov._recent_samples.append((60.0, 120.0))  # higher idle
+        for _ in range(50):
+            gov._recent_samples.append((70.0, 250.0))  # higher peak
+
+        # Force recal by setting last_recal_time far in the past
+        gov._last_recal_time = 0
+        gov._check_continuous_learning(time.monotonic())
+
+        # EWMA should move idle and peak toward new values
+        # idle: 0.20 * 120 + 0.80 * 80 = 88
+        self.assertGreater(gov._observed_idle_w, 80.0)
+        self.assertLess(gov._observed_idle_w, 120.0)
+        # peak: 0.20 * 250 + 0.80 * 200 = 210
+        self.assertGreater(gov._observed_peak_w, 200.0)
+        self.assertLess(gov._observed_peak_w, 250.0)
+
+
+class TestDriftDetection(unittest.TestCase):
+    """Temp drift > 4°C from baseline should trigger immediate recalibration."""
+
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_drift_triggers_recal(self, mock_set) -> None:
+        gov = _make_governor(performance_mode=True)
+        gov._baseline_temp_mean = 55.0
+        gov._observed_idle_w = 80.0
+        gov._observed_peak_w = 180.0
+        gov._last_recal_time = time.monotonic()  # recently recalibrated
+
+        # Fill recent samples with temp drift of 5°C (> threshold 4°C)
+        for _ in range(100):
+            gov._recent_samples.append((60.0, 150.0))
+
+        old_idle = gov._observed_idle_w
+        with self.assertLogs("cooledai.gpu_gov", level="INFO") as cm:
+            gov._check_continuous_learning(time.monotonic())
+
+        # Should have logged drift detection
+        drift_logs = [l for l in cm.output if "Drift detected" in l]
+        self.assertGreater(len(drift_logs), 0)
+        # Baseline should be updated
+        self.assertAlmostEqual(gov._baseline_temp_mean, 60.0, delta=1.0)
+
+
+# ===================================================================
+# FIX 2: State persistence tests
+# ===================================================================
+
+
+class TestStatePersistence(unittest.TestCase):
+    """save_state/load_state should round-trip governor learning state."""
+
+    def test_save_and_load_roundtrip(self) -> None:
+        import tempfile
+        gov = _make_governor()
+        gov._observed_idle_w = 85.0
+        gov._observed_peak_w = 210.0
+        gov._baseline_temp_mean = 58.0
+        gov._calibrated = True
+        gov._temp_full_c = 57.0
+        gov._temp_soft_c = 66.0
+        gov._temp_hard_c = 74.0
+        gov._spike_trigger_c = 68.0
+        gov._active_compute_trigger_w = 105.0
+        gov._min_allowed_limit_w = {0: 93.5}
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+
+        try:
+            gov.save_state(path)
+
+            # Create fresh governor and load state
+            gov2 = _make_governor()
+            self.assertTrue(gov2.load_state(path))
+            self.assertAlmostEqual(gov2._observed_idle_w, 85.0)
+            self.assertAlmostEqual(gov2._observed_peak_w, 210.0)
+            self.assertAlmostEqual(gov2._baseline_temp_mean, 58.0)
+            self.assertTrue(gov2._calibrated)
+            self.assertAlmostEqual(gov2._temp_full_c, 57.0)
+            self.assertAlmostEqual(gov2._spike_trigger_c, 68.0)
+            self.assertAlmostEqual(gov2._active_compute_trigger_w, 105.0)
+            self.assertAlmostEqual(gov2._min_allowed_limit_w[0], 93.5)
+        finally:
+            os.unlink(path)
+
+    def test_load_missing_file_returns_false(self) -> None:
+        gov = _make_governor()
+        result = gov.load_state("/nonexistent/path/state.json")
+        self.assertFalse(result)
+
+
 if __name__ == "__main__":
     unittest.main()

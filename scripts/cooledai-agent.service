@@ -1,0 +1,58 @@
+[Unit]
+Description=CooledAI Thermal Optimization Agent
+After=network-online.target
+Wants=network-online.target
+Documentation=https://cooledai.com/docs
+
+[Service]
+Type=notify
+ExecStart=/usr/bin/python3 /opt/cooledai/cooledai_agent.py
+Restart=on-failure
+RestartSec=5
+WatchdogSec=120
+
+# Run as dedicated service user (no root, no sudo)
+User=cooledai
+Group=cooledai
+
+# Environment
+EnvironmentFile=-/etc/cooledai/agent.env
+
+# ── Security Hardening ──────────────────────────────────────────
+
+# Prevent privilege escalation
+NoNewPrivileges=yes
+
+# Filesystem isolation
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/var/lib/cooledai /var/log/cooledai
+
+# Kernel protection
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+# Memory protection
+MemoryDenyWriteExecute=yes
+
+# Process restrictions
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+# System call filtering
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+
+# Capabilities: only what ipmitool and nvidia-smi need
+CapabilityBoundingSet=CAP_SYS_RAWIO CAP_NET_ADMIN
+AmbientCapabilities=CAP_SYS_RAWIO
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cooledai-agent
+
+[Install]
+WantedBy=multi-user.target
