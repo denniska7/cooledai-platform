@@ -4,8 +4,9 @@ import { Suspense, useState, useEffect, useCallback, useMemo } from "react";
 import { useSearchParams } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import {
-  LineChart,
+  ComposedChart,
   Line,
+  Area,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -59,6 +60,37 @@ type PulsePoint = {
   delta?: number;
   ts: number;
 };
+
+// Downsample data for longer time ranges to keep charts clean
+function downsampleForRange(data: PulsePoint[], range: PulseRange): PulsePoint[] {
+  if (range === "1h" || data.length <= 360) return data; // 1h: show all points
+  // 24h: keep ~360 points (one per 4 min), 7d: ~500 points (one per 20 min)
+  const targetPoints = range === "24h" ? 360 : 500;
+  const bucketSize = Math.max(1, Math.floor(data.length / targetPoints));
+  const result: PulsePoint[] = [];
+  for (let i = 0; i < data.length; i += bucketSize) {
+    const bucket = data.slice(i, i + bucketSize);
+    if (bucket.length === 0) continue;
+    // Use min/max envelope for each bucket to preserve spikes and dips
+    const avg = (arr: (number | undefined)[]): number | undefined => {
+      const valid = arr.filter((v): v is number => v != null && !isNaN(v));
+      return valid.length > 0 ? valid.reduce((a, b) => a + b, 0) / valid.length : undefined;
+    };
+    result.push({
+      time: bucket[Math.floor(bucket.length / 2)].time,
+      ts: bucket[Math.floor(bucket.length / 2)].ts,
+      pilot: avg(bucket.map((p) => p.pilot)) ?? 0,
+      baseline: avg(bucket.map((p) => p.baseline)) ?? 0,
+      controlFanRpm: avg(bucket.map((p) => p.controlFanRpm)),
+      pilotFanRpm: avg(bucket.map((p) => p.pilotFanRpm)),
+      pilotCpuTemp: avg(bucket.map((p) => p.pilotCpuTemp)),
+      baselineCpuTemp: avg(bucket.map((p) => p.baselineCpuTemp)),
+      pilotGpuPowerW: avg(bucket.map((p) => p.pilotGpuPowerW)),
+      baselineGpuPowerW: avg(bucket.map((p) => p.baselineGpuPowerW)),
+    });
+  }
+  return result;
+}
 
 const EXPORT_DAY_OPTIONS = [7, 14, 30, 60] as const;
 
@@ -509,7 +541,10 @@ function PortalOverviewContent() {
 
   const now = Date.now();
   const rangeMs = RANGE_MS[pulseRange];
-  const displayedPulseData = rangeData.filter((p) => now - p.ts <= rangeMs);
+  const displayedPulseData = downsampleForRange(
+    rangeData.filter((p) => now - p.ts <= rangeMs),
+    pulseRange
+  );
 
   // Efficiency Delta: same pulseData as Chart, last 30s window, most recent point
   const efficiencyDeltaC = useMemo(() => {
@@ -715,7 +750,9 @@ function PortalOverviewContent() {
                   Live
                 </span>
               )}
-              <span className="text-xs text-white/40">Green = CooledAI · Red = Control</span>
+              <span className="text-xs text-white/40">
+                <span style={{ color: "#22c55e" }}>━━</span> CooledAI · <span style={{ color: "#ef4444" }}>╌╌</span> Control
+              </span>
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-4">
@@ -776,95 +813,128 @@ function PortalOverviewContent() {
             {pulseData.length === 0 ? "Waiting for telemetry…" : "No raw data in selected range yet."}
           </div>
         ) : (
-        <div className="h-[320px] w-full">
+        <div className="h-[360px] w-full">
           <ResponsiveContainer width="100%" height="100%">
-            <LineChart
+            <ComposedChart
               data={displayedPulseData}
-              margin={{ top: 8, right: 8, left: 0, bottom: 0 }}
+              margin={{ top: 12, right: 12, left: 4, bottom: 4 }}
             >
-              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.06)" />
+              <defs>
+                <linearGradient id="gradCooledAI" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#22c55e" stopOpacity={0.25} />
+                  <stop offset="100%" stopColor="#22c55e" stopOpacity={0.02} />
+                </linearGradient>
+                <linearGradient id="gradControl" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#ef4444" stopOpacity={0.15} />
+                  <stop offset="100%" stopColor="#ef4444" stopOpacity={0.02} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
               <XAxis
                 dataKey="time"
-                tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 11 }}
-                axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+                tick={{ fill: "rgba(255,255,255,0.45)", fontSize: 10 }}
+                axisLine={{ stroke: "rgba(255,255,255,0.08)" }}
                 tickLine={false}
+                minTickGap={pulseRange === "7d" ? 80 : pulseRange === "24h" ? 60 : 40}
               />
               <YAxis
-                tick={{ fill: "rgba(255,255,255,0.5)", fontSize: 11 }}
-                axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+                tick={{ fill: "rgba(255,255,255,0.45)", fontSize: 10 }}
+                axisLine={{ stroke: "rgba(255,255,255,0.08)" }}
                 tickLine={false}
-                domain={chartMetric === "power" ? [0, "auto"] : [0, "dataMax + 10"]}
+                domain={chartMetric === "power" ? [0, "auto"] : chartMetric === "fan" ? ["dataMin - 200", "dataMax + 200"] : [0, "dataMax + 10"]}
                 tickFormatter={(v) =>
-                  chartMetric === "fan" ? `${v}` : chartMetric === "power" ? `${v} W` : `${v}°C`
+                  chartMetric === "fan" ? `${Math.round(v)}` : chartMetric === "power" ? `${Math.round(v)}W` : `${Math.round(v)}°`
                 }
+                width={48}
               />
               <Tooltip
                 contentStyle={{
-                  backgroundColor: "#1a1a1a",
-                  border: "1px solid rgba(255,255,255,0.12)",
-                  borderRadius: "8px",
-                  padding: "12px 16px",
+                  backgroundColor: "rgba(15,15,20,0.95)",
+                  backdropFilter: "blur(12px)",
+                  border: "1px solid rgba(255,255,255,0.1)",
+                  borderRadius: "10px",
+                  padding: "10px 14px",
+                  boxShadow: "0 8px 32px rgba(0,0,0,0.4)",
                 }}
-                labelStyle={{ color: "rgba(255,255,255,0.9)", marginBottom: 8 }}
-                formatter={(value, name) => {
-                  const v = value != null ? value : 0;
+                labelStyle={{ color: "rgba(255,255,255,0.7)", fontSize: 11, marginBottom: 6 }}
+                itemStyle={{ fontSize: 12, padding: "2px 0" }}
+                formatter={(value: number, name: string) => {
                   const unit =
                     chartMetric === "fan" ? " RPM" : chartMetric === "power" ? " W" : "°C";
-                  const label =
+                  const isPilot =
                     name === "pilot" ||
                     name === "pilotCpuTemp" ||
                     name === "pilotFanRpm" ||
-                    name === "pilotGpuPowerW"
-                      ? "CooledAI"
-                      : "Control";
-                  return [`${v}${unit}`, label];
+                    name === "pilotGpuPowerW";
+                  const label = isPilot ? "CooledAI" : "Control";
+                  const color = isPilot ? "#22c55e" : "#ef4444";
+                  return [
+                    <span key={name} style={{ color, fontWeight: 600 }}>{`${typeof value === 'number' ? value.toFixed(1) : value}${unit}`}</span>,
+                    label,
+                  ];
                 }}
-                labelFormatter={(label) => label}
+                labelFormatter={(label) => `${label}`}
               />
+              {/* Reference threshold lines */}
               {chartMetric === "gpu" && (
                 <>
-                  <ReferenceLine y={65} stroke="rgba(234,179,8,0.5)" strokeDasharray="4 4" />
-                  <ReferenceLine y={85} stroke="rgba(239,68,68,0.5)" strokeDasharray="4 4" />
+                  <ReferenceLine y={65} stroke="rgba(234,179,8,0.4)" strokeDasharray="6 3" label={{ value: "65° Warn", position: "right", fill: "rgba(234,179,8,0.6)", fontSize: 9 }} />
+                  <ReferenceLine y={85} stroke="rgba(239,68,68,0.4)" strokeDasharray="6 3" label={{ value: "85° Crit", position: "right", fill: "rgba(239,68,68,0.6)", fontSize: 9 }} />
                 </>
               )}
+              {/* GPU Temp */}
               {chartMetric === "gpu" && (
                 <>
-                  <Line type="linear" dataKey="pilot" name="pilot" stroke="#22c55e" strokeWidth={2} dot={false} />
-                  <Line type="linear" dataKey="baseline" name="baseline" stroke="#ef4444" strokeWidth={2} dot={false} />
+                  <Area type="monotone" dataKey="pilot" fill="url(#gradCooledAI)" stroke="none" isAnimationActive={false} />
+                  <Area type="monotone" dataKey="baseline" fill="url(#gradControl)" stroke="none" isAnimationActive={false} />
+                  <Line type="monotone" dataKey="pilot" name="pilot" stroke="#22c55e" strokeWidth={2.5} dot={false} isAnimationActive={false} activeDot={{ r: 4, fill: "#22c55e", stroke: "#0a0a0a", strokeWidth: 2 }} />
+                  <Line type="monotone" dataKey="baseline" name="baseline" stroke="#ef4444" strokeWidth={1.5} dot={false} isAnimationActive={false} strokeDasharray="6 2" activeDot={{ r: 4, fill: "#ef4444", stroke: "#0a0a0a", strokeWidth: 2 }} />
                 </>
               )}
+              {/* CPU Temp */}
               {chartMetric === "cpu" && (
                 <>
-                  <Line type="linear" dataKey="pilotCpuTemp" name="pilotCpuTemp" stroke="#22c55e" strokeWidth={2} dot={false} connectNulls={false} />
-                  <Line type="linear" dataKey="baselineCpuTemp" name="baselineCpuTemp" stroke="#ef4444" strokeWidth={2} dot={false} connectNulls={false} />
+                  <Area type="monotone" dataKey="pilotCpuTemp" fill="url(#gradCooledAI)" stroke="none" isAnimationActive={false} connectNulls={false} />
+                  <Area type="monotone" dataKey="baselineCpuTemp" fill="url(#gradControl)" stroke="none" isAnimationActive={false} connectNulls={false} />
+                  <Line type="monotone" dataKey="pilotCpuTemp" name="pilotCpuTemp" stroke="#22c55e" strokeWidth={2.5} dot={false} isAnimationActive={false} connectNulls={false} activeDot={{ r: 4, fill: "#22c55e", stroke: "#0a0a0a", strokeWidth: 2 }} />
+                  <Line type="monotone" dataKey="baselineCpuTemp" name="baselineCpuTemp" stroke="#ef4444" strokeWidth={1.5} dot={false} isAnimationActive={false} connectNulls={false} strokeDasharray="6 2" activeDot={{ r: 4, fill: "#ef4444", stroke: "#0a0a0a", strokeWidth: 2 }} />
                 </>
               )}
+              {/* Fan Speed */}
               {chartMetric === "fan" && (
                 <>
-                  <Line type="linear" dataKey="pilotFanRpm" name="pilotFanRpm" stroke="#22c55e" strokeWidth={2} dot={false} connectNulls={false} />
-                  <Line type="linear" dataKey="controlFanRpm" name="controlFanRpm" stroke="#ef4444" strokeWidth={2} dot={false} connectNulls={false} />
+                  <Area type="monotone" dataKey="pilotFanRpm" fill="url(#gradCooledAI)" stroke="none" isAnimationActive={false} connectNulls={false} />
+                  <Area type="monotone" dataKey="controlFanRpm" fill="url(#gradControl)" stroke="none" isAnimationActive={false} connectNulls={false} />
+                  <Line type="monotone" dataKey="pilotFanRpm" name="pilotFanRpm" stroke="#22c55e" strokeWidth={2.5} dot={false} isAnimationActive={false} connectNulls={false} activeDot={{ r: 4, fill: "#22c55e", stroke: "#0a0a0a", strokeWidth: 2 }} />
+                  <Line type="monotone" dataKey="controlFanRpm" name="controlFanRpm" stroke="#ef4444" strokeWidth={1.5} dot={false} isAnimationActive={false} connectNulls={false} strokeDasharray="6 2" activeDot={{ r: 4, fill: "#ef4444", stroke: "#0a0a0a", strokeWidth: 2 }} />
                 </>
               )}
+              {/* GPU Power */}
               {chartMetric === "power" && (
                 <>
-                  <Line type="linear" dataKey="pilotGpuPowerW" name="pilotGpuPowerW" stroke="#22c55e" strokeWidth={2} dot={false} connectNulls />
-                  <Line type="linear" dataKey="baselineGpuPowerW" name="baselineGpuPowerW" stroke="#ef4444" strokeWidth={2} dot={false} connectNulls />
+                  <Area type="monotone" dataKey="pilotGpuPowerW" fill="url(#gradCooledAI)" stroke="none" isAnimationActive={false} connectNulls />
+                  <Area type="monotone" dataKey="baselineGpuPowerW" fill="url(#gradControl)" stroke="none" isAnimationActive={false} connectNulls />
+                  <Line type="monotone" dataKey="pilotGpuPowerW" name="pilotGpuPowerW" stroke="#22c55e" strokeWidth={2.5} dot={false} isAnimationActive={false} connectNulls activeDot={{ r: 4, fill: "#22c55e", stroke: "#0a0a0a", strokeWidth: 2 }} />
+                  <Line type="monotone" dataKey="baselineGpuPowerW" name="baselineGpuPowerW" stroke="#ef4444" strokeWidth={1.5} dot={false} isAnimationActive={false} connectNulls strokeDasharray="6 2" activeDot={{ r: 4, fill: "#ef4444", stroke: "#0a0a0a", strokeWidth: 2 }} />
                 </>
               )}
               <Legend
-                wrapperStyle={{ fontSize: 11 }}
-                iconType="line"
-                iconSize={10}
-                formatter={(value) =>
-                  value === "pilot" ||
-                  value === "pilotCpuTemp" ||
-                  value === "pilotFanRpm" ||
-                  value === "pilotGpuPowerW"
-                    ? "CooledAI"
-                    : "Control"
-                }
+                wrapperStyle={{ fontSize: 11, paddingTop: 8 }}
+                iconSize={14}
+                formatter={(value) => {
+                  const isPilot =
+                    value === "pilot" ||
+                    value === "pilotCpuTemp" ||
+                    value === "pilotFanRpm" ||
+                    value === "pilotGpuPowerW";
+                  return (
+                    <span style={{ color: isPilot ? "#22c55e" : "#ef4444", fontWeight: 500, letterSpacing: "0.02em" }}>
+                      {isPilot ? "⬤ CooledAI (Optimized)" : "⬤ Control (Baseline)"}
+                    </span>
+                  );
+                }}
               />
-            </LineChart>
+            </ComposedChart>
           </ResponsiveContainer>
         </div>
         )}
