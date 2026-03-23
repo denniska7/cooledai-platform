@@ -176,7 +176,7 @@ def set_gpu_power_limit_w(gpu_index: int, watts: int, *, dry_run: bool = False) 
         return True
     try:
         subprocess.check_call(
-            ["nvidia-smi", "-i", str(gpu_index), "-pl", str(int(watts))],
+            ["sudo", "nvidia-smi", "-i", str(gpu_index), "-pl", str(int(watts))],
             timeout=15,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
