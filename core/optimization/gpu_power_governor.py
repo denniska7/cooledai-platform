@@ -16,13 +16,15 @@ Temperature bands are configurable via environment variables OR CalibrationProfi
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import subprocess
 import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
 
 _log = logging.getLogger("cooledai.gpu_gov")
 
@@ -290,6 +292,18 @@ class GPUPowerGovernor:
         self._observed_peak_w: float = 0.0  # P90 of power readings
         self._min_allowed_limit_w: Dict[int, float] = {}  # per-GPU floor after calibration
 
+        # FIX 1: Efficiency gate — 30s rolling power history
+        self._power_history: Deque[float] = deque(maxlen=30)
+        self._active_compute_trigger_w: float = 0.0  # set from profile
+
+        # FIX 2: Continuous learning — rolling samples + mini-recalibration
+        self._recent_samples: Deque[Tuple[float, float]] = deque(maxlen=500)  # (temp, power)
+        self._last_recal_time: float = time.monotonic()
+        self._recal_interval_s: float = 1800.0  # 30 minutes
+        self._ewma_alpha: float = 0.20
+        self._baseline_temp_mean: Optional[float] = None  # for drift detection
+        self._drift_threshold_c: float = 4.0
+
         # Logging state
         self._last_log_time: float = 0.0
 
@@ -357,6 +371,15 @@ class GPUPowerGovernor:
             self._temp_soft_c = new_soft
             self._temp_hard_c = new_hard
             self._spike_trigger_c = spike_trigger
+
+        # FIX 1: Capture active_compute_trigger for efficiency gate
+        act = getattr(profile, "active_compute_trigger_w", None)
+        if isinstance(act, (int, float)) and act > 0:
+            self._active_compute_trigger_w = float(act)
+
+        # FIX 2: Set baseline temp for drift detection on first profile
+        if self._baseline_temp_mean is None:
+            self._baseline_temp_mean = temp_mean
 
     # ------------------------------------------------------------------
     # Auto-calibration observation window (Step 4)
@@ -438,6 +461,16 @@ class GPUPowerGovernor:
         if not self._check_calibration(max_power):
             return results  # Still calibrating — no adjustments
 
+        # FIX 1: Update 30s rolling power history
+        if max_power is not None:
+            self._power_history.append(max_power)
+
+        # FIX 2: Feed continuous learning samples
+        if gpu_temps_c and gpu_power_w:
+            max_temp = max(gpu_temps_c)
+            self._recent_samples.append((max_temp, max_power or 0.0))
+            self._check_continuous_learning(now)
+
         # Time hysteresis
         if now - self._last_tick < self._min_interval_s:
             return results
@@ -472,6 +505,17 @@ class GPUPowerGovernor:
                     target_w = env.default_w
                     reason = "parity_guard"
 
+            # --- FIX 1: Efficiency gate (efficiency mode only) ---
+            if not self._performance_mode and target_w < env.default_w:
+                gate_reason = self._check_efficiency_gate(temp, power_w)
+                if gate_reason:
+                    target_w = env.default_w
+                    reason = "efficiency_gate_blocked"
+                    _log.info(
+                        "[GPU_GOV] efficiency_gate_blocked: reason=%s temp=%.1f°C power=%.1fW",
+                        gate_reason, temp, power_w or 0.0,
+                    )
+
             # Idle detection: if GPU drawing < 15% of default, skip
             if power_w is not None and power_w < env.default_w * 0.15:
                 target_w = env.default_w
@@ -497,6 +541,108 @@ class GPUPowerGovernor:
             self._last_tick = now
 
         return results
+
+    # ------------------------------------------------------------------
+    # FIX 1: Efficiency gate
+    # ------------------------------------------------------------------
+
+    def _check_efficiency_gate(self, temp_c: float, power_w: Optional[float]) -> Optional[str]:
+        """Check if efficiency-mode TDP reduction should be blocked.
+
+        Returns reason string if blocked, None if reduction is allowed.
+        All three conditions must be met to ALLOW reduction:
+          1. Power < active_compute_trigger × 1.5
+          2. Temp < spike_trigger - 3.0°C
+          3. 30s rolling mean power is flat or downward
+        """
+        spike_temp = self._spike_trigger_c or self._temp_soft_c
+        trigger_w = self._active_compute_trigger_w
+
+        # Condition 1: power must be low enough
+        if power_w is not None and trigger_w > 0:
+            if power_w >= trigger_w * 1.5:
+                return "high_power"
+
+        # Condition 2: temp must be well below spike trigger
+        if temp_c >= spike_temp - 3.0:
+            return "near_spike_temp"
+
+        # Condition 3: 30s power trend must be flat or downward
+        if len(self._power_history) >= 5:
+            history = list(self._power_history)
+            half = len(history) // 2
+            first_half_mean = sum(history[:half]) / half
+            second_half_mean = sum(history[half:]) / (len(history) - half)
+            if second_half_mean > first_half_mean + 2.0:  # ramping up (>2W increase)
+                return "power_ramping_up"
+
+        return None  # All conditions met — allow reduction
+
+    # ------------------------------------------------------------------
+    # FIX 2: Continuous learning
+    # ------------------------------------------------------------------
+
+    def _check_continuous_learning(self, now: float) -> None:
+        """Perform mini-recalibration and drift detection from rolling samples."""
+        if len(self._recent_samples) < 30:
+            return  # Need minimum samples
+
+        # Drift detection: check if recent temp mean shifted > 4°C from baseline
+        if self._baseline_temp_mean is not None:
+            recent_temps = [t for t, _ in list(self._recent_samples)[-100:]]
+            recent_mean = sum(recent_temps) / len(recent_temps)
+            drift = abs(recent_mean - self._baseline_temp_mean)
+            if drift >= self._drift_threshold_c:
+                _log.info(
+                    "[GPU_GOV] Drift detected: baseline=%.1f°C current_mean=%.1f°C "
+                    "drift=%.1f°C — triggering immediate recalibration",
+                    self._baseline_temp_mean, recent_mean, drift,
+                )
+                self._apply_mini_recalibration()
+                self._baseline_temp_mean = recent_mean
+                self._last_recal_time = now
+                return
+
+        # Periodic mini-recalibration every _recal_interval_s
+        if now - self._last_recal_time >= self._recal_interval_s:
+            self._apply_mini_recalibration()
+            self._last_recal_time = now
+
+    def _apply_mini_recalibration(self) -> None:
+        """EWMA-smooth observed idle/peak power from recent samples."""
+        if not self._recent_samples:
+            return
+
+        powers = sorted(p for _, p in self._recent_samples if p > 0)
+        if len(powers) < 10:
+            return
+
+        n = len(powers)
+        new_idle = powers[max(0, int(n * 0.10))]
+        new_peak = powers[min(n - 1, int(n * 0.90))]
+
+        alpha = self._ewma_alpha
+        if self._observed_idle_w > 0:
+            self._observed_idle_w = alpha * new_idle + (1 - alpha) * self._observed_idle_w
+        else:
+            self._observed_idle_w = new_idle
+
+        if self._observed_peak_w > 0:
+            self._observed_peak_w = alpha * new_peak + (1 - alpha) * self._observed_peak_w
+        else:
+            self._observed_peak_w = new_peak
+
+        # Update per-GPU min_allowed_limit
+        for env in self._envelopes:
+            self._min_allowed_limit_w[env.index] = max(
+                env.min_w,
+                self._observed_idle_w * 1.10,
+            )
+
+        _log.info(
+            "[GPU_GOV] Mini-recalibration: idle=%.1fW peak=%.1fW (EWMA α=%.2f, %d samples)",
+            self._observed_idle_w, self._observed_peak_w, alpha, len(powers),
+        )
 
     def _maybe_log(
         self,
@@ -537,6 +683,58 @@ class GPUPowerGovernor:
         reset_all_gpus_to_default(self._envelopes, dry_run=self._dry_run)
         self._last_limits.clear()
         _log.info("[GPU_GOV] All GPUs restored to default power limits.")
+
+    # ------------------------------------------------------------------
+    # FIX 2: State persistence
+    # ------------------------------------------------------------------
+
+    def save_state(self, path: str) -> None:
+        """Persist governor learning state to JSON alongside calibration profile."""
+        state = {
+            "observed_idle_w": self._observed_idle_w,
+            "observed_peak_w": self._observed_peak_w,
+            "baseline_temp_mean": self._baseline_temp_mean,
+            "min_allowed_limit_w": self._min_allowed_limit_w,
+            "calibrated": self._calibrated,
+            "temp_full_c": self._temp_full_c,
+            "temp_soft_c": self._temp_soft_c,
+            "temp_hard_c": self._temp_hard_c,
+            "spike_trigger_c": self._spike_trigger_c,
+            "active_compute_trigger_w": self._active_compute_trigger_w,
+            "performance_mode": self._performance_mode,
+        }
+        with open(path, "w") as f:
+            json.dump(state, f, indent=2)
+        _log.info("[GPU_GOV] State saved to %s", path)
+
+    def load_state(self, path: str) -> bool:
+        """Restore governor learning state from JSON. Returns True on success."""
+        try:
+            with open(path) as f:
+                state = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
+            _log.warning("[GPU_GOV] Failed to load state from %s: %s", path, e)
+            return False
+
+        self._observed_idle_w = state.get("observed_idle_w", self._observed_idle_w)
+        self._observed_peak_w = state.get("observed_peak_w", self._observed_peak_w)
+        self._baseline_temp_mean = state.get("baseline_temp_mean", self._baseline_temp_mean)
+        loaded_min = state.get("min_allowed_limit_w", {})
+        # JSON keys are strings — convert back to int
+        self._min_allowed_limit_w = {int(k): v for k, v in loaded_min.items()}
+        self._calibrated = state.get("calibrated", self._calibrated)
+        self._temp_full_c = state.get("temp_full_c", self._temp_full_c)
+        self._temp_soft_c = state.get("temp_soft_c", self._temp_soft_c)
+        self._temp_hard_c = state.get("temp_hard_c", self._temp_hard_c)
+        self._spike_trigger_c = state.get("spike_trigger_c", self._spike_trigger_c)
+        self._active_compute_trigger_w = state.get("active_compute_trigger_w", self._active_compute_trigger_w)
+        self._performance_mode = state.get("performance_mode", self._performance_mode)
+
+        _log.info(
+            "[GPU_GOV] State loaded from %s — idle=%.1fW peak=%.1fW calibrated=%s",
+            path, self._observed_idle_w, self._observed_peak_w, self._calibrated,
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Factory

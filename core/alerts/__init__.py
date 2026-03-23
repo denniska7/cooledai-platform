@@ -1,0 +1,1 @@
+"""CooledAI alert notifications."""
