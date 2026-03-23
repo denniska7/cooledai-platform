@@ -463,7 +463,7 @@ class TestGPUGovLogging(unittest.TestCase):
 
 
 class TestEfficiencyGate(unittest.TestCase):
-    """Efficiency mode should block TDP reduction when load is high."""
+    """Efficiency gate blocks TDP reduction when power>90W, near spike temp, and ramping."""
 
     def _make_profile(self, spike=68.0, active_trigger=100.0):
         p = MagicMock()
@@ -475,60 +475,79 @@ class TestEfficiencyGate(unittest.TestCase):
         return p
 
     @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
-    def test_gate_blocks_when_power_high(self, mock_set) -> None:
-        """High power draw (>= trigger × 1.5) blocks TDP reduction."""
+    def test_gate_blocks_all_three_conditions(self, mock_set) -> None:
+        """All 3 conditions true: power>90W, near spike, power ramping → BLOCKED."""
         gov = _make_governor(performance_mode=False)
-        gov.update_from_profile(self._make_profile(spike=68.0, active_trigger=100.0))
+        gov.update_from_profile(self._make_profile(spike=68.0))
 
-        # Temp 60°C is in blend zone (full≈56.5, soft=68), power=180W > 100×1.5=150W
-        results = gov.tick([60.0], [180.0])
+        # Set EWMA to a lower value so current power > EWMA (ramping)
+        gov._ewma_power_w = 100.0
+
+        # Temp 66°C (within 3°C of spike 68°C), power 110W (>90W), ramping (110 > 100 EWMA)
+        results = gov.tick([66.0], [110.0])
         for idx, w, reason in results:
             self.assertEqual(w, 200.0)
             self.assertEqual(reason, "efficiency_gate_blocked")
 
     @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
-    def test_gate_blocks_when_near_spike_temp(self, mock_set) -> None:
-        """Temp within 3°C of spike trigger blocks TDP reduction."""
+    def test_gate_allows_when_power_below_90(self, mock_set) -> None:
+        """Power <= 90W means condition 1 fails → gate open, reduction allowed."""
         gov = _make_governor(performance_mode=False)
-        gov.update_from_profile(self._make_profile(spike=68.0, active_trigger=100.0))
+        gov.update_from_profile(self._make_profile(spike=68.0))
 
-        # Temp 66°C >= spike(68) - 3 = 65°C, power=80W (low)
+        gov._ewma_power_w = 70.0
+
+        # Temp 66°C (near spike), power 80W (<=90W) — condition 1 fails
         results = gov.tick([66.0], [80.0])
         for idx, w, reason in results:
-            self.assertEqual(w, 200.0)
-            self.assertEqual(reason, "efficiency_gate_blocked")
+            # Should reduce since gate is open (power not > 90)
+            self.assertNotEqual(reason, "efficiency_gate_blocked")
 
     @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
-    def test_gate_blocks_when_power_ramping(self, mock_set) -> None:
-        """Rising power trend (30s window) blocks TDP reduction."""
+    def test_gate_allows_when_temp_far_from_spike(self, mock_set) -> None:
+        """Temp well below spike_trigger - 3°C → gate open."""
         gov = _make_governor(performance_mode=False)
-        gov.update_from_profile(self._make_profile(spike=68.0, active_trigger=100.0))
+        gov.update_from_profile(self._make_profile(spike=68.0))
 
-        # Fill power history with ramping pattern: low → high
-        for p in [50, 55, 60, 65, 70, 80, 90, 100, 110, 120]:
-            gov._power_history.append(float(p))
+        gov._ewma_power_w = 100.0
 
-        # Temp 58°C (in blend zone), power=80W (< 150W), but ramping up
-        results = gov.tick([58.0], [80.0])
+        # Temp 58°C (far from spike 68-3=65°C), power 110W (>90), ramping
+        results = gov.tick([58.0], [110.0])
         for idx, w, reason in results:
-            self.assertEqual(w, 200.0)
-            self.assertEqual(reason, "efficiency_gate_blocked")
+            self.assertNotEqual(reason, "efficiency_gate_blocked")
 
     @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
-    def test_gate_allows_reduction_when_all_clear(self, mock_set) -> None:
-        """When all 3 conditions pass, TDP reduction is allowed."""
+    def test_gate_allows_when_power_declining(self, mock_set) -> None:
+        """Power trending down (current < EWMA) → gate open."""
         gov = _make_governor(performance_mode=False)
-        gov.update_from_profile(self._make_profile(spike=68.0, active_trigger=100.0))
+        gov.update_from_profile(self._make_profile(spike=68.0))
 
-        # Fill power history with flat/declining pattern
-        for p in [80, 78, 76, 74, 72, 70, 68, 66, 64, 62]:
-            gov._power_history.append(float(p))
+        # Set EWMA higher than current → declining trend
+        gov._ewma_power_w = 130.0
 
-        # Temp 58°C (in blend zone, < 68-3=65), power=60W (< 100×1.5=150), trend down
-        results = gov.tick([58.0], [60.0])
+        # Temp 66°C (near spike), power 110W (>90W), but declining (110 < 130 EWMA)
+        results = gov.tick([66.0], [110.0])
         for idx, w, reason in results:
-            self.assertLess(w, 200.0)
-            self.assertEqual(reason, "temperature_band")
+            self.assertNotEqual(reason, "efficiency_gate_blocked")
+
+    def test_efficiency_gate_open_direct(self) -> None:
+        """Direct unit test of _efficiency_gate_open()."""
+        gov = _make_governor(performance_mode=False)
+        gov._spike_trigger_c = 68.0
+
+        # All three conditions met → blocked (returns False)
+        gov._ewma_power_w = 100.0
+        self.assertFalse(gov._efficiency_gate_open(66.0, 110.0))
+
+        # Power <= 90W → open
+        self.assertTrue(gov._efficiency_gate_open(66.0, 85.0))
+
+        # Temp far from spike → open
+        self.assertTrue(gov._efficiency_gate_open(60.0, 110.0))
+
+        # Power declining → open
+        gov._ewma_power_w = 120.0
+        self.assertTrue(gov._efficiency_gate_open(66.0, 110.0))
 
 
 # ===================================================================
