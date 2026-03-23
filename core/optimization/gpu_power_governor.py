@@ -292,9 +292,11 @@ class GPUPowerGovernor:
         self._observed_peak_w: float = 0.0  # P90 of power readings
         self._min_allowed_limit_w: Dict[int, float] = {}  # per-GPU floor after calibration
 
-        # FIX 1: Efficiency gate — 30s rolling power history
+        # FIX 1: Efficiency gate — EWMA power tracking
         self._power_history: Deque[float] = deque(maxlen=30)
         self._active_compute_trigger_w: float = 0.0  # set from profile
+        self._ewma_power_w: Optional[float] = None  # EWMA-smoothed power from previous tick
+        self._ewma_power_alpha: float = 0.3  # smoothing factor for power EWMA
 
         # FIX 2: Continuous learning — rolling samples + mini-recalibration
         self._recent_samples: Deque[Tuple[float, float]] = deque(maxlen=500)  # (temp, power)
@@ -461,9 +463,14 @@ class GPUPowerGovernor:
         if not self._check_calibration(max_power):
             return results  # Still calibrating — no adjustments
 
-        # FIX 1: Update 30s rolling power history
+        # FIX 1: Update rolling power history + EWMA
         if max_power is not None:
             self._power_history.append(max_power)
+            if self._ewma_power_w is None:
+                self._ewma_power_w = max_power
+            else:
+                self._ewma_power_w = (self._ewma_power_alpha * max_power +
+                                      (1 - self._ewma_power_alpha) * self._ewma_power_w)
 
         # FIX 2: Feed continuous learning samples
         if gpu_temps_c and gpu_power_w:
@@ -507,13 +514,15 @@ class GPUPowerGovernor:
 
             # --- FIX 1: Efficiency gate (efficiency mode only) ---
             if not self._performance_mode and target_w < env.default_w:
-                gate_reason = self._check_efficiency_gate(temp, power_w)
-                if gate_reason:
+                if not self._efficiency_gate_open(temp, power_w):
                     target_w = env.default_w
                     reason = "efficiency_gate_blocked"
                     _log.info(
-                        "[GPU_GOV] efficiency_gate_blocked: reason=%s temp=%.1f°C power=%.1fW",
-                        gate_reason, temp, power_w or 0.0,
+                        "[GPU_GOV] efficiency_gate=blocked temp=%.1f°C power=%.1fW "
+                        "ewma_power=%.1fW spike_trigger=%.1f°C",
+                        temp, power_w or 0.0,
+                        self._ewma_power_w or 0.0,
+                        self._spike_trigger_c or self._temp_soft_c,
                     )
 
             # Idle detection: if GPU drawing < 15% of default, skip
@@ -546,37 +555,30 @@ class GPUPowerGovernor:
     # FIX 1: Efficiency gate
     # ------------------------------------------------------------------
 
-    def _check_efficiency_gate(self, temp_c: float, power_w: Optional[float]) -> Optional[str]:
-        """Check if efficiency-mode TDP reduction should be blocked.
+    def _efficiency_gate_open(self, temp_c: float, power_w: Optional[float]) -> bool:
+        """Check if efficiency-mode TDP reduction is allowed.
 
-        Returns reason string if blocked, None if reduction is allowed.
-        All three conditions must be met to ALLOW reduction:
-          1. Power < active_compute_trigger × 1.5
-          2. Temp < spike_trigger - 3.0°C
-          3. 30s rolling mean power is flat or downward
+        Returns True if reduction is permitted, False if blocked.
+        BLOCKS reduction when ALL three conditions are simultaneously true:
+          1. Current GPU power > 90W
+          2. Current GPU temperature is within 3°C of spike_trigger_temp_c
+          3. GPU power trend is positive (current power > EWMA from previous tick)
         """
         spike_temp = self._spike_trigger_c or self._temp_soft_c
-        trigger_w = self._active_compute_trigger_w
 
-        # Condition 1: power must be low enough
-        if power_w is not None and trigger_w > 0:
-            if power_w >= trigger_w * 1.5:
-                return "high_power"
+        # All three must be true to BLOCK
+        cond_power_high = (power_w is not None and power_w > 90.0)
+        cond_near_spike = (temp_c >= spike_temp - 3.0)
+        cond_power_ramping = (
+            power_w is not None
+            and self._ewma_power_w is not None
+            and power_w > self._ewma_power_w
+        )
 
-        # Condition 2: temp must be well below spike trigger
-        if temp_c >= spike_temp - 3.0:
-            return "near_spike_temp"
+        if cond_power_high and cond_near_spike and cond_power_ramping:
+            return False  # BLOCKED — all three danger conditions met
 
-        # Condition 3: 30s power trend must be flat or downward
-        if len(self._power_history) >= 5:
-            history = list(self._power_history)
-            half = len(history) // 2
-            first_half_mean = sum(history[:half]) / half
-            second_half_mean = sum(history[half:]) / (len(history) - half)
-            if second_half_mean > first_half_mean + 2.0:  # ramping up (>2W increase)
-                return "power_ramping_up"
-
-        return None  # All conditions met — allow reduction
+        return True  # OPEN — safe to reduce
 
     # ------------------------------------------------------------------
     # FIX 2: Continuous learning
