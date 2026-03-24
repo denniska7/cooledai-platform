@@ -25,14 +25,18 @@ ALLOWED_TELEMETRY_FIELDS: Set[str] = {
     "agent_version",
     # GPU thermal & power
     "gpu_temp_c",
+    "temperature_c",          # st550_telemetry.py uses this for GPU and CPU temps
     "gpu_power_w",
     "gpu_memory_utilization_pct",
     # CPU thermal
     "cpu_temp_c",
+    "sensor_count",            # CPU sensor count from telemetry script
     # Fan
     "fan_rpm",
     "fan_rpms",
     "fan_duty_pct",
+    "fan_speed_pct",           # GPU fan speed percentage
+    "raw_fan_wattage",         # Estimated fan power from IPMI
     # Ambient
     "ambient_temp_c",
     "inlet_temp_c",
