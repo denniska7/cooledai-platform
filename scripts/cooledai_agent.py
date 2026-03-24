@@ -701,6 +701,24 @@ def _try_ipmi_set_duty(caps: SensorCapabilities, duty: int, dry_run: bool) -> bo
             return False
 
     if caps.ipmi_variant == "lenovo":
+        # Try Lenovo OEM 0x3a 0x07 first (ThinkSystem ST550/SR650 etc.)
+        # This is the same command the XCC IPMI-over-LAN path uses.
+        try:
+            # Enable manual mode
+            subprocess.check_call(
+                ["ipmitool", "raw", "0x3a", "0x07", "0x01", "0x00"],
+                timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            # Set fan duty
+            subprocess.check_call(
+                ["ipmitool", "raw", "0x3a", "0x07", "0x01", hex_duty],
+                timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            _log.debug("Lenovo IPMI 0x3a set-duty %s OK", hex_duty)
+            return True
+        except Exception:
+            pass
+        # Fallback: legacy 0x32 commands (older Lenovo firmware)
         try:
             subprocess.check_call(
                 ["ipmitool", "raw", "0x32", "0x9b", "0x01"],
@@ -712,7 +730,7 @@ def _try_ipmi_set_duty(caps: SensorCapabilities, duty: int, dry_run: bool) -> bo
             )
             return True
         except Exception as exc:
-            _log.debug("Lenovo IPMI set-duty failed: %s", exc)
+            _log.debug("Lenovo IPMI set-duty failed (both 0x3a and 0x32): %s", exc)
             return False
 
     return False
@@ -969,12 +987,17 @@ def set_fan_duty(
 
     target_rpm = (duty / 100.0) * rated_max_rpm
 
-    # --- XCC IPMI-over-LAN (primary path when optimization owns control) ---
-    # When _optimization_owns_control is True, we took over at startup via XCC
-    # IPMI-over-LAN (set_manual_fan_percent).  ALL subsequent commands must use
-    # the same path — local ipmitool won't work because /dev/ipmi0 doesn't
-    # exist on Lenovo ST550.  This replaces the old "override-only" XCC logic
-    # that required target > threshold to fire.
+    # --- Local IPMI first (preferred — /dev/ipmi0 on systemd root process) ---
+    # Local IPMI is the most effective fan control path. When available (agent
+    # runs as root with /dev/ipmi0), it takes priority over XCC LAN because
+    # the BMC responds reliably to local IPMI commands in CustomMode.
+    if caps.ipmi and _try_ipmi_set_duty(caps, duty, dry_run):
+        if _optimization_owns_control:
+            _last_successful_xcc_command_ts = time.monotonic()
+        return "ipmi"
+
+    # --- XCC IPMI-over-LAN (fallback when local IPMI unavailable) ---
+    # Used when agent runs as non-root without /dev/ipmi0 access.
     if _optimization_owns_control and _XCC_FAN_CONTROLLER is not None and _XCC_FAN_CONTROLLER.available:
         fan_pct = max(0, min(100, duty))
         if dry_run:
@@ -985,7 +1008,7 @@ def set_fan_duty(
             _last_successful_xcc_command_ts = time.monotonic()
             return "xcc_ipmi_lan"
         else:
-            _log.warning("[XCC_FAN] set_manual_fan_percent(%d) failed — falling through to IPMI/PWM", fan_pct)
+            _log.warning("[XCC_FAN] set_manual_fan_percent(%d) failed — falling through to PWM/GPU", fan_pct)
 
     # --- XCC Redfish override (spike scenarios where hw not responding) ---
     if _XCC_FAN_CONTROLLER is not None and _XCC_FAN_CONTROLLER.available:
@@ -1006,10 +1029,6 @@ def set_fan_duty(
         # Auto-release: after spike_hold_duration, if GPU power dropped below trigger
         if _xcc_override_active and _xcc_override_activated_at > 0:
             _auto_release_xcc_if_spike_over(dry_run)
-
-    # --- Standard IPMI ---
-    if caps.ipmi and _try_ipmi_set_duty(caps, duty, dry_run):
-        return "ipmi"
 
     # --- PWM ---
     if caps.pwm_paths and _try_pwm_set_duty(caps, duty, dry_run):

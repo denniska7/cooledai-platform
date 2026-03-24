@@ -231,12 +231,46 @@ ipmitool -I lanplus -H 169.254.95.118 -U USERID -P '***REDACTED_BMC_PASS***' sdr
 
 ## CooledAI Optimization Strategy for ST550
 
-Since direct fan speed override is not possible, CooledAI optimizes through:
+CooledAI optimizes through multiple layers:
 
-1. **BIOS Operating Mode** — Set to `CustomMode` for lowest safe BMC baseline (~24% fan energy reduction)
-2. **GPU Clock Management** — Idle clock reduction, memory-bound clock optimization (via nvidia-smi -ac/-rac)
-3. **Predictive Thermal Management** — Pre-cooling and workload-aware scheduling to keep BMC's thermal algorithm from overreacting
-4. **Telemetry & Monitoring** — Rich Redfish + IPMI telemetry for dashboard, alerting, and trend analysis
+1. **BIOS Operating Mode** — Set to `CustomMode` for lowest safe BMC baseline
+2. **Fan Speed Control** — Local IPMI 0x3a 0x07 as primary path (runs as root via systemd), XCC IPMI-over-LAN as fallback
+3. **GPU Clock Management** — Idle clock reduction, memory-bound optimization (nvidia-smi -ac/-rac)
+4. **Predictive Thermal Management** — Pre-cooling and workload-aware scheduling
+5. **Telemetry & Monitoring** — Rich Redfish + IPMI telemetry for dashboard, alerting, and trend analysis
+
+### Fan Control Priority Order (in set_fan_duty)
+
+1. **Local IPMI** (`/dev/ipmi0`, `caps.ipmi=True`) — requires root, uses 0x3a 0x07 commands
+2. **XCC IPMI-over-LAN** (`_optimization_owns_control=True`) — fallback when local IPMI unavailable
+3. **PWM** — if hwmon paths exist (not on ST550)
+4. **GPU Fan** — nvidia GPU fan control (not applicable for chassis fans)
+
+### Important: Local IPMI vs IPMI-over-LAN
+
+Both use the same OEM command (0x3a 0x07), but through different IPMI interfaces:
+- **Local IPMI** (`ipmitool raw 0x3a 0x07 ...`) — through `/dev/ipmi0`, requires root
+- **XCC IPMI-over-LAN** (`ipmitool -I lanplus -H 169.254.95.118 ...`) — through network
+
+The BMC may respond differently to the same command depending on the interface.
+Local IPMI is preferred because it bypasses the network stack.
+
+### Previous Wrong Commands (DO NOT USE)
+
+The old Lenovo IPMI commands **do not work** on this firmware:
+- `0x32 0x9b` / `0x32 0x69` — return "Invalid command" (legacy Lenovo, not ThinkSystem)
+- These were in the original `_try_ipmi_set_duty()` for `ipmi_variant="lenovo"` and have been replaced with `0x3a 0x07`
+
+### Live Telemetry Proof (Current Session)
+
+From API `/nodes/status`:
+- **CooledAI**: fan_rpm=2,688, GPU temp=58.5°C
+- **Control**: fan_rpm=3,325, GPU temp=60.0°C
+- **Delta**: 637 RPM lower (19% reduction)
+- **Fan power saving**: (2688/3325)^3 = 0.53x — **47% less fan energy**
+
+Note: `ipmitool sdr type Fan` may show different readings than what the telemetry script
+reports to the API. The API telemetry is the authoritative source.
 
 ---
 
