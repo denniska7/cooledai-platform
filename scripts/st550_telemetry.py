@@ -310,7 +310,7 @@ def _read_ipmi_cpu_fan() -> tuple[list[float], dict[str, int], float | None]:
 
     try:
         out = subprocess.check_output(
-            ["ipmitool", "sdr"],
+            ["sudo", "ipmitool", "sdr"],
             timeout=12,
             stderr=subprocess.DEVNULL,
         ).decode()

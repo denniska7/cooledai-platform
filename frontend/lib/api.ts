@@ -149,4 +149,14 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled }),
     }),
+
+  // --- Dashboard Summary & Savings Chart ---
+  getDashboardSummary: (token?: string | null) =>
+    apiFetch("/api/v1/dashboard-summary", {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    }),
+  getSavingsChart: (hours: number, token?: string | null) =>
+    apiFetch(`/api/v1/savings-chart?hours=${hours}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    }),
 };

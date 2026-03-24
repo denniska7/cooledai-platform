@@ -2277,6 +2277,283 @@ async def thermal_history_status():
     }
 
 
+# ---------------------------------------------------------------------------
+# Dashboard Summary — aggregated endpoint for the redesigned portal
+# ---------------------------------------------------------------------------
+
+_BASELINE_PROFILE_PATH = Path(os.environ.get(
+    "COOLEDAI_BASELINE_PROFILE_PATH",
+    "/var/lib/cooledai/baseline_profile.json",
+))
+
+_BILLING_CURRENCY = os.environ.get("COOLEDAI_BILLING_CURRENCY", "USD")
+_CARBON_INTENSITY = float(os.environ.get("COOLEDAI_CARBON_INTENSITY", "0.386"))
+
+
+def _load_baseline_profile() -> Optional[Dict[str, Any]]:
+    """Load the Day 0 baseline profile written by preflight."""
+    try:
+        if _BASELINE_PROFILE_PATH.is_file():
+            with open(_BASELINE_PROFILE_PATH) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return None
+
+
+def _compute_savings_confidence(
+    baseline: Optional[Dict[str, Any]],
+    current_gpu_util_pct: Optional[float],
+) -> Tuple[str, str]:
+    """Compare current GPU utilization to Day 0 baseline."""
+    if baseline is None:
+        return "LOW", "Baseline not yet captured — run preflight to establish savings baseline"
+    baseline_util = baseline.get("baseline_avg_util_pct")
+    if baseline_util is None or baseline_util <= 0 or current_gpu_util_pct is None:
+        return "LOW", "Insufficient data for confidence calculation"
+    divergence = abs(current_gpu_util_pct - baseline_util) / baseline_util
+    if divergence <= 0.15:
+        return "HIGH", f"Workload within 15% of baseline ({current_gpu_util_pct:.0f}% vs {baseline_util:.0f}%)"
+    if divergence <= 0.30:
+        return "MEDIUM", f"Workload shifted {divergence*100:.0f}% from baseline"
+    return "LOW", f"Workload shifted {divergence*100:.0f}% from baseline — estimate based on fan savings only"
+
+
+@app.get("/api/v1/dashboard-summary")
+async def get_dashboard_summary(
+    owner_id: str = Depends(_require_api_key_or_clerk),
+):
+    """Aggregated dashboard data for the redesigned portal — one call replaces multiple."""
+    now = time.time()
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    all_nodes = _tenant_telemetry.get(owner_id, {})
+    baseline_profile = _load_baseline_profile()
+
+    # --- Resolve pilot / baseline nodes ---
+    out = _get_pilot_baseline_snapshot(owner_id)
+    pilot_temp, baseline_temp, pilot_rpm, baseline_rpm = out[:4]
+    pilot_cpu, baseline_cpu, pilot_gpu_pwr, baseline_gpu_pwr = out[4:8]
+
+    # --- Fan power ---
+    pilot_fan_w = _fan_power_watts(pilot_rpm or 0)
+    baseline_fan_w = _fan_power_watts(baseline_rpm or 0)
+    fan_saving_pct = ((baseline_fan_w - pilot_fan_w) / baseline_fan_w * 100.0) if baseline_fan_w > 0 else 0.0
+    fan_saving_pct = max(0.0, fan_saving_pct)
+
+    # --- GPU power savings (idle focus) ---
+    gpu_saving_pct = 0.0
+    if pilot_gpu_pwr is not None and baseline_gpu_pwr is not None and baseline_gpu_pwr > 0:
+        gpu_saving_pct = max(0.0, (baseline_gpu_pwr - pilot_gpu_pwr) / baseline_gpu_pwr * 100.0)
+
+    # --- System efficiency (weighted) ---
+    system_efficiency = (fan_saving_pct * 0.15) + (gpu_saving_pct * 0.45)
+
+    # --- Monthly savings from thermal history ---
+    month_start = datetime(datetime.now(timezone.utc).year, datetime.now(timezone.utc).month, 1, tzinfo=timezone.utc).timestamp()
+    monthly_wh = 0.0
+    for row in history:
+        hr = _history_row(row)
+        ts, _, _, p_rpm, b_rpm = hr[0], hr[1], hr[2], hr[3], hr[4]
+        if ts < month_start or p_rpm is None or b_rpm is None:
+            continue
+        delta_w = max(0.0, _fan_power_watts(b_rpm) - _fan_power_watts(p_rpm))
+        monthly_wh += delta_w * (5.0 / 3600.0)  # ~5s per sample
+
+    saved_this_month_usd = (monthly_wh / 1000.0) * _USD_PER_KWH
+
+    # --- Efficiency trend (today vs yesterday) ---
+    today_start = now - 86400
+    yesterday_start = today_start - 86400
+    today_deltas = []
+    yesterday_deltas = []
+    for row in history:
+        hr = _history_row(row)
+        ts, p_rpm, b_rpm = hr[0], hr[3], hr[4]
+        if p_rpm is None or b_rpm is None:
+            continue
+        d = max(0.0, _fan_power_watts(b_rpm) - _fan_power_watts(p_rpm))
+        if ts >= today_start:
+            today_deltas.append(d)
+        elif ts >= yesterday_start:
+            yesterday_deltas.append(d)
+    today_avg = sum(today_deltas) / len(today_deltas) if today_deltas else 0
+    yest_avg = sum(yesterday_deltas) / len(yesterday_deltas) if yesterday_deltas else 0
+    if today_avg > yest_avg * 1.05:
+        trend = "up"
+    elif today_avg < yest_avg * 0.95:
+        trend = "down"
+    else:
+        trend = "flat"
+
+    # --- Annual projection (30-day avg) ---
+    thirty_days_ago = now - (30 * 86400)
+    thirty_day_wh = 0.0
+    thirty_day_samples = 0
+    for row in history:
+        hr = _history_row(row)
+        ts, p_rpm, b_rpm = hr[0], hr[3], hr[4]
+        if ts < thirty_days_ago or p_rpm is None or b_rpm is None:
+            continue
+        thirty_day_wh += max(0.0, _fan_power_watts(b_rpm) - _fan_power_watts(p_rpm)) * (5.0 / 3600.0)
+        thirty_day_samples += 1
+    days_covered = min(30, (now - thirty_days_ago) / 86400) if thirty_day_samples > 0 else 1
+    daily_avg_usd = (thirty_day_wh / 1000.0 * _USD_PER_KWH) / max(1, days_covered)
+    annual_low = daily_avg_usd * 365 * 0.9
+    annual_high = daily_avg_usd * 365 * 1.1
+
+    # --- Savings confidence ---
+    # Get current GPU utilization from pilot node
+    current_gpu_util = None
+    agent_keys = [k for k in all_nodes if "/" not in k]
+    for nid in agent_keys:
+        nid_lower = nid.lower()
+        if "cooledai" in nid_lower and "predictive" in nid_lower:
+            util_pcts = all_nodes[nid].get("gpu_util_pcts", [])
+            if util_pcts:
+                current_gpu_util = sum(util_pcts) / len(util_pcts)
+            break
+    confidence, confidence_reason = _compute_savings_confidence(baseline_profile, current_gpu_util)
+
+    # --- Thermal trends (7d vs 30d) ---
+    seven_days_ago = now - (7 * 86400)
+    temps_7d = []
+    temps_30d = []
+    for row in history:
+        hr = _history_row(row)
+        ts, pilot_t = hr[0], hr[1]
+        if ts >= seven_days_ago:
+            temps_7d.append(pilot_t)
+        if ts >= thirty_days_ago:
+            temps_30d.append(pilot_t)
+    thermal_7d = sum(temps_7d) / len(temps_7d) if temps_7d else 0
+    thermal_30d = sum(temps_30d) / len(temps_30d) if temps_30d else 0
+    thermal_trend_alert = (thermal_7d - thermal_30d) > 3.0 if temps_7d and temps_30d else False
+
+    # --- Fan bearing health (RPM std dev) ---
+    recent_rpms = []
+    rpm_cutoff = now - 86400
+    for row in history:
+        hr = _history_row(row)
+        if hr[0] >= rpm_cutoff and hr[3] is not None:
+            recent_rpms.append(hr[3])
+    if len(recent_rpms) > 10:
+        import statistics
+        rpm_std = statistics.stdev(recent_rpms)
+        if rpm_std > 500:
+            bearing_status = "alert"
+        elif rpm_std > 300:
+            bearing_status = "monitor"
+        else:
+            bearing_status = "healthy"
+    else:
+        rpm_std = 0.0
+        bearing_status = "healthy"
+
+    # --- Governor stats (from agent telemetry) ---
+    gate_events = 0
+    idle_periods = 0
+    idle_wh = 0.0
+    for nid in agent_keys:
+        node_data = all_nodes.get(nid, {})
+        gov = node_data.get("governor_stats", {})
+        gate_events += int(gov.get("efficiency_gate_blocks_24h", 0))
+        idle_periods += int(gov.get("idle_periods_24h", 0))
+        idle_wh += float(gov.get("idle_wh_saved_24h", 0))
+
+    # --- Calibration status ---
+    calib_updated = None
+    calib_confidence = None
+    for nid in agent_keys:
+        node_data = all_nodes.get(nid, {})
+        cp = node_data.get("calibration_profile", {})
+        if isinstance(cp, dict) and cp.get("calibration_state") == "CALIBRATED":
+            calib_updated = cp.get("saved_at")
+            calib_confidence = cp.get("sample_count", 0) / 3.0  # rough confidence %
+            calib_confidence = min(100.0, calib_confidence)
+
+    # --- System status ---
+    system_status = "green"
+    status_msg = "All systems optimized"
+    if thermal_trend_alert:
+        system_status = "amber"
+        status_msg = "GPU running warmer than 30-day average"
+    if bearing_status == "alert":
+        system_status = "red"
+        status_msg = "Fan bearing degradation detected"
+    if pilot_temp is not None and pilot_temp > 82:
+        system_status = "red"
+        status_msg = f"GPU temperature critical: {pilot_temp:.0f}°C"
+
+    return {
+        "saved_this_month_usd": round(saved_this_month_usd, 2),
+        "savings_confidence": confidence,
+        "savings_confidence_reason": confidence_reason,
+        "system_efficiency_today_pct": round(system_efficiency, 1),
+        "efficiency_trend": trend,
+        "projected_annual_savings_low_usd": round(annual_low, 0),
+        "projected_annual_savings_high_usd": round(annual_high, 0),
+        "system_status": system_status,
+        "system_status_message": status_msg,
+        "current_saving_watts": round(max(0.0, (baseline_fan_w or 0) - (pilot_fan_w or 0)), 1),
+        "fan_energy_reduction_pct": round(fan_saving_pct, 1),
+        "gpu_energy_reduction_pct": round(gpu_saving_pct, 1),
+        "temperature_advantage_c": round((baseline_temp or 0) - (pilot_temp or 0), 1) if pilot_temp and baseline_temp else 0.0,
+        "thermal_7d_avg_c": round(thermal_7d, 1),
+        "thermal_30d_avg_c": round(thermal_30d, 1),
+        "thermal_trend_alert": thermal_trend_alert,
+        "fan_rpm_std_dev": round(rpm_std, 1),
+        "fan_bearing_status": bearing_status,
+        "calibration_last_updated": calib_updated,
+        "calibration_confidence_pct": round(calib_confidence, 1) if calib_confidence is not None else None,
+        "efficiency_gate_events_24h": gate_events,
+        "idle_optimization_periods_24h": idle_periods,
+        "idle_optimization_wh_saved_24h": round(idle_wh, 2),
+        "electricity_rate": _USD_PER_KWH,
+        "currency": _BILLING_CURRENCY,
+        "carbon_intensity_kg_per_kwh": _CARBON_INTENSITY,
+    }
+
+
+@app.get("/api/v1/savings-chart")
+async def get_savings_chart(
+    hours: int = 24,
+    owner_id: str = Depends(_require_api_key_or_clerk),
+):
+    """Pre-computed wattage chart data for the savings proof panel."""
+    now = time.time()
+    cutoff = now - (hours * 3600)
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+
+    points = []
+    total_saved_wh = 0.0
+    for row in history:
+        hr = _history_row(row)
+        ts, p_rpm, b_rpm = hr[0], hr[3], hr[4]
+        if ts < cutoff or p_rpm is None or b_rpm is None:
+            continue
+        opt_w = _fan_power_watts(p_rpm)
+        base_w = _fan_power_watts(b_rpm)
+        delta_w = max(0.0, base_w - opt_w)
+        total_saved_wh += delta_w * (5.0 / 3600.0)
+        points.append({
+            "ts": round(ts, 1),
+            "optimized_w": round(opt_w, 2),
+            "baseline_w": round(base_w, 2),
+            "delta_w": round(delta_w, 2),
+        })
+
+    # Downsample to max 500 points
+    if len(points) > 500:
+        step = len(points) // 500
+        points = points[::step]
+
+    return {
+        "points": points,
+        "total_saved_wh": round(total_saved_wh, 2),
+        "period_hours": hours,
+    }
+
+
 @app.get("/api/v1/stats")
 async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id)):
     """Live power-savings stats scoped to the authenticated owner's nodes.
