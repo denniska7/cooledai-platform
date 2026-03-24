@@ -6,9 +6,11 @@ from unittest.mock import MagicMock, patch
 
 from core.optimization.gpu_power_governor import (
     GPUPowerGovernor,
+    GpuClockCaps,
     GpuPowerEnvelope,
     compute_all_targets,
     compute_target_power_w,
+    is_fixed_tdp,
     reset_all_gpus_to_default,
     set_gpu_power_limit_w,
 )
@@ -400,7 +402,8 @@ class TestNvidiaSmiMocked(unittest.TestCase):
         result = set_gpu_power_limit_w(0, 180)
         mock_cc.assert_called_once()
         cmd = mock_cc.call_args[0][0]
-        self.assertEqual(cmd[0], "nvidia-smi")
+        self.assertEqual(cmd[0], "sudo")
+        self.assertEqual(cmd[1], "nvidia-smi")
         self.assertIn("-pl", cmd)
         self.assertIn("180", cmd)
 
@@ -656,6 +659,165 @@ class TestStatePersistence(unittest.TestCase):
         gov = _make_governor()
         result = gov.load_state("/nonexistent/path/state.json")
         self.assertFalse(result)
+
+
+# ===================================================================
+# Clock scaling tests (PATH B for fixed-TDP GPUs)
+# ===================================================================
+
+
+def _make_fixed_tdp_envs(n: int = 1) -> list:
+    """Create envelopes where min_w == max_w (fixed TDP like T4)."""
+    return [
+        GpuPowerEnvelope(index=i, min_w=75.0, default_w=75.0, max_w=75.0)
+        for i in range(n)
+    ]
+
+
+class TestFixedTDPDetection(unittest.TestCase):
+    def test_fixed_tdp_detected(self) -> None:
+        envs = _make_fixed_tdp_envs(2)
+        self.assertTrue(is_fixed_tdp(envs))
+
+    def test_variable_tdp_not_fixed(self) -> None:
+        envs = _make_envs(1)  # min=50, default=200, max=300
+        self.assertFalse(is_fixed_tdp(envs))
+
+
+def _make_fixed_gov(performance_mode=False, **extra_patches):
+    """Create a governor with fixed-TDP GPUs and mocked nvidia-smi queries."""
+    return None  # Replaced by per-test setup below
+
+
+class TestIdleClockManagement(unittest.TestCase):
+    """IMPROVEMENT 1: Idle GPU should get reduced clocks after 3 ticks."""
+
+    def _make_gov(self):
+        with patch("core.optimization.gpu_power_governor.query_gpu_clock_caps") as mc, \
+             patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks") as ms:
+            mc.return_value = [GpuClockCaps(index=0, max_graphics_mhz=1721, max_memory_mhz=3504)]
+            ms.return_value = [1721, 1600, 1400, 1200, 1000, 860]
+            return GPUPowerGovernor(
+                _make_fixed_tdp_envs(1),
+                performance_mode=False, calibration_window_s=0.0, dry_run=True,
+            )
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1075})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 2, 5)])
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    def test_idle_triggers_after_3_ticks(self, mock_ac, mock_util, mock_clk):
+        gov = self._make_gov()
+        # Tick 1-2: idle but not yet 3 consecutive
+        gov.tick([50.0], [10.0])
+        gov._last_tick = 0
+        gov.tick([50.0], [10.0])
+        self.assertNotEqual(gov._gpu_mode.get(0), "idle_efficiency")
+        # Tick 3: confirmed idle → should reduce clocks
+        gov._last_tick = 0
+        gov.tick([50.0], [10.0])
+        self.assertEqual(gov._gpu_mode[0], "idle_efficiency")
+        mock_ac.assert_called()
+        self.assertTrue(gov._clocks_reduced[0])
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1721})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 50, 30)])
+    @patch("core.optimization.gpu_power_governor.reset_gpu_clocks", return_value=True)
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    def test_active_restores_immediately(self, mock_ac, mock_rac, mock_util, mock_clk):
+        gov = self._make_gov()
+        gov._gpu_mode[0] = "idle_efficiency"
+        gov._clocks_reduced[0] = True
+        # Utilization 50% > 15% → immediate restore
+        gov.tick([60.0], [50.0])
+        mock_rac.assert_called()
+        self.assertEqual(gov._gpu_mode[0], "active_compute")
+        self.assertFalse(gov._clocks_reduced[0])
+
+
+class TestMemoryBoundDetection(unittest.TestCase):
+    """IMPROVEMENT 2: Memory-bound workloads get reduced core clocks."""
+
+    def _make_gov(self):
+        with patch("core.optimization.gpu_power_governor.query_gpu_clock_caps") as mc, \
+             patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks") as ms:
+            mc.return_value = [GpuClockCaps(index=0, max_graphics_mhz=1721, max_memory_mhz=3504)]
+            ms.return_value = [1721, 1600, 1400, 1290, 1200, 1000, 860]
+            return GPUPowerGovernor(
+                _make_fixed_tdp_envs(1),
+                performance_mode=False, calibration_window_s=0.0, dry_run=True,
+            )
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1500})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 30, 90)])
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    def test_membound_triggers_after_5_ticks(self, mock_ac, mock_util, mock_clk):
+        gov = self._make_gov()
+        # 5 ticks with SM < 40%, mem > 80%
+        for _ in range(5):
+            gov._last_tick = 0
+            gov.tick([60.0], [50.0])
+        self.assertEqual(gov._gpu_mode[0], "memory_bound")
+        mock_ac.assert_called()
+        # Should apply ~75% of 1721 = 1290 (snapped)
+        call_args = mock_ac.call_args
+        self.assertEqual(call_args[0][2], 1290)
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1721})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 70, 50)])
+    @patch("core.optimization.gpu_power_governor.reset_gpu_clocks", return_value=True)
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    def test_compute_bound_restores(self, mock_ac, mock_rac, mock_util, mock_clk):
+        gov = self._make_gov()
+        gov._gpu_mode[0] = "memory_bound"
+        gov._clocks_reduced[0] = True
+        # SM 70% > 60% → restore
+        gov.tick([60.0], [60.0])
+        mock_rac.assert_called()
+        self.assertEqual(gov._gpu_mode[0], "active_compute")
+
+
+class TestThermalHeadroom(unittest.TestCase):
+    """IMPROVEMENT 3: Thermal headroom tracking and fan optimization benefit logging."""
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1721})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 80, 50)])
+    def test_headroom_logged(self, mock_util, mock_clk):
+        with patch("core.optimization.gpu_power_governor.query_gpu_clock_caps") as mc, \
+             patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks") as ms:
+            mc.return_value = [GpuClockCaps(index=0, max_graphics_mhz=1721, max_memory_mhz=3504)]
+            ms.return_value = [1721, 1600, 1400]
+            gov = GPUPowerGovernor(
+                _make_fixed_tdp_envs(1),
+                performance_mode=False, calibration_window_s=0.0, dry_run=True,
+            )
+        gov._spike_trigger_c = 72.0
+        # Temp 55°C, spike 72°C → headroom = 17°C > 10, clock at max → benefit confirmed
+        with self.assertLogs("cooledai.gpu_gov", level="INFO") as cm:
+            gov.tick([55.0], [60.0])
+        headroom_logs = [l for l in cm.output if "thermal_headroom" in l]
+        self.assertGreater(len(headroom_logs), 0)
+        benefit_logs = [l for l in cm.output if "fan_optimization_benefit=confirmed" in l]
+        self.assertGreater(len(benefit_logs), 0)
+
+
+class TestResetRestoresClocks(unittest.TestCase):
+    """reset_to_defaults should restore clocks on fixed-TDP GPUs."""
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_clock_caps")
+    @patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks", return_value=[1721])
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    @patch("core.optimization.gpu_power_governor.reset_gpu_clocks", return_value=True)
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_reset_restores_clocks(self, mock_pl, mock_rac, mock_ac, mock_sc, mock_caps):
+        mock_caps.return_value = [GpuClockCaps(index=0, max_graphics_mhz=1721, max_memory_mhz=3504)]
+        gov = GPUPowerGovernor(
+            _make_fixed_tdp_envs(1),
+            performance_mode=False, calibration_window_s=0.0, dry_run=False,
+        )
+        gov._clocks_reduced[0] = True
+        gov.reset_to_defaults()
+        mock_rac.assert_called_once_with(0, dry_run=False)
+        self.assertFalse(gov._clocks_reduced[0])
 
 
 if __name__ == "__main__":
