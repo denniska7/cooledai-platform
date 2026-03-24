@@ -8,7 +8,15 @@
 
 ## Executive Summary
 
-The Lenovo ST550 BMC **does NOT support direct fan speed override** via any discovered IPMI or Redfish method. The BMC's thermal controller always has final authority over fan speeds. The **only effective lever** is changing the BIOS Operating Mode, which changes the BMC's internal fan curve baseline.
+The Lenovo ST550 BMC supports fan speed control via IPMI-over-LAN (0x3a 0x07 Lenovo OEM)
+**when the BIOS Operating Mode is set to CustomMode**. In other modes (Efficiency_FavorPower,
+Efficiency_FavorPerformance), the commands are accepted but silently ignored.
+
+**Telemetry proof (Session 23, 30,510 samples over 16 hours):**
+- CooledAI mean fan RPM: **2,735** vs Control: **3,216** — **481 RPM lower (15% reduction)**
+- CooledAI fan range: **2,037 – 4,458 RPM** (continuous 21 RPM steps = active control)
+- Control fan range: **2,709 – 4,308 RPM** (BMC auto only)
+- Fan power saving via cubic law: (2735/3216)^3 = **0.62x — 38% less fan energy**
 
 ---
 
@@ -79,24 +87,43 @@ curl -sk -u USERID:'***REDACTED_BMC_PASS***' -X POST \
 
 ---
 
-## What Does NOT Work
+## What Works — IPMI Fan Speed Override (CustomMode ONLY)
 
 ### IPMI OEM Commands (0x3a 0x07 — Lenovo OEM)
 
-```bash
-# These return SUCCESS (empty output = no error) but DO NOT move fans
-ipmitool -I lanplus -H 169.254.95.118 -U USERID -P '***REDACTED_BMC_PASS***' \
-  raw 0x3a 0x07 0x01 0x14    # Set 20% — fans unchanged
-ipmitool -I lanplus -H 169.254.95.118 -U USERID -P '***REDACTED_BMC_PASS***' \
-  raw 0x3a 0x07 0x01 0x64    # Set 100% — fans unchanged
-ipmitool -I lanplus -H 169.254.95.118 -U USERID -P '***REDACTED_BMC_PASS***' \
-  raw 0x3a 0x07 0x01 0xff    # Set max — fans unchanged
+**These commands WORK in CustomMode but are IGNORED in other BIOS modes.**
 
-# Auto-restore returns error:
-ipmitool raw 0x3a 0x07 0x00 0x00  # "Invalid data field in request"
+```bash
+# Step 1: Enable manual mode
+ipmitool -I lanplus -H 169.254.95.118 -U USERID -P '***REDACTED_BMC_PASS***' \
+  raw 0x3a 0x07 0x01 0x00
+
+# Step 2: Set fan duty (hex percentage: 0x1e=30%, 0x32=50%, 0x64=100%)
+ipmitool -I lanplus -H 169.254.95.118 -U USERID -P '***REDACTED_BMC_PASS***' \
+  raw 0x3a 0x07 0x01 0x1e    # Set 30% (~2100 RPM)
 ```
 
-**Tested in both Efficiency_FavorPower and CustomMode — commands accepted but ignored in both.**
+**CRITICAL**: Must use `-I lanplus` (IPMI over LAN). Local `-I open` does NOT have
+`/dev/ipmi0` on the ST550 — there is no in-band IPMI driver. All commands go through
+the XCC BMC over the USB-ethernet interface at 169.254.95.118.
+
+**IMPORTANT**: When testing manually via SSH, the CooledAI agent may be sending its
+own fan commands every 3 seconds, immediately overwriting your test command. Stop the
+agent first (`sudo systemctl stop cooledai-agent`) before manual testing.
+
+### Telemetry-Confirmed Fan Ranges (Session 23)
+
+| Duty Command | Approximate RPM | Notes |
+|-------------|----------------|-------|
+| 29% (0x1d) | ~2,037 RPM | Lowest observed (idle stepping) |
+| 30% (0x1e) | ~2,100 RPM | Bootstrap floor |
+| 38% (0x26) | ~2,667 RPM | Typical compute floor |
+| 48% (0x30) | ~3,360 RPM | Sustained high load |
+| 63% (0x3f) | ~4,400 RPM | Spike response |
+
+---
+
+## What Does NOT Work
 
 ### IPMI OEM Commands (0x32 — Lenovo Legacy)
 
