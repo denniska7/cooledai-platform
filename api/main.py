@@ -228,6 +228,31 @@ def _require_api_key(request: Request, x_api_key: str = Header(default="", alias
     return x_api_key
 
 
+async def _require_api_key_or_clerk(request: Request) -> str:
+    """Accept either a valid API key (X-API-Key header) or Clerk JWT.
+
+    Tries API key first (agents, CLI tools). Falls back to Clerk JWT (browser portal).
+    Returns FIXED_OWNER_ID for both paths so all data is scoped to the single tenant.
+    """
+    x_api_key = request.headers.get("x-api-key", "")
+    if x_api_key:
+        if _is_master(x_api_key):
+            return FIXED_OWNER_ID
+        if x_api_key in _api_key_registry:
+            return FIXED_OWNER_ID
+        if _API_KEY and x_api_key == _API_KEY:
+            return FIXED_OWNER_ID
+    # Fall back to Clerk JWT
+    try:
+        return await _require_clerk_fixed_owner_id(request)
+    except Exception:
+        pass
+    # If neither worked, raise 401
+    if _API_KEY or _api_key_registry or _MASTER_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key / Clerk token.")
+    return FIXED_OWNER_ID
+
+
 def _require_admin_key(x_api_key: str = Header(default="", alias="X-API-Key")) -> str:
     """Dependency: require admin-level API key."""
     if _is_master(x_api_key):
