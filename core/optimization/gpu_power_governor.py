@@ -339,6 +339,33 @@ def is_fixed_tdp(envelopes: Sequence[GpuPowerEnvelope]) -> bool:
     return all(abs(e.min_w - e.max_w) < 1.0 for e in envelopes)
 
 
+def _query_min_memory_clock(gpu_index: int = 0, timeout_s: float = 8.0) -> Optional[int]:
+    """Query the lowest supported memory clock for a GPU."""
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi", "-i", str(gpu_index),
+                "--query-supported-clocks=mem",
+                "--format=csv,noheader,nounits",
+            ],
+            timeout=timeout_s,
+            stderr=subprocess.DEVNULL,
+        ).decode()
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+    clocks: List[int] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            clocks.append(int(float(line)))
+        except ValueError:
+            continue
+    return min(clocks) if clocks else None
+
+
 # ---------------------------------------------------------------------------
 # GPU utilization queries
 # ---------------------------------------------------------------------------
@@ -502,12 +529,49 @@ class GPUPowerGovernor:
                 self._clocks_reduced[cap.index] = False
                 self._supported_clocks[cap.index] = query_supported_graphics_clocks(cap.index)
 
-        # IMPROVEMENT 1: Idle clock management — per-GPU consecutive idle tick counter
+        # IMPROVEMENT 1: Idle clock management — 1-tick detection with 2-tick exit hysteresis
         self._idle_ticks: Dict[int, int] = {e.index: 0 for e in self._envelopes}
+        self._active_ticks: Dict[int, int] = {e.index: 0 for e in self._envelopes}  # exit hysteresis
         self._gpu_mode: Dict[int, str] = {e.index: "active_compute" for e in self._envelopes}
 
         # IMPROVEMENT 2: Memory-bound detection — per-GPU consecutive memory-bound counter
         self._membound_ticks: Dict[int, int] = {e.index: 0 for e in self._envelopes}
+
+        # IMPROVEMENT 2b: Pre-idle prediction — power derivative tracking
+        self._power_readings: Deque[float] = deque(maxlen=4)  # last 4 power readings for derivative
+        self._util_readings: Deque[int] = deque(maxlen=3)  # last 3 utilization readings
+        self._pre_idle_applied: Dict[int, bool] = {e.index: False for e in self._envelopes}
+
+        # IMPROVEMENT 3: P-state race tracker — learn hardware response time
+        self._idle_transition_start: Dict[int, Optional[float]] = {e.index: None for e in self._envelopes}
+        self._idle_transition_power_start: Dict[int, Optional[float]] = {e.index: None for e in self._envelopes}
+        self._hw_response_ewma_s: float = 5.0  # initial guess: T4 enters P-state in ~5s
+        self._cooledai_response_times: Deque[float] = deque(maxlen=30)
+        self._hw_response_times: Deque[float] = deque(maxlen=30)
+        self._race_wins: int = 0
+        self._race_losses: int = 0
+        self._race_total: int = 0
+
+        # IMPROVEMENT 4: Workload cycle timing — EWMA of inter-idle period
+        self._last_active_end_time: Dict[int, Optional[float]] = {e.index: None for e in self._envelopes}
+        self._avg_request_cycle_s: float = 0.0  # EWMA of time between idle periods
+        self._cycle_samples: int = 0
+
+        # IMPROVEMENT 5: Co-idle — lowest memory + core clock pair
+        self._min_mem_clock: Dict[int, int] = {}
+        self._min_core_clock: Dict[int, int] = {}
+        if self._fixed_tdp:
+            for cap in self._clock_caps.values():
+                # Query lowest supported memory clock
+                self._min_mem_clock[cap.index] = cap.max_memory_mhz  # fallback
+                self._min_core_clock[cap.index] = (
+                    self._supported_clocks[cap.index][-1]
+                    if self._supported_clocks.get(cap.index) else int(cap.max_graphics_mhz * 0.10)
+                )
+                # Try to get min memory clock from supported clocks query
+                min_mem = _query_min_memory_clock(cap.index)
+                if min_mem is not None:
+                    self._min_mem_clock[cap.index] = min_mem
 
         _log.info(
             "[GPU_GOV] Governor initialized — %d GPUs, performance_mode=%s, "
@@ -773,7 +837,15 @@ class GPUPowerGovernor:
 
         Called per-GPU on fixed-TDP hardware. Uses utilization queries
         to decide clock state rather than temperature bands.
+
+        Implements:
+          IMP1: 1-tick idle detection + 2-tick exit hysteresis
+          IMP2: Pre-idle prediction via power derivative
+          IMP3: P-state race tracker (learn T4 hardware response)
+          IMP4: Workload cycle timing prediction
+          IMP5: Co-idle deep clock reduction (mem + core)
         """
+        now = time.monotonic()
         cap = self._clock_caps[gpu_idx]
         supported = self._supported_clocks.get(gpu_idx, [])
         currently_reduced = self._clocks_reduced.get(gpu_idx, False)
@@ -781,12 +853,17 @@ class GPUPowerGovernor:
         # Query utilization (cached per tick via self._util_cache)
         sm_pct, mem_pct = self._get_gpu_util(gpu_idx)
 
-        # IMPROVEMENT 3: Thermal headroom tracking (every tick)
+        # Track power + utilization for derivative (IMP2)
+        if power_w is not None:
+            self._power_readings.append(power_w)
+        self._util_readings.append(sm_pct)
+
+        # Thermal headroom tracking (every tick)
         spike_temp = self._spike_trigger_c or self._temp_soft_c
         headroom = spike_temp - temp_c
         current_clocks = query_gpu_current_clocks()
         cur_gfx = current_clocks.get(gpu_idx, 0)
-        boost_sustained = (cur_gfx >= cap.max_graphics_mhz - 15)  # within 15MHz of max
+        boost_sustained = (cur_gfx >= cap.max_graphics_mhz - 15)
         _log.info(
             "[GPU_GOV] tick gpu=%d thermal_headroom=%.1f°C boost_sustained=%s "
             "sm_util=%d%% mem_util=%d%% temp=%.1f°C power=%.1fW gfx_clock=%dMHz mode=%s",
@@ -804,43 +881,161 @@ class GPUPowerGovernor:
         # Efficiency gate check — never reduce if gate is blocked
         gate_blocked = not self._efficiency_gate_open(temp_c, power_w)
 
-        # === State machine: idle → memory_bound → active_compute ===
+        # === IMP3: P-state race tracking — detect idle transitions ===
+        if sm_pct < 5 and self._idle_transition_start.get(gpu_idx) is None:
+            # Transition START: utilization just dropped below 5%
+            self._idle_transition_start[gpu_idx] = now
+            self._idle_transition_power_start[gpu_idx] = power_w
 
-        # IMPROVEMENT 1: Idle detection (utilization < 5% for 3 ticks)
+        if sm_pct >= 15 and self._idle_transition_start.get(gpu_idx) is not None:
+            # Transition ENDED: utilization came back before settling
+            self._idle_transition_start[gpu_idx] = None
+            self._idle_transition_power_start[gpu_idx] = None
+
+        # Detect hardware P-state engagement (power dropped below 20W)
+        if (self._idle_transition_start.get(gpu_idx) is not None
+                and power_w is not None and power_w < 20.0):
+            hw_start = self._idle_transition_start[gpu_idx]
+            if hw_start is not None:
+                hw_response_s = now - hw_start
+                self._hw_response_times.append(hw_response_s)
+                # EWMA update
+                alpha = 0.3
+                self._hw_response_ewma_s = (
+                    alpha * hw_response_s + (1 - alpha) * self._hw_response_ewma_s
+                )
+                # Did CooledAI beat the hardware?
+                cooledai_responded = self._clocks_reduced.get(gpu_idx, False)
+                self._race_total += 1
+                if cooledai_responded:
+                    self._race_wins += 1
+                    race = "win"
+                else:
+                    self._race_losses += 1
+                    race = "loss"
+
+                win_rate = (self._race_wins / max(1, self._race_total)) * 100.0
+                _log.info(
+                    "[GPU_GOV] idle_race=%s hardware_response=%.1fs "
+                    "hw_ewma=%.1fs win_rate_session=%.0f%% gpu=%d",
+                    race, hw_response_s, self._hw_response_ewma_s,
+                    win_rate, gpu_idx,
+                )
+                self._idle_transition_start[gpu_idx] = None
+                self._idle_transition_power_start[gpu_idx] = None
+
+        # === IMP4: Track workload cycle timing ===
+        prev_mode = self._gpu_mode.get(gpu_idx, "active_compute")
+        if prev_mode in ("idle_efficiency", "pre_idle") and sm_pct >= 15:
+            # Just exited idle — record cycle timing
+            if self._last_active_end_time.get(gpu_idx) is not None:
+                cycle_s = now - self._last_active_end_time[gpu_idx]
+                if 2.0 < cycle_s < 600.0:  # sane range
+                    self._cycle_samples += 1
+                    alpha = 0.2
+                    if self._avg_request_cycle_s <= 0:
+                        self._avg_request_cycle_s = cycle_s
+                    else:
+                        self._avg_request_cycle_s = (
+                            alpha * cycle_s + (1 - alpha) * self._avg_request_cycle_s
+                        )
+
+        if sm_pct < 5 and prev_mode == "active_compute":
+            self._last_active_end_time[gpu_idx] = now
+
+        # === State machine: idle / pre_idle / memory_bound / active_compute ===
+
+        # IMP1: Idle detection — 1 tick (was 3)
         if sm_pct < 5:
             self._idle_ticks[gpu_idx] = self._idle_ticks.get(gpu_idx, 0) + 1
+            self._active_ticks[gpu_idx] = 0
             self._membound_ticks[gpu_idx] = 0
         else:
+            # IMP1: 2-tick exit hysteresis — require 2 consecutive active ticks to leave idle
+            if sm_pct >= 15:
+                self._active_ticks[gpu_idx] = self._active_ticks.get(gpu_idx, 0) + 1
+            else:
+                self._active_ticks[gpu_idx] = 0
             self._idle_ticks[gpu_idx] = 0
 
-        # IMPROVEMENT 2: Memory-bound detection
+        # IMP2: Memory-bound detection
         if sm_pct < 40 and mem_pct > 80:
             self._membound_ticks[gpu_idx] = self._membound_ticks.get(gpu_idx, 0) + 1
         else:
             self._membound_ticks[gpu_idx] = 0
 
-        prev_mode = self._gpu_mode.get(gpu_idx, "active_compute")
+        # === IMP2: Pre-idle prediction via power derivative ===
+        pre_idle_predicted = False
+        if (len(self._power_readings) >= 3 and len(self._util_readings) >= 2
+                and not gate_blocked):
+            readings = list(self._power_readings)
+            # Power derivative: average W/tick drop over last 3 readings
+            derivs = [readings[j] - readings[j - 1] for j in range(1, len(readings))]
+            avg_deriv = sum(derivs) / len(derivs)
+            cur_util = self._util_readings[-1]
+            prev_util = self._util_readings[-2] if len(self._util_readings) >= 2 else cur_util
+            util_falling = cur_util < prev_util
 
-        # --- Transition to idle_efficiency ---
-        if self._idle_ticks.get(gpu_idx, 0) >= 3 and not gate_blocked:
-            if prev_mode != "idle_efficiency":
-                # Apply minimum supported clocks
-                min_gfx = supported[-1] if supported else int(cap.max_graphics_mhz * 0.50)
-                if set_gpu_clocks(gpu_idx, cap.max_memory_mhz, min_gfx, dry_run=self._dry_run):
-                    self._clocks_reduced[gpu_idx] = True
-                    self._gpu_mode[gpu_idx] = "idle_efficiency"
+            if (avg_deriv < -15.0  # dropping > 15W/tick
+                    and cur_util < 30
+                    and util_falling
+                    and temp_c < 65.0):
+                pre_idle_predicted = True
+                if prev_mode not in ("idle_efficiency", "pre_idle"):
                     _log.info(
-                        "[GPU_GOV] mode=idle_efficiency clocks_reduced=True gpu=%d "
-                        "gfx→%dMHz utilization=%d%% power_draw=%.1fW",
-                        gpu_idx, min_gfx, sm_pct, power_w or 0.0,
+                        "[GPU_GOV] pre_idle_prediction=True derivative=%.1fW/tick "
+                        "utilization=%d%% temp=%.1f°C pre_applying_efficiency_clocks gpu=%d",
+                        avg_deriv, cur_util, temp_c, gpu_idx,
                     )
-                    results.append((gpu_idx, env.default_w, "idle_efficiency"))
+
+        # === IMP4: Workload cycle prediction ===
+        cycle_predicted = False
+        if (self._avg_request_cycle_s > 0
+                and self._cycle_samples >= 3
+                and not gate_blocked
+                and prev_mode == "active_compute"):
+            last_end = self._last_active_end_time.get(gpu_idx)
+            if last_end is not None:
+                time_since = now - last_end
+                if (time_since > self._avg_request_cycle_s * 0.7
+                        and sm_pct < 20):
+                    cycle_predicted = True
+                    if not self._pre_idle_applied.get(gpu_idx, False):
+                        _log.info(
+                            "[GPU_GOV] cycle_prediction=True avg_cycle=%.1fs "
+                            "time_since_last_active=%.1fs utilization=%d%% gpu=%d",
+                            self._avg_request_cycle_s, time_since, sm_pct, gpu_idx,
+                        )
+
+        # --- Transition to idle_efficiency (IMP1: 1 tick, IMP5: deep clocks) ---
+        should_idle = (self._idle_ticks.get(gpu_idx, 0) >= 1  # IMP1: 1-tick
+                       or pre_idle_predicted              # IMP2: pre-idle prediction
+                       or cycle_predicted)                # IMP4: cycle prediction
+
+        if should_idle and not gate_blocked:
+            if prev_mode not in ("idle_efficiency", "pre_idle"):
+                # IMP5: Use minimum BOTH memory and core clocks for deep idle
+                min_gfx = self._min_core_clock.get(
+                    gpu_idx,
+                    supported[-1] if supported else int(cap.max_graphics_mhz * 0.50),
+                )
+                min_mem = self._min_mem_clock.get(gpu_idx, cap.max_memory_mhz)
+                if set_gpu_clocks(gpu_idx, min_mem, min_gfx, dry_run=self._dry_run):
+                    self._clocks_reduced[gpu_idx] = True
+                    new_mode = "pre_idle" if (pre_idle_predicted or cycle_predicted) else "idle_efficiency"
+                    self._gpu_mode[gpu_idx] = new_mode
+                    self._pre_idle_applied[gpu_idx] = True
+                    _log.info(
+                        "[GPU_GOV] mode=%s clocks_reduced=True gpu=%d "
+                        "gfx→%dMHz mem→%dMHz utilization=%d%% power_draw=%.1fW",
+                        new_mode, gpu_idx, min_gfx, min_mem, sm_pct, power_w or 0.0,
+                    )
+                    results.append((gpu_idx, env.default_w, new_mode))
             return
 
         # --- Transition to memory_bound ---
         if self._membound_ticks.get(gpu_idx, 0) >= 5 and not gate_blocked:
             if prev_mode != "memory_bound":
-                # 75% of max core clock, keep memory at max
                 target_gfx = int(cap.max_graphics_mhz * 0.75)
                 reduced_gfx = snap_to_supported_clock(target_gfx, supported) if supported else target_gfx
                 if set_gpu_clocks(gpu_idx, cap.max_memory_mhz, reduced_gfx, dry_run=self._dry_run):
@@ -855,19 +1050,21 @@ class GPUPowerGovernor:
             return
 
         # --- Transition to active_compute (immediate restore) ---
-        # Restore clocks if: utilization > 15% (leaving idle) or SM > 60% (leaving membound)
+        # IMP1: 2-tick hysteresis to exit idle — require 2 consecutive active ticks
         need_restore = False
-        if prev_mode == "idle_efficiency" and sm_pct >= 15:
+        active_count = self._active_ticks.get(gpu_idx, 0)
+        if prev_mode in ("idle_efficiency", "pre_idle") and active_count >= 2:
             need_restore = True
         elif prev_mode == "memory_bound" and sm_pct >= 60:
             need_restore = True
-        elif prev_mode in ("idle_efficiency", "memory_bound") and gate_blocked:
+        elif prev_mode in ("idle_efficiency", "pre_idle", "memory_bound") and gate_blocked:
             need_restore = True  # Gate demands full power
 
         if need_restore and currently_reduced:
             if reset_gpu_clocks(gpu_idx, dry_run=self._dry_run):
                 self._clocks_reduced[gpu_idx] = False
                 self._gpu_mode[gpu_idx] = "active_compute"
+                self._pre_idle_applied[gpu_idx] = False
                 _log.info(
                     "[GPU_GOV] mode=active_compute clocks_restored=True gpu=%d "
                     "utilization=%d%% from=%s",

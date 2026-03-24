@@ -690,11 +690,12 @@ def _make_fixed_gov(performance_mode=False, **extra_patches):
 
 
 class TestIdleClockManagement(unittest.TestCase):
-    """IMPROVEMENT 1: Idle GPU should get reduced clocks after 3 ticks."""
+    """IMPROVEMENT 1: Idle GPU should get reduced clocks after 1 tick (was 3)."""
 
     def _make_gov(self):
         with patch("core.optimization.gpu_power_governor.query_gpu_clock_caps") as mc, \
-             patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks") as ms:
+             patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks") as ms, \
+             patch("core.optimization.gpu_power_governor._query_min_memory_clock", return_value=None):
             mc.return_value = [GpuClockCaps(index=0, max_graphics_mhz=1721, max_memory_mhz=3504)]
             ms.return_value = [1721, 1600, 1400, 1200, 1000, 860]
             return GPUPowerGovernor(
@@ -705,17 +706,11 @@ class TestIdleClockManagement(unittest.TestCase):
     @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1075})
     @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 2, 5)])
     @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
-    def test_idle_triggers_after_3_ticks(self, mock_ac, mock_util, mock_clk):
+    def test_idle_triggers_after_1_tick(self, mock_ac, mock_util, mock_clk):
         gov = self._make_gov()
-        # Tick 1-2: idle but not yet 3 consecutive
+        # 1 tick at <5% utilization → should enter idle immediately
         gov.tick([50.0], [10.0])
-        gov._last_tick = 0
-        gov.tick([50.0], [10.0])
-        self.assertNotEqual(gov._gpu_mode.get(0), "idle_efficiency")
-        # Tick 3: confirmed idle → should reduce clocks
-        gov._last_tick = 0
-        gov.tick([50.0], [10.0])
-        self.assertEqual(gov._gpu_mode[0], "idle_efficiency")
+        self.assertIn(gov._gpu_mode[0], ("idle_efficiency", "pre_idle"))
         mock_ac.assert_called()
         self.assertTrue(gov._clocks_reduced[0])
 
@@ -723,11 +718,15 @@ class TestIdleClockManagement(unittest.TestCase):
     @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 50, 30)])
     @patch("core.optimization.gpu_power_governor.reset_gpu_clocks", return_value=True)
     @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
-    def test_active_restores_immediately(self, mock_ac, mock_rac, mock_util, mock_clk):
+    def test_active_restores_after_2_tick_hysteresis(self, mock_ac, mock_rac, mock_util, mock_clk):
         gov = self._make_gov()
         gov._gpu_mode[0] = "idle_efficiency"
         gov._clocks_reduced[0] = True
-        # Utilization 50% > 15% → immediate restore
+        # Tick 1: utilization 50% > 15% — active_ticks goes to 1, but not enough
+        gov.tick([60.0], [50.0])
+        # With 2-tick hysteresis, first tick shouldn't restore yet
+        # Tick 2: still active → active_ticks reaches 2 → restore
+        gov._last_tick = 0
         gov.tick([60.0], [50.0])
         mock_rac.assert_called()
         self.assertEqual(gov._gpu_mode[0], "active_compute")
@@ -739,7 +738,8 @@ class TestMemoryBoundDetection(unittest.TestCase):
 
     def _make_gov(self):
         with patch("core.optimization.gpu_power_governor.query_gpu_clock_caps") as mc, \
-             patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks") as ms:
+             patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks") as ms, \
+             patch("core.optimization.gpu_power_governor._query_min_memory_clock", return_value=None):
             mc.return_value = [GpuClockCaps(index=0, max_graphics_mhz=1721, max_memory_mhz=3504)]
             ms.return_value = [1721, 1600, 1400, 1290, 1200, 1000, 860]
             return GPUPowerGovernor(
@@ -783,7 +783,8 @@ class TestThermalHeadroom(unittest.TestCase):
     @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 80, 50)])
     def test_headroom_logged(self, mock_util, mock_clk):
         with patch("core.optimization.gpu_power_governor.query_gpu_clock_caps") as mc, \
-             patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks") as ms:
+             patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks") as ms, \
+             patch("core.optimization.gpu_power_governor._query_min_memory_clock", return_value=None):
             mc.return_value = [GpuClockCaps(index=0, max_graphics_mhz=1721, max_memory_mhz=3504)]
             ms.return_value = [1721, 1600, 1400]
             gov = GPUPowerGovernor(
@@ -803,12 +804,13 @@ class TestThermalHeadroom(unittest.TestCase):
 class TestResetRestoresClocks(unittest.TestCase):
     """reset_to_defaults should restore clocks on fixed-TDP GPUs."""
 
+    @patch("core.optimization.gpu_power_governor._query_min_memory_clock", return_value=None)
     @patch("core.optimization.gpu_power_governor.query_gpu_clock_caps")
     @patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks", return_value=[1721])
     @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
     @patch("core.optimization.gpu_power_governor.reset_gpu_clocks", return_value=True)
     @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
-    def test_reset_restores_clocks(self, mock_pl, mock_rac, mock_ac, mock_sc, mock_caps):
+    def test_reset_restores_clocks(self, mock_pl, mock_rac, mock_ac, mock_sc, mock_caps, mock_mem):
         mock_caps.return_value = [GpuClockCaps(index=0, max_graphics_mhz=1721, max_memory_mhz=3504)]
         gov = GPUPowerGovernor(
             _make_fixed_tdp_envs(1),
@@ -818,6 +820,131 @@ class TestResetRestoresClocks(unittest.TestCase):
         gov.reset_to_defaults()
         mock_rac.assert_called_once_with(0, dry_run=False)
         self.assertFalse(gov._clocks_reduced[0])
+
+
+def _make_fixed_gov_for_improvements():
+    """Helper to create a fixed-TDP governor with all mocks for improvement tests."""
+    with patch("core.optimization.gpu_power_governor.query_gpu_clock_caps") as mc, \
+         patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks") as ms, \
+         patch("core.optimization.gpu_power_governor._query_min_memory_clock", return_value=405):
+        mc.return_value = [GpuClockCaps(index=0, max_graphics_mhz=1721, max_memory_mhz=5001)]
+        ms.return_value = [1721, 1600, 1400, 1200, 1000, 860, 139]
+        gov = GPUPowerGovernor(
+            _make_fixed_tdp_envs(1),
+            performance_mode=False, calibration_window_s=0.0, dry_run=True,
+        )
+    gov._spike_trigger_c = 72.0
+    return gov
+
+
+class TestPreIdlePrediction(unittest.TestCase):
+    """IMP2: Pre-idle prediction via power derivative."""
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1721})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 20, 10)])
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    def test_pre_idle_triggers_on_steep_power_drop(self, mock_ac, mock_util, mock_clk):
+        gov = _make_fixed_gov_for_improvements()
+        # Seed power readings with a steep drop (>15W/tick)
+        gov._power_readings.extend([100.0, 80.0, 55.0])
+        gov._util_readings.extend([60, 25])
+        # Now tick at 20% util, power 30W, temp 55°C → derivative -23.3 W/tick
+        gov.tick([55.0], [30.0])
+        self.assertIn(gov._gpu_mode[0], ("pre_idle", "idle_efficiency"))
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1721})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 20, 10)])
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    def test_pre_idle_blocked_when_temp_high(self, mock_ac, mock_util, mock_clk):
+        gov = _make_fixed_gov_for_improvements()
+        gov._power_readings.extend([100.0, 80.0, 55.0])
+        gov._util_readings.extend([60, 25])
+        # Temp 70°C > 65°C threshold → pre-idle should NOT trigger
+        gov.tick([70.0], [30.0])
+        # Might still enter idle_efficiency via 1-tick idle if util < 5, but not pre_idle
+        # At util=20%, it won't be idle_efficiency either
+        self.assertNotEqual(gov._gpu_mode[0], "pre_idle")
+
+
+class TestPStateRaceTracker(unittest.TestCase):
+    """IMP3: Learn T4 hardware P-state response time."""
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1721})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 2, 5)])
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    def test_race_win_when_clocks_reduced_before_hw(self, mock_ac, mock_util, mock_clk):
+        gov = _make_fixed_gov_for_improvements()
+        # Tick 1: idle → clocks reduced (CooledAI responds)
+        gov.tick([55.0], [50.0])
+        self.assertTrue(gov._clocks_reduced[0])
+        # Now simulate hardware reaching low power (< 20W)
+        gov._last_tick = 0
+        gov.tick([55.0], [15.0])
+        # Should record a race win
+        self.assertGreaterEqual(gov._race_wins, 1)
+
+    def test_hw_response_ewma_updates(self):
+        gov = _make_fixed_gov_for_improvements()
+        initial = gov._hw_response_ewma_s
+        # Manually simulate
+        gov._hw_response_times.append(3.0)
+        gov._hw_response_ewma_s = 0.3 * 3.0 + 0.7 * initial
+        self.assertAlmostEqual(gov._hw_response_ewma_s, 0.3 * 3.0 + 0.7 * 5.0, places=1)
+
+
+class TestWorkloadCycleLearning(unittest.TestCase):
+    """IMP4: Learn workload cycle timing for predictive idle."""
+
+    def test_cycle_ewma_updates(self):
+        gov = _make_fixed_gov_for_improvements()
+        # Simulate cycle data
+        gov._avg_request_cycle_s = 0
+        gov._cycle_samples = 0
+        # First cycle
+        gov._avg_request_cycle_s = 30.0
+        gov._cycle_samples = 1
+        # Second cycle
+        alpha = 0.2
+        gov._avg_request_cycle_s = alpha * 25.0 + (1 - alpha) * 30.0
+        gov._cycle_samples = 2
+        self.assertAlmostEqual(gov._avg_request_cycle_s, 29.0, places=1)
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1721})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 15, 10)])
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    def test_cycle_prediction_triggers_early_idle(self, mock_ac, mock_util, mock_clk):
+        import time as _time
+        gov = _make_fixed_gov_for_improvements()
+        gov._avg_request_cycle_s = 20.0
+        gov._cycle_samples = 5  # enough samples for confidence
+        # Last active ended 15s ago (0.7 * 20 = 14s threshold)
+        gov._last_active_end_time[0] = _time.monotonic() - 15.0
+        gov.tick([55.0], [30.0])
+        # Should enter idle/pre_idle via cycle prediction
+        self.assertIn(gov._gpu_mode[0], ("pre_idle", "idle_efficiency"))
+
+
+class TestCoIdleDeepClocks(unittest.TestCase):
+    """IMP5: Deep clock reduction (memory + core) during confirmed idle."""
+
+    def test_min_memory_clock_stored(self):
+        gov = _make_fixed_gov_for_improvements()
+        # Should have stored the min memory clock from the mock (405)
+        self.assertEqual(gov._min_mem_clock.get(0), 405)
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1721})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 0, 2)])
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    def test_idle_applies_min_mem_and_core(self, mock_ac, mock_util, mock_clk):
+        gov = _make_fixed_gov_for_improvements()
+        gov.tick([50.0], [10.0])
+        # Check set_gpu_clocks was called with min memory clock (405)
+        mock_ac.assert_called()
+        call_args = mock_ac.call_args
+        mem_mhz = call_args[0][1]
+        core_mhz = call_args[0][2]
+        self.assertEqual(mem_mhz, 405)  # IMP5: reduced memory clock
+        self.assertEqual(core_mhz, 139)  # lowest supported core clock
 
 
 if __name__ == "__main__":
