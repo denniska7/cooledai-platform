@@ -41,3 +41,8 @@ auth:
 
 telemetry:
   strict_whitelist: false   # true = reject unknown fields; false = strip + warn
+
+billing:
+  electricity_rate: 0.12              # $/kWh — overridden by env COOLEDAI_UTILITY_RATE
+  currency: "USD"                     # Display currency for dashboard
+  grid_carbon_intensity_kg_per_kwh: 0.386  # US grid average for ESG reporting

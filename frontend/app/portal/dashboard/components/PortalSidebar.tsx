@@ -24,6 +24,7 @@ const navItems = [
   { href: "/portal/facility-pulse", label: "Facility Pulse" },
   { href: "/portal/savings-roadmap", label: "Savings Roadmap" },
   { href: "/portal/billing", label: "Billing" },
+  { href: "/portal/advanced", label: "Advanced" },
 ];
 
 export function PortalSidebar() {

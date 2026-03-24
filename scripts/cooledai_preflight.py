@@ -151,6 +151,162 @@ def check_telemetry(api_url: str, api_key: str, node_id: str) -> bool:
         return False
 
 
+def capture_baseline(output_path: str, duration_s: int = 300) -> bool:
+    """Check 5: Capture Day 0 baseline profile BEFORE optimization takes control.
+
+    Observes BMC-controlled fan behavior and GPU power at various utilization
+    levels for `duration_s` seconds. Writes baseline_profile.json — the permanent
+    "before CooledAI" anchor for all savings calculations.
+
+    This file is written ONCE and never overwritten after first write.
+    """
+    print(f"\n[5/5] Capturing Day 0 baseline ({duration_s}s observation)")
+
+    output = Path(output_path)
+    if output.is_file():
+        print(f"  Baseline already exists at {output_path}")
+        try:
+            with open(output) as f:
+                bp = json.load(f)
+            print(f"  Captured at: {bp.get('baseline_captured_at', 'unknown')}")
+            print(f"  Avg util: {bp.get('baseline_avg_util_pct', '?')}%")
+            print(f"  [{PASS}] Using existing baseline (not overwritten)")
+            return True
+        except Exception:
+            pass
+
+    # Try to read GPU and fan data
+    import subprocess
+    import time
+    from collections import defaultdict
+    from datetime import datetime, timezone
+
+    fan_by_temp: defaultdict = defaultdict(list)  # temp_bucket -> [rpm]
+    gpu_by_util: defaultdict = defaultdict(list)  # util_bucket -> [watts]
+    all_utils: list = []
+    all_watts: list = []
+    all_rpms: list = []
+
+    start = time.monotonic()
+    samples = 0
+
+    print(f"  Observing for {duration_s}s (Ctrl-C to abort)...")
+
+    while time.monotonic() - start < duration_s:
+        try:
+            # Read GPU data
+            gpu_out = subprocess.check_output(
+                ["nvidia-smi", "--query-gpu=temperature.gpu,power.draw,utilization.gpu",
+                 "--format=csv,noheader,nounits"],
+                timeout=5, stderr=subprocess.DEVNULL,
+            ).decode().strip()
+
+            gpu_temp = 0.0
+            gpu_power = 0.0
+            gpu_util = 0.0
+            for line in gpu_out.splitlines():
+                parts = [p.strip() for p in line.split(",")]
+                if len(parts) >= 3:
+                    t, p, u = float(parts[0]), float(parts[1]), float(parts[2])
+                    gpu_temp = max(gpu_temp, t)
+                    gpu_power += p
+                    gpu_util = max(gpu_util, u)
+
+            # Read fan RPMs via IPMI
+            try:
+                fan_out = subprocess.check_output(
+                    ["ipmitool", "sdr", "type", "Fan"],
+                    timeout=5, stderr=subprocess.DEVNULL,
+                ).decode()
+                rpms = []
+                import re
+                for line in fan_out.splitlines():
+                    m = re.search(r"(\d+)\s*RPM", line)
+                    if m:
+                        rpms.append(int(m.group(1)))
+                avg_rpm = sum(rpms) / len(rpms) if rpms else 0
+            except Exception:
+                avg_rpm = 0
+
+            if gpu_temp > 0 and avg_rpm > 0:
+                # Bucket by temperature (5°C bands)
+                if gpu_temp < 55:
+                    bucket = "50-55"
+                elif gpu_temp < 60:
+                    bucket = "55-60"
+                elif gpu_temp < 65:
+                    bucket = "60-65"
+                elif gpu_temp < 70:
+                    bucket = "65-70"
+                else:
+                    bucket = "70+"
+                fan_by_temp[bucket].append(avg_rpm)
+
+                # Bucket by utilization (20% bands)
+                if gpu_util < 20:
+                    ubucket = "0-20"
+                elif gpu_util < 40:
+                    ubucket = "20-40"
+                elif gpu_util < 60:
+                    ubucket = "40-60"
+                elif gpu_util < 80:
+                    ubucket = "60-80"
+                else:
+                    ubucket = "80-100"
+                gpu_by_util[ubucket].append(gpu_power)
+
+                all_utils.append(gpu_util)
+                all_watts.append(gpu_power)
+                all_rpms.append(avg_rpm)
+                samples += 1
+
+                if samples % 30 == 0:
+                    elapsed = int(time.monotonic() - start)
+                    print(f"  {elapsed}s/{duration_s}s — {samples} samples, "
+                          f"GPU {gpu_temp:.0f}°C {gpu_power:.0f}W {gpu_util:.0f}%, "
+                          f"Fan {avg_rpm:.0f} RPM")
+
+        except Exception as exc:
+            print(f"  Sample error: {exc}")
+
+        time.sleep(5)  # 5-second intervals
+
+    if samples < 10:
+        print(f"  [{FAIL}] Only {samples} samples collected — need at least 10")
+        return False
+
+    # Build baseline profile
+    baseline = {
+        "baseline_captured_at": datetime.now(timezone.utc).isoformat(),
+        "baseline_fan_rpm_by_temp": {
+            k: round(sum(v) / len(v)) for k, v in sorted(fan_by_temp.items())
+        },
+        "baseline_gpu_w_by_util": {
+            k: round(sum(v) / len(v), 1) for k, v in sorted(gpu_by_util.items())
+        },
+        "baseline_avg_util_pct": round(sum(all_utils) / len(all_utils), 1),
+        "baseline_avg_gpu_w": round(sum(all_watts) / len(all_watts), 1),
+        "baseline_avg_fan_rpm": round(sum(all_rpms) / len(all_rpms)),
+        "samples": samples,
+        "duration_s": duration_s,
+    }
+
+    # Write atomically
+    output.parent.mkdir(parents=True, exist_ok=True)
+    tmp = output.with_suffix(".tmp")
+    with open(tmp, "w") as f:
+        json.dump(baseline, f, indent=2)
+    tmp.replace(output)
+
+    print(f"  Baseline written to {output_path}")
+    print(f"  Samples: {samples}")
+    print(f"  Avg util: {baseline['baseline_avg_util_pct']}%")
+    print(f"  Avg power: {baseline['baseline_avg_gpu_w']}W")
+    print(f"  Avg fan RPM: {baseline['baseline_avg_fan_rpm']}")
+    print(f"  [{PASS}] Baseline profile captured")
+    return True
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="CooledAI Preflight Check")
     parser.add_argument("--config", default="configs/cooledai.yaml")
@@ -158,6 +314,12 @@ def main() -> None:
         "COOLEDAI_API_URL", "https://proactive-creativity-production.up.railway.app"))
     parser.add_argument("--api-key", default=os.environ.get("COOLEDAI_API_KEY", ""))
     parser.add_argument("--node-id", default=os.environ.get("COOLEDAI_NODE_ID", "preflight-test"))
+    parser.add_argument("--baseline-path", default=os.environ.get(
+        "COOLEDAI_BASELINE_PROFILE_PATH", "/var/lib/cooledai/baseline_profile.json"))
+    parser.add_argument("--baseline-duration", type=int, default=300,
+                        help="Baseline observation duration in seconds (default 300)")
+    parser.add_argument("--skip-baseline", action="store_true",
+                        help="Skip baseline capture (checks 1-4 only)")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -170,6 +332,12 @@ def main() -> None:
         ("API health", check_api_health(args.api_url, args.api_key)),
         ("Telemetry POST", check_telemetry(args.api_url, args.api_key, args.node_id)),
     ]
+
+    if not args.skip_baseline:
+        results.append((
+            "Day 0 baseline capture",
+            capture_baseline(args.baseline_path, args.baseline_duration),
+        ))
 
     print("\n" + "=" * 60)
     print("  Summary")
