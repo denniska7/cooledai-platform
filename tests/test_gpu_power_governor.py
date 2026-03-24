@@ -6,9 +6,11 @@ from unittest.mock import MagicMock, patch
 
 from core.optimization.gpu_power_governor import (
     GPUPowerGovernor,
+    GpuClockCaps,
     GpuPowerEnvelope,
     compute_all_targets,
     compute_target_power_w,
+    is_fixed_tdp,
     reset_all_gpus_to_default,
     set_gpu_power_limit_w,
 )
@@ -400,7 +402,8 @@ class TestNvidiaSmiMocked(unittest.TestCase):
         result = set_gpu_power_limit_w(0, 180)
         mock_cc.assert_called_once()
         cmd = mock_cc.call_args[0][0]
-        self.assertEqual(cmd[0], "nvidia-smi")
+        self.assertEqual(cmd[0], "sudo")
+        self.assertEqual(cmd[1], "nvidia-smi")
         self.assertIn("-pl", cmd)
         self.assertIn("180", cmd)
 
@@ -455,6 +458,366 @@ class TestGPUGovLogging(unittest.TestCase):
         log_line = gpu_gov_logs[0]
         for field in ["gpu_temp=", "current_limit=", "default_limit=", "reduction=", "reason="]:
             self.assertIn(field, log_line)
+
+
+# ===================================================================
+# FIX 1: Efficiency gate tests
+# ===================================================================
+
+
+class TestEfficiencyGate(unittest.TestCase):
+    """Efficiency gate blocks TDP reduction when power>90W, near spike temp, and ramping."""
+
+    def _make_profile(self, spike=68.0, active_trigger=100.0):
+        p = MagicMock()
+        p.temp_mean_c = 55.0
+        p.temp_stdev_c = 3.0
+        p.temp_p90_c = 75.0
+        p.spike_trigger_temp_c = spike
+        p.active_compute_trigger_w = active_trigger
+        return p
+
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_gate_blocks_all_three_conditions(self, mock_set) -> None:
+        """All 3 conditions true: power>90W, near spike, power ramping → BLOCKED."""
+        gov = _make_governor(performance_mode=False)
+        gov.update_from_profile(self._make_profile(spike=68.0))
+
+        # Set EWMA to a lower value so current power > EWMA (ramping)
+        gov._ewma_power_w = 100.0
+
+        # Temp 66°C (within 3°C of spike 68°C), power 110W (>90W), ramping (110 > 100 EWMA)
+        results = gov.tick([66.0], [110.0])
+        for idx, w, reason in results:
+            self.assertEqual(w, 200.0)
+            self.assertEqual(reason, "efficiency_gate_blocked")
+
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_gate_allows_when_power_below_90(self, mock_set) -> None:
+        """Power <= 90W means condition 1 fails → gate open, reduction allowed."""
+        gov = _make_governor(performance_mode=False)
+        gov.update_from_profile(self._make_profile(spike=68.0))
+
+        gov._ewma_power_w = 70.0
+
+        # Temp 66°C (near spike), power 80W (<=90W) — condition 1 fails
+        results = gov.tick([66.0], [80.0])
+        for idx, w, reason in results:
+            # Should reduce since gate is open (power not > 90)
+            self.assertNotEqual(reason, "efficiency_gate_blocked")
+
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_gate_allows_when_temp_far_from_spike(self, mock_set) -> None:
+        """Temp well below spike_trigger - 3°C → gate open."""
+        gov = _make_governor(performance_mode=False)
+        gov.update_from_profile(self._make_profile(spike=68.0))
+
+        gov._ewma_power_w = 100.0
+
+        # Temp 58°C (far from spike 68-3=65°C), power 110W (>90), ramping
+        results = gov.tick([58.0], [110.0])
+        for idx, w, reason in results:
+            self.assertNotEqual(reason, "efficiency_gate_blocked")
+
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_gate_allows_when_power_declining(self, mock_set) -> None:
+        """Power trending down (current < EWMA) → gate open."""
+        gov = _make_governor(performance_mode=False)
+        gov.update_from_profile(self._make_profile(spike=68.0))
+
+        # Set EWMA higher than current → declining trend
+        gov._ewma_power_w = 130.0
+
+        # Temp 66°C (near spike), power 110W (>90W), but declining (110 < 130 EWMA)
+        results = gov.tick([66.0], [110.0])
+        for idx, w, reason in results:
+            self.assertNotEqual(reason, "efficiency_gate_blocked")
+
+    def test_efficiency_gate_open_direct(self) -> None:
+        """Direct unit test of _efficiency_gate_open()."""
+        gov = _make_governor(performance_mode=False)
+        gov._spike_trigger_c = 68.0
+
+        # All three conditions met → blocked (returns False)
+        gov._ewma_power_w = 100.0
+        self.assertFalse(gov._efficiency_gate_open(66.0, 110.0))
+
+        # Power <= 90W → open
+        self.assertTrue(gov._efficiency_gate_open(66.0, 85.0))
+
+        # Temp far from spike → open
+        self.assertTrue(gov._efficiency_gate_open(60.0, 110.0))
+
+        # Power declining → open
+        gov._ewma_power_w = 120.0
+        self.assertTrue(gov._efficiency_gate_open(66.0, 110.0))
+
+
+# ===================================================================
+# FIX 2: Continuous learning tests
+# ===================================================================
+
+
+class TestMiniRecalibration(unittest.TestCase):
+    """Rolling mini-recalibration should EWMA-smooth observed stats."""
+
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_mini_recal_updates_idle_peak(self, mock_set) -> None:
+        gov = _make_governor(performance_mode=True)
+        # Pre-set calibration values
+        gov._observed_idle_w = 80.0
+        gov._observed_peak_w = 200.0
+
+        # Fill recent samples with shifted power distribution
+        for _ in range(50):
+            gov._recent_samples.append((60.0, 120.0))  # higher idle
+        for _ in range(50):
+            gov._recent_samples.append((70.0, 250.0))  # higher peak
+
+        # Force recal by setting last_recal_time far in the past
+        gov._last_recal_time = 0
+        gov._check_continuous_learning(time.monotonic())
+
+        # EWMA should move idle and peak toward new values
+        # idle: 0.20 * 120 + 0.80 * 80 = 88
+        self.assertGreater(gov._observed_idle_w, 80.0)
+        self.assertLess(gov._observed_idle_w, 120.0)
+        # peak: 0.20 * 250 + 0.80 * 200 = 210
+        self.assertGreater(gov._observed_peak_w, 200.0)
+        self.assertLess(gov._observed_peak_w, 250.0)
+
+
+class TestDriftDetection(unittest.TestCase):
+    """Temp drift > 4°C from baseline should trigger immediate recalibration."""
+
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_drift_triggers_recal(self, mock_set) -> None:
+        gov = _make_governor(performance_mode=True)
+        gov._baseline_temp_mean = 55.0
+        gov._observed_idle_w = 80.0
+        gov._observed_peak_w = 180.0
+        gov._last_recal_time = time.monotonic()  # recently recalibrated
+
+        # Fill recent samples with temp drift of 5°C (> threshold 4°C)
+        for _ in range(100):
+            gov._recent_samples.append((60.0, 150.0))
+
+        old_idle = gov._observed_idle_w
+        with self.assertLogs("cooledai.gpu_gov", level="INFO") as cm:
+            gov._check_continuous_learning(time.monotonic())
+
+        # Should have logged drift detection
+        drift_logs = [l for l in cm.output if "Drift detected" in l]
+        self.assertGreater(len(drift_logs), 0)
+        # Baseline should be updated
+        self.assertAlmostEqual(gov._baseline_temp_mean, 60.0, delta=1.0)
+
+
+# ===================================================================
+# FIX 2: State persistence tests
+# ===================================================================
+
+
+class TestStatePersistence(unittest.TestCase):
+    """save_state/load_state should round-trip governor learning state."""
+
+    def test_save_and_load_roundtrip(self) -> None:
+        import tempfile
+        gov = _make_governor()
+        gov._observed_idle_w = 85.0
+        gov._observed_peak_w = 210.0
+        gov._baseline_temp_mean = 58.0
+        gov._calibrated = True
+        gov._temp_full_c = 57.0
+        gov._temp_soft_c = 66.0
+        gov._temp_hard_c = 74.0
+        gov._spike_trigger_c = 68.0
+        gov._active_compute_trigger_w = 105.0
+        gov._min_allowed_limit_w = {0: 93.5}
+
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+
+        try:
+            gov.save_state(path)
+
+            # Create fresh governor and load state
+            gov2 = _make_governor()
+            self.assertTrue(gov2.load_state(path))
+            self.assertAlmostEqual(gov2._observed_idle_w, 85.0)
+            self.assertAlmostEqual(gov2._observed_peak_w, 210.0)
+            self.assertAlmostEqual(gov2._baseline_temp_mean, 58.0)
+            self.assertTrue(gov2._calibrated)
+            self.assertAlmostEqual(gov2._temp_full_c, 57.0)
+            self.assertAlmostEqual(gov2._spike_trigger_c, 68.0)
+            self.assertAlmostEqual(gov2._active_compute_trigger_w, 105.0)
+            self.assertAlmostEqual(gov2._min_allowed_limit_w[0], 93.5)
+        finally:
+            os.unlink(path)
+
+    def test_load_missing_file_returns_false(self) -> None:
+        gov = _make_governor()
+        result = gov.load_state("/nonexistent/path/state.json")
+        self.assertFalse(result)
+
+
+# ===================================================================
+# Clock scaling tests (PATH B for fixed-TDP GPUs)
+# ===================================================================
+
+
+def _make_fixed_tdp_envs(n: int = 1) -> list:
+    """Create envelopes where min_w == max_w (fixed TDP like T4)."""
+    return [
+        GpuPowerEnvelope(index=i, min_w=75.0, default_w=75.0, max_w=75.0)
+        for i in range(n)
+    ]
+
+
+class TestFixedTDPDetection(unittest.TestCase):
+    def test_fixed_tdp_detected(self) -> None:
+        envs = _make_fixed_tdp_envs(2)
+        self.assertTrue(is_fixed_tdp(envs))
+
+    def test_variable_tdp_not_fixed(self) -> None:
+        envs = _make_envs(1)  # min=50, default=200, max=300
+        self.assertFalse(is_fixed_tdp(envs))
+
+
+def _make_fixed_gov(performance_mode=False, **extra_patches):
+    """Create a governor with fixed-TDP GPUs and mocked nvidia-smi queries."""
+    return None  # Replaced by per-test setup below
+
+
+class TestIdleClockManagement(unittest.TestCase):
+    """IMPROVEMENT 1: Idle GPU should get reduced clocks after 3 ticks."""
+
+    def _make_gov(self):
+        with patch("core.optimization.gpu_power_governor.query_gpu_clock_caps") as mc, \
+             patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks") as ms:
+            mc.return_value = [GpuClockCaps(index=0, max_graphics_mhz=1721, max_memory_mhz=3504)]
+            ms.return_value = [1721, 1600, 1400, 1200, 1000, 860]
+            return GPUPowerGovernor(
+                _make_fixed_tdp_envs(1),
+                performance_mode=False, calibration_window_s=0.0, dry_run=True,
+            )
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1075})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 2, 5)])
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    def test_idle_triggers_after_3_ticks(self, mock_ac, mock_util, mock_clk):
+        gov = self._make_gov()
+        # Tick 1-2: idle but not yet 3 consecutive
+        gov.tick([50.0], [10.0])
+        gov._last_tick = 0
+        gov.tick([50.0], [10.0])
+        self.assertNotEqual(gov._gpu_mode.get(0), "idle_efficiency")
+        # Tick 3: confirmed idle → should reduce clocks
+        gov._last_tick = 0
+        gov.tick([50.0], [10.0])
+        self.assertEqual(gov._gpu_mode[0], "idle_efficiency")
+        mock_ac.assert_called()
+        self.assertTrue(gov._clocks_reduced[0])
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1721})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 50, 30)])
+    @patch("core.optimization.gpu_power_governor.reset_gpu_clocks", return_value=True)
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    def test_active_restores_immediately(self, mock_ac, mock_rac, mock_util, mock_clk):
+        gov = self._make_gov()
+        gov._gpu_mode[0] = "idle_efficiency"
+        gov._clocks_reduced[0] = True
+        # Utilization 50% > 15% → immediate restore
+        gov.tick([60.0], [50.0])
+        mock_rac.assert_called()
+        self.assertEqual(gov._gpu_mode[0], "active_compute")
+        self.assertFalse(gov._clocks_reduced[0])
+
+
+class TestMemoryBoundDetection(unittest.TestCase):
+    """IMPROVEMENT 2: Memory-bound workloads get reduced core clocks."""
+
+    def _make_gov(self):
+        with patch("core.optimization.gpu_power_governor.query_gpu_clock_caps") as mc, \
+             patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks") as ms:
+            mc.return_value = [GpuClockCaps(index=0, max_graphics_mhz=1721, max_memory_mhz=3504)]
+            ms.return_value = [1721, 1600, 1400, 1290, 1200, 1000, 860]
+            return GPUPowerGovernor(
+                _make_fixed_tdp_envs(1),
+                performance_mode=False, calibration_window_s=0.0, dry_run=True,
+            )
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1500})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 30, 90)])
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    def test_membound_triggers_after_5_ticks(self, mock_ac, mock_util, mock_clk):
+        gov = self._make_gov()
+        # 5 ticks with SM < 40%, mem > 80%
+        for _ in range(5):
+            gov._last_tick = 0
+            gov.tick([60.0], [50.0])
+        self.assertEqual(gov._gpu_mode[0], "memory_bound")
+        mock_ac.assert_called()
+        # Should apply ~75% of 1721 = 1290 (snapped)
+        call_args = mock_ac.call_args
+        self.assertEqual(call_args[0][2], 1290)
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1721})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 70, 50)])
+    @patch("core.optimization.gpu_power_governor.reset_gpu_clocks", return_value=True)
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    def test_compute_bound_restores(self, mock_ac, mock_rac, mock_util, mock_clk):
+        gov = self._make_gov()
+        gov._gpu_mode[0] = "memory_bound"
+        gov._clocks_reduced[0] = True
+        # SM 70% > 60% → restore
+        gov.tick([60.0], [60.0])
+        mock_rac.assert_called()
+        self.assertEqual(gov._gpu_mode[0], "active_compute")
+
+
+class TestThermalHeadroom(unittest.TestCase):
+    """IMPROVEMENT 3: Thermal headroom tracking and fan optimization benefit logging."""
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_current_clocks", return_value={0: 1721})
+    @patch("core.optimization.gpu_power_governor.query_gpu_utilization", return_value=[(0, 80, 50)])
+    def test_headroom_logged(self, mock_util, mock_clk):
+        with patch("core.optimization.gpu_power_governor.query_gpu_clock_caps") as mc, \
+             patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks") as ms:
+            mc.return_value = [GpuClockCaps(index=0, max_graphics_mhz=1721, max_memory_mhz=3504)]
+            ms.return_value = [1721, 1600, 1400]
+            gov = GPUPowerGovernor(
+                _make_fixed_tdp_envs(1),
+                performance_mode=False, calibration_window_s=0.0, dry_run=True,
+            )
+        gov._spike_trigger_c = 72.0
+        # Temp 55°C, spike 72°C → headroom = 17°C > 10, clock at max → benefit confirmed
+        with self.assertLogs("cooledai.gpu_gov", level="INFO") as cm:
+            gov.tick([55.0], [60.0])
+        headroom_logs = [l for l in cm.output if "thermal_headroom" in l]
+        self.assertGreater(len(headroom_logs), 0)
+        benefit_logs = [l for l in cm.output if "fan_optimization_benefit=confirmed" in l]
+        self.assertGreater(len(benefit_logs), 0)
+
+
+class TestResetRestoresClocks(unittest.TestCase):
+    """reset_to_defaults should restore clocks on fixed-TDP GPUs."""
+
+    @patch("core.optimization.gpu_power_governor.query_gpu_clock_caps")
+    @patch("core.optimization.gpu_power_governor.query_supported_graphics_clocks", return_value=[1721])
+    @patch("core.optimization.gpu_power_governor.set_gpu_clocks", return_value=True)
+    @patch("core.optimization.gpu_power_governor.reset_gpu_clocks", return_value=True)
+    @patch("core.optimization.gpu_power_governor.set_gpu_power_limit_w", return_value=True)
+    def test_reset_restores_clocks(self, mock_pl, mock_rac, mock_ac, mock_sc, mock_caps):
+        mock_caps.return_value = [GpuClockCaps(index=0, max_graphics_mhz=1721, max_memory_mhz=3504)]
+        gov = GPUPowerGovernor(
+            _make_fixed_tdp_envs(1),
+            performance_mode=False, calibration_window_s=0.0, dry_run=False,
+        )
+        gov._clocks_reduced[0] = True
+        gov.reset_to_defaults()
+        mock_rac.assert_called_once_with(0, dry_run=False)
+        self.assertFalse(gov._clocks_reduced[0])
 
 
 if __name__ == "__main__":

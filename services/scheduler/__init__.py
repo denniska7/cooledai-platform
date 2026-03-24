@@ -1,21 +1,7 @@
 """
-CooledAI Scheduler Services - Job observation and upcoming load prediction.
+CooledAI Scheduler Services — stub.
 
-Integrates with Slurm, Kubernetes, and other schedulers to predict which racks
-are about to receive high-compute jobs (GPU training). Enables pre-emptive
-cooling before thermal spikes.
+The job_observer module was moved to CooledAI_Workload_Isolation/ as part of
+the data-isolation initiative.  CooledAI collects only thermal/power telemetry
+and never observes workload schedulers in production.
 """
-
-from .job_observer import (
-    SlurmObserver,
-    KubernetesObserver,
-    get_upcoming_load,
-    UpcomingJob,
-)
-
-__all__ = [
-    "SlurmObserver",
-    "KubernetesObserver",
-    "get_upcoming_load",
-    "UpcomingJob",
-]

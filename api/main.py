@@ -174,15 +174,56 @@ def _is_master(key: str) -> bool:
     return bool(_MASTER_KEY) and key == _MASTER_KEY
 
 
-def _require_api_key(x_api_key: str = Header(default="", alias="X-API-Key")) -> str:
-    """Dependency: require valid API key (legacy env-var OR registered key)."""
+_rate_limiter = None
+try:
+    from api.rate_limiter import SlidingWindowRateLimiter
+    _rate_limiter = SlidingWindowRateLimiter(max_requests=60, window_seconds=60)
+except ImportError:
+    pass
+
+try:
+    from api import audit_log as _audit
+except ImportError:
+    _audit = None
+
+
+def _require_api_key(request: Request, x_api_key: str = Header(default="", alias="X-API-Key")) -> str:
+    """Dependency: require valid API key (legacy env-var OR registered key).
+
+    Also enforces rate limiting (60 req/min per key).
+    """
+    client_ip = getattr(request.client, "host", "") if request.client else ""
+
     if _is_master(x_api_key):
         return x_api_key
     if x_api_key in _api_key_registry:
+        # Rate limiting
+        if _rate_limiter:
+            allowed, retry_after = _rate_limiter.check(x_api_key)
+            if not allowed:
+                if _audit:
+                    _audit.log_security_rejection(
+                        reason="rate_limit_exceeded",
+                        key_id=x_api_key,
+                        ip=client_ip,
+                        endpoint=str(request.url.path),
+                    )
+                raise HTTPException(
+                    status_code=429,
+                    detail="Rate limit exceeded (60 req/min). Retry later.",
+                    headers={"Retry-After": str(retry_after)},
+                )
         return x_api_key
     if _API_KEY and x_api_key == _API_KEY:
         return x_api_key
     if _API_KEY or _api_key_registry or _MASTER_KEY:
+        if _audit:
+            _audit.log_security_rejection(
+                reason="invalid_api_key",
+                key_id=x_api_key,
+                ip=client_ip,
+                endpoint=str(request.url.path),
+            )
         raise HTTPException(status_code=401, detail="Invalid or missing API key (X-API-Key header).")
     return x_api_key
 
@@ -203,13 +244,13 @@ def _require_admin_key(x_api_key: str = Header(default="", alias="X-API-Key")) -
 
 
 def _resolve_owner(x_api_key: str = Header(default="", alias="X-API-Key")) -> str:
-    """
-    Resolve owner_id for telemetry ingestion.
+    """Resolve client_id for telemetry ingestion.
 
-    Telemetry writes are intentionally stored under `FIXED_OWNER_ID` regardless
-    of which X-API-Key was used. Portal reads remain strictly protected via
-    Clerk JWT checks.
+    Returns the client_id bound to this API key for tenant isolation.
+    Falls back to FIXED_OWNER_ID for legacy/master keys.
     """
+    if x_api_key in _api_key_registry:
+        return _api_key_registry[x_api_key].get("owner_id", FIXED_OWNER_ID)
     return FIXED_OWNER_ID
 
 
@@ -363,7 +404,7 @@ from core.synthetic.synthetic_sensor import SyntheticSensor
 app = FastAPI(
     title="CooledAI Universal Thermal Optimization API",
     description="Hardware-agnostic platform for data center thermal optimization",
-    version="1.0.0",
+    version=(project_root / "VERSION").read_text().strip() if (project_root / "VERSION").exists() else "0.0.0-dev",
 )
 
 # CORS
@@ -390,20 +431,37 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Add standard security headers to all responses."""
+    """Add standard security headers + version to all responses."""
 
     async def dispatch(self, request: Request, call_next):
+        # ── Request body size limit: 1 MB ──
+        content_length = request.headers.get("content-length")
+        if content_length and int(content_length) > 1_048_576:
+            return Response(
+                content='{"detail":"Request body too large (max 1 MB)"}',
+                status_code=413,
+                media_type="application/json",
+            )
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["X-CooledAI-Version"] = app.version
         if os.environ.get("COOLEDAI_ENV", "production").lower() not in ("dev", "development", "local"):
             response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains"
         return response
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+
+# ── HTTPS enforcement (production) ──
+if os.environ.get("COOLEDAI_REQUIRE_HTTPS", "").lower() in ("1", "true", "yes"):
+    try:
+        from starlette.middleware.httpsredirect import HTTPSRedirectMiddleware
+        app.add_middleware(HTTPSRedirectMiddleware)
+    except ImportError:
+        pass
 
 
 @app.on_event("startup")
@@ -670,11 +728,9 @@ except Exception as e:
     _baseline_available = False
     _baseline_reporter = None
 
-# Job observer: Slurm/K8s pre-cooling (optional)
-try:
-    from services.scheduler.job_observer import get_upcoming_load
-except Exception:
-    get_upcoming_load = None
+# Job observer removed — workload observation is not part of CooledAI's
+# telemetry-only optimization system (moved to CooledAI_Workload_Isolation).
+get_upcoming_load = None
 
 
 # --- Pydantic Models for API ---
@@ -761,12 +817,85 @@ async def optimize_thermal(body: ThermalTelemetryInput):
 
 @app.get("/health")
 async def health_check():
-    """Health check for load balancers and monitoring.
-
-    Returns:
-        {"status": "ok"}.
-    """
+    """Basic health check for load balancers (backward compat)."""
     return {"status": "ok"}
+
+
+_APP_START_TIME = time.time()
+
+
+@app.get("/api/v1/health")
+async def health_check_v1():
+    """Comprehensive health check for monitoring dashboards and client portals.
+
+    Production gate: returns "degraded" if any GPU temp exceeded critical_temp_c
+    in the last 60 minutes.
+    """
+    now = time.time()
+    status = "healthy"
+    checks = {}
+
+    # ── Uptime ──
+    uptime_s = int(now - _APP_START_TIME)
+
+    # ── Active nodes ──
+    active_nodes = 0
+    last_telemetry_age_s = None
+    temp_breach = False
+
+    for owner_data in _tenant_telemetry.values():
+        for nid, ndata in owner_data.items():
+            recv = ndata.get("_received_at")
+            if recv:
+                active_nodes += 1
+                age = now - recv
+                if last_telemetry_age_s is None or age < last_telemetry_age_s:
+                    last_telemetry_age_s = age
+                # Production gate: check for critical temp breach in last 60 min
+                if age < 3600:
+                    max_t = ndata.get("max_gpu_temp_c") or ndata.get("max_temp_c") or 0
+                    gpu_t = ndata.get("gpu_temp_c") or 0
+                    if max(max_t, gpu_t) > 85:  # default critical_temp_c
+                        temp_breach = True
+
+    if temp_breach:
+        status = "degraded"
+        checks["gpu_temp_breach"] = "critical_temp_exceeded_in_last_60min"
+
+    if last_telemetry_age_s is not None and last_telemetry_age_s > 120:
+        status = "degraded"
+        checks["telemetry_stale"] = f"{int(last_telemetry_age_s)}s since last data"
+
+    # ── TLS cert expiry check ──
+    tls_cert_warning = False
+    tls_cert_path = os.environ.get("COOLEDAI_TLS_CERT_PATH", "")
+    if tls_cert_path and Path(tls_cert_path).is_file():
+        try:
+            import ssl
+            cert = ssl.PEM_cert_to_DER_cert(Path(tls_cert_path).read_text())
+            # Use cryptography if available for proper parsing
+            try:
+                from cryptography import x509
+                c = x509.load_der_x509_certificate(cert)
+                days_left = (c.not_valid_after_utc - datetime.now(timezone.utc)).days
+                if days_left < 30:
+                    tls_cert_warning = True
+                    checks["tls_cert_days_left"] = days_left
+            except ImportError:
+                pass
+        except Exception:
+            pass
+
+    return {
+        "status": status,
+        "version": app.version,
+        "uptime_s": uptime_s,
+        "active_nodes": active_nodes,
+        "last_telemetry_age_s": int(last_telemetry_age_s) if last_telemetry_age_s is not None else None,
+        "tls_cert_expiry_warning": tls_cert_warning,
+        "checks": checks,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
 
 
 # Briefing Agent: Morning Briefing (last 24h) for Slack/Email
@@ -1813,10 +1942,20 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
         consolidated["max_temp_c"] = 0.0
         consolidated["gpu_power_w"] = 0.0
 
+        # Import whitelist validator
+        try:
+            from api.telemetry_whitelist import validate_record as _validate_telem
+        except ImportError:
+            _validate_telem = None
+
         for record in telemetry:
+            # ── Telemetry whitelist enforcement ──
+            if _validate_telem is not None:
+                record = _validate_telem(record, strict=False)
             node_id = record.get("node_id", agent_id)
             record["_received_at"] = now_ts
             record["_owner_id"] = owner_id
+            record["_client_id"] = owner_id
             tenant[node_id] = record
 
             fan_rpm_direct = record.get("fan_rpm")

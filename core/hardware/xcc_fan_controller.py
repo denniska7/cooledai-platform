@@ -34,11 +34,37 @@ import logging
 import os
 import ssl
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, List, Optional
 
 _log = logging.getLogger("cooledai.xcc_fan")
+
+
+class _CredentialScrubFilter(logging.Filter):
+    """Mask XCC BMC credentials in log output."""
+
+    _secrets: List[str] = []
+
+    @classmethod
+    def register_secrets(cls, *values: str) -> None:
+        cls._secrets = [v for v in values if v and len(v) > 2]
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        for secret in self._secrets:
+            if secret in msg:
+                record.msg = str(record.msg).replace(secret, "***")
+                if record.args:
+                    record.args = tuple(
+                        str(a).replace(secret, "***") if isinstance(a, str) else a
+                        for a in (record.args if isinstance(record.args, tuple) else (record.args,))
+                    )
+        return True
+
+
+_log.addFilter(_CredentialScrubFilter())
 
 
 def _env(name: str, default: str = "") -> str:
@@ -108,6 +134,9 @@ class XCCFanController:
         self._ipmi_lan_available = False  # IPMI over LAN connectivity confirmed
         self._ipmi_lan_variant: str = ""  # "lenovo_0x3a" or "dell_0x30"
 
+        # Register secrets for log scrubbing
+        _CredentialScrubFilter.register_secrets(self._pass, self._user, self._host)
+
         # Build auth header for Redfish
         cred = f"{self._user}:{self._pass}".encode()
         self._auth = f"Basic {base64.b64encode(cred).decode()}"
@@ -156,6 +185,15 @@ class XCCFanController:
             "Content-Type": "application/json",
         }
         data = json.dumps(body).encode() if body is not None else None
+        # ── HMAC request signing (optional) ──
+        hmac_secret = os.environ.get("COOLEDAI_XCC_HMAC_SECRET", "")
+        if hmac_secret:
+            import hashlib, hmac as _hmac
+            ts = str(int(time.time()))
+            msg = f"{method}{path}{ts}".encode()
+            sig = _hmac.new(hmac_secret.encode(), msg, hashlib.sha256).hexdigest()
+            headers["X-CooledAI-Timestamp"] = ts
+            headers["X-CooledAI-Signature"] = sig
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
             with urllib.request.urlopen(req, context=_ssl_ctx(), timeout=self._timeout) as resp:
@@ -190,20 +228,26 @@ class XCCFanController:
     # -----------------------------------------------------------------------
 
     def _ipmi_cmd(self, raw_args: List[str], timeout: float = 3.0) -> tuple:
-        """Run ipmitool -I lanplus command.  Returns (success: bool, stdout: str, stderr: str)."""
+        """Run ipmitool -I lanplus command.  Returns (success: bool, stdout: str, stderr: str).
+
+        Password is passed via IPMI_PASSWORD env var to avoid exposure in
+        process listings (``ps aux``).
+        """
         cmd = [
             "ipmitool", "-I", "lanplus",
             "-H", self._host,
             "-U", self._user,
-            "-P", self._pass,
+            "-E",  # read password from IPMI_PASSWORD env var
             "-e", "",  # escape char (empty = disable)
         ] + raw_args
+        env = {**os.environ, "IPMI_PASSWORD": self._pass}
         try:
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
+                env=env,
             )
             return (result.returncode == 0, result.stdout.strip(), result.stderr.strip())
         except FileNotFoundError:

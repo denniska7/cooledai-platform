@@ -1,0 +1,75 @@
+#!/usr/bin/expect -f
+# Deploy three-fix (profile rejection + spike_bypass log + idle stepping) to pilot
+# Deletes stale calibration profile and restarts agent
+set timeout 120
+set pass "***REDACTED_SSH_PASS***"
+set host "cooledaiadmin@100.92.29.44"
+set send_delay 5
+set project_root [file dirname [file dirname [info script]]]
+
+# Step 1: SCP the three changed files to a staging dir
+spawn scp -o StrictHostKeyChecking=no \
+    $project_root/core/optimization/thermal_calibrator.py \
+    $project_root/core/optimization/optimizer.py \
+    $project_root/scripts/cooledai_agent.py \
+    $host:/tmp/
+expect "password:"
+sleep $send_delay
+send "$pass\r"
+expect eof
+
+# Step 2: SSH in, move files to /opt/cooledai, delete profile, restart
+spawn ssh -o StrictHostKeyChecking=no $host
+expect "password:"
+sleep $send_delay
+send "$pass\r"
+expect -re {\$ |# }
+
+# Copy files to their correct locations
+send "sudo cp /tmp/thermal_calibrator.py /opt/cooledai/core/optimization/thermal_calibrator.py && echo CP1_OK\r"
+expect {
+    "password for" { sleep $send_delay; send "$pass\r"; exp_continue }
+    "CP1_OK" { }
+    timeout { puts "TIMEOUT on cp1"; exit 1 }
+}
+expect -re {\$ |# }
+
+send "sudo cp /tmp/optimizer.py /opt/cooledai/core/optimization/optimizer.py && echo CP2_OK\r"
+expect {
+    "CP2_OK" { }
+    timeout { puts "TIMEOUT on cp2"; exit 1 }
+}
+expect -re {\$ |# }
+
+send "sudo cp /tmp/cooledai_agent.py /opt/cooledai/scripts/cooledai_agent.py && echo CP3_OK\r"
+expect {
+    "CP3_OK" { }
+    timeout { puts "TIMEOUT on cp3"; exit 1 }
+}
+expect -re {\$ |# }
+
+# Delete the stale calibration profile
+send "sudo rm -f /var/lib/cooledai/calibration_profile.json && echo PROFILE_DELETED\r"
+expect {
+    "PROFILE_DELETED" { }
+    timeout { puts "TIMEOUT on profile delete"; exit 1 }
+}
+expect -re {\$ |# }
+
+# Restart the agent
+send "sudo systemctl restart cooledai-agent && echo RESTART_OK\r"
+expect {
+    "password for" { sleep $send_delay; send "$pass\r"; exp_continue }
+    "RESTART_OK" { }
+    timeout { puts "TIMEOUT on restart"; exit 1 }
+}
+expect -re {\$ |# }
+
+# Wait and check logs
+send "sleep 15 && sudo journalctl -u cooledai-agent --since '30 seconds ago' --no-pager | tail -30\r"
+expect -re {\$ |# }
+sleep 2
+
+send "exit\r"
+expect eof
+puts "\n=== Deploy complete ==="

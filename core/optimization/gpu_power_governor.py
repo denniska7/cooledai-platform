@@ -16,13 +16,15 @@ Temperature bands are configurable via environment variables OR CalibrationProfi
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
 import subprocess
 import time
+from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Deque, Dict, List, Optional, Sequence, Tuple
 
 _log = logging.getLogger("cooledai.gpu_gov")
 
@@ -174,7 +176,7 @@ def set_gpu_power_limit_w(gpu_index: int, watts: int, *, dry_run: bool = False) 
         return True
     try:
         subprocess.check_call(
-            ["nvidia-smi", "-i", str(gpu_index), "-pl", str(int(watts))],
+            ["sudo", "nvidia-smi", "-i", str(gpu_index), "-pl", str(int(watts))],
             timeout=15,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -217,6 +219,188 @@ def reset_all_gpus_to_default(envelopes: Sequence[GpuPowerEnvelope], *, dry_run:
     """Restore each GPU to driver default limit (best-effort on shutdown)."""
     for e in envelopes:
         set_gpu_power_limit_w(e.index, int(round(e.default_w)), dry_run=dry_run)
+
+
+# ---------------------------------------------------------------------------
+# GPU clock scaling (PATH B for fixed-TDP GPUs like T4)
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class GpuClockCaps:
+    """Per-GPU max clock speeds (MHz)."""
+    index: int
+    max_graphics_mhz: int
+    max_memory_mhz: int
+
+
+def query_gpu_clock_caps(timeout_s: float = 8.0) -> List[GpuClockCaps]:
+    """Query max graphics and memory clocks per GPU."""
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,clocks.max.graphics,clocks.max.memory",
+                "--format=csv,noheader,nounits",
+            ],
+            timeout=timeout_s,
+            stderr=subprocess.DEVNULL,
+        ).decode()
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+
+    caps: List[GpuClockCaps] = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3:
+            continue
+        try:
+            idx = int(float(parts[0]))
+            gfx = int(float(parts[1]))
+            mem = int(float(parts[2]))
+            caps.append(GpuClockCaps(index=idx, max_graphics_mhz=gfx, max_memory_mhz=mem))
+        except (ValueError, TypeError):
+            continue
+    return caps
+
+
+def query_supported_graphics_clocks(gpu_index: int = 0, timeout_s: float = 8.0) -> List[int]:
+    """Query supported graphics clock frequencies (MHz) for a GPU, sorted descending."""
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "-i", str(gpu_index),
+                "--query-supported-clocks=gr",
+                "--format=csv,noheader,nounits",
+            ],
+            timeout=timeout_s,
+            stderr=subprocess.DEVNULL,
+        ).decode()
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+
+    clocks: List[int] = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            clocks.append(int(float(line)))
+        except ValueError:
+            continue
+    return sorted(clocks, reverse=True)
+
+
+def snap_to_supported_clock(target_mhz: int, supported: List[int]) -> int:
+    """Find the closest supported clock <= target_mhz. Falls back to lowest supported."""
+    if not supported:
+        return target_mhz
+    # supported is sorted descending
+    for clk in supported:
+        if clk <= target_mhz:
+            return clk
+    return supported[-1]  # lowest available
+
+
+def set_gpu_clocks(gpu_index: int, mem_mhz: int, gfx_mhz: int, *, dry_run: bool = False) -> bool:
+    """Set application clocks via nvidia-smi -ac <mem>,<gfx>. Requires sudo."""
+    if dry_run:
+        return True
+    try:
+        subprocess.check_call(
+            ["sudo", "nvidia-smi", "-i", str(gpu_index), "-ac", f"{mem_mhz},{gfx_mhz}"],
+            timeout=15,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def reset_gpu_clocks(gpu_index: int, *, dry_run: bool = False) -> bool:
+    """Reset application clocks to default via nvidia-smi -rac. Requires sudo."""
+    if dry_run:
+        return True
+    try:
+        subprocess.check_call(
+            ["sudo", "nvidia-smi", "-i", str(gpu_index), "-rac"],
+            timeout=15,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+
+
+def is_fixed_tdp(envelopes: Sequence[GpuPowerEnvelope]) -> bool:
+    """True if all GPUs have min_w == max_w (no TDP headroom)."""
+    return all(abs(e.min_w - e.max_w) < 1.0 for e in envelopes)
+
+
+# ---------------------------------------------------------------------------
+# GPU utilization queries
+# ---------------------------------------------------------------------------
+
+def query_gpu_utilization(timeout_s: float = 5.0) -> List[Tuple[int, int, int]]:
+    """Query per-GPU SM utilization and memory utilization.
+
+    Returns list of (gpu_index, sm_util_pct, mem_util_pct).
+    """
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,utilization.gpu,utilization.memory",
+                "--format=csv,noheader,nounits",
+            ],
+            timeout=timeout_s,
+            stderr=subprocess.DEVNULL,
+        ).decode()
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+
+    results: List[Tuple[int, int, int]] = []
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 3:
+            continue
+        try:
+            idx = int(float(parts[0]))
+            sm = int(float(parts[1]))
+            mem = int(float(parts[2]))
+            results.append((idx, sm, mem))
+        except (ValueError, TypeError):
+            continue
+    return results
+
+
+def query_gpu_current_clocks(timeout_s: float = 5.0) -> Dict[int, int]:
+    """Query current graphics clock per GPU. Returns {gpu_idx: gfx_mhz}."""
+    try:
+        out = subprocess.check_output(
+            [
+                "nvidia-smi",
+                "--query-gpu=index,clocks.current.graphics",
+                "--format=csv,noheader,nounits",
+            ],
+            timeout=timeout_s,
+            stderr=subprocess.DEVNULL,
+        ).decode()
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        return {}
+
+    clocks: Dict[int, int] = {}
+    for line in out.splitlines():
+        parts = [p.strip() for p in line.split(",")]
+        if len(parts) < 2:
+            continue
+        try:
+            clocks[int(float(parts[0]))] = int(float(parts[1]))
+        except (ValueError, TypeError):
+            continue
+    return clocks
 
 
 def load_governor_config_from_env() -> Tuple[float, float, float, float, float]:
@@ -290,15 +474,49 @@ class GPUPowerGovernor:
         self._observed_peak_w: float = 0.0  # P90 of power readings
         self._min_allowed_limit_w: Dict[int, float] = {}  # per-GPU floor after calibration
 
+        # FIX 1: Efficiency gate — EWMA power tracking
+        self._power_history: Deque[float] = deque(maxlen=30)
+        self._active_compute_trigger_w: float = 0.0  # set from profile
+        self._ewma_power_w: Optional[float] = None  # EWMA-smoothed power from previous tick
+        self._ewma_power_alpha: float = 0.3  # smoothing factor for power EWMA
+
+        # FIX 2: Continuous learning — rolling samples + mini-recalibration
+        self._recent_samples: Deque[Tuple[float, float]] = deque(maxlen=500)  # (temp, power)
+        self._last_recal_time: float = time.monotonic()
+        self._recal_interval_s: float = 1800.0  # 30 minutes
+        self._ewma_alpha: float = 0.20
+        self._baseline_temp_mean: Optional[float] = None  # for drift detection
+        self._drift_threshold_c: float = 4.0
+
         # Logging state
         self._last_log_time: float = 0.0
 
+        # Clock scaling state (PATH B for fixed-TDP GPUs)
+        self._fixed_tdp = is_fixed_tdp(self._envelopes)
+        self._clock_caps: Dict[int, GpuClockCaps] = {}
+        self._supported_clocks: Dict[int, List[int]] = {}  # gpu_idx → sorted desc
+        self._clocks_reduced: Dict[int, bool] = {}  # per-GPU tracking
+        if self._fixed_tdp:
+            for cap in query_gpu_clock_caps():
+                self._clock_caps[cap.index] = cap
+                self._clocks_reduced[cap.index] = False
+                self._supported_clocks[cap.index] = query_supported_graphics_clocks(cap.index)
+
+        # IMPROVEMENT 1: Idle clock management — per-GPU consecutive idle tick counter
+        self._idle_ticks: Dict[int, int] = {e.index: 0 for e in self._envelopes}
+        self._gpu_mode: Dict[int, str] = {e.index: "active_compute" for e in self._envelopes}
+
+        # IMPROVEMENT 2: Memory-bound detection — per-GPU consecutive memory-bound counter
+        self._membound_ticks: Dict[int, int] = {e.index: 0 for e in self._envelopes}
+
         _log.info(
             "[GPU_GOV] Governor initialized — %d GPUs, performance_mode=%s, "
-            "calibration_window=%.0fs, thresholds=%.0f/%.0f/%.0f°C",
+            "calibration_window=%.0fs, thresholds=%.0f/%.0f/%.0f°C, "
+            "fixed_tdp=%s, clock_scaling=%s",
             len(self._envelopes), self._performance_mode,
             self._calibration_window_s,
             self._temp_full_c, self._temp_soft_c, self._temp_hard_c,
+            self._fixed_tdp, bool(self._clock_caps),
         )
 
     @property
@@ -357,6 +575,15 @@ class GPUPowerGovernor:
             self._temp_soft_c = new_soft
             self._temp_hard_c = new_hard
             self._spike_trigger_c = spike_trigger
+
+        # FIX 1: Capture active_compute_trigger for efficiency gate
+        act = getattr(profile, "active_compute_trigger_w", None)
+        if isinstance(act, (int, float)) and act > 0:
+            self._active_compute_trigger_w = float(act)
+
+        # FIX 2: Set baseline temp for drift detection on first profile
+        if self._baseline_temp_mean is None:
+            self._baseline_temp_mean = temp_mean
 
     # ------------------------------------------------------------------
     # Auto-calibration observation window (Step 4)
@@ -438,6 +665,21 @@ class GPUPowerGovernor:
         if not self._check_calibration(max_power):
             return results  # Still calibrating — no adjustments
 
+        # FIX 1: Update rolling power history + EWMA
+        if max_power is not None:
+            self._power_history.append(max_power)
+            if self._ewma_power_w is None:
+                self._ewma_power_w = max_power
+            else:
+                self._ewma_power_w = (self._ewma_power_alpha * max_power +
+                                      (1 - self._ewma_power_alpha) * self._ewma_power_w)
+
+        # FIX 2: Feed continuous learning samples
+        if gpu_temps_c and gpu_power_w:
+            max_temp = max(gpu_temps_c)
+            self._recent_samples.append((max_temp, max_power or 0.0))
+            self._check_continuous_learning(now)
+
         # Time hysteresis
         if now - self._last_tick < self._min_interval_s:
             return results
@@ -472,20 +714,37 @@ class GPUPowerGovernor:
                     target_w = env.default_w
                     reason = "parity_guard"
 
+            # --- FIX 1: Efficiency gate (efficiency mode only) ---
+            if not self._performance_mode and target_w < env.default_w:
+                if not self._efficiency_gate_open(temp, power_w):
+                    target_w = env.default_w
+                    reason = "efficiency_gate_blocked"
+                    _log.info(
+                        "[GPU_GOV] efficiency_gate=blocked temp=%.1f°C power=%.1fW "
+                        "ewma_power=%.1fW spike_trigger=%.1f°C",
+                        temp, power_w or 0.0,
+                        self._ewma_power_w or 0.0,
+                        self._spike_trigger_c or self._temp_soft_c,
+                    )
+
+            # --- IMPROVEMENT 1+2: Utilization-based clock management ---
+            if self._fixed_tdp and i in self._clock_caps:
+                self._tick_utilization_clock_mgmt(i, temp, power_w, env, results)
+                continue  # Skip TDP-based apply for fixed-TDP GPUs
+
             # Idle detection: if GPU drawing < 15% of default, skip
             if power_w is not None and power_w < env.default_w * 0.15:
                 target_w = env.default_w
                 reason = "idle"
 
-            # Watts hysteresis
+            # Watts hysteresis (TDP-capable GPUs only)
             prev = self._last_limits.get(i)
             if prev is not None and abs(target_w - prev) < self._min_change_w:
                 reason = "hysteresis_hold"
-                # Still log but don't apply
                 self._maybe_log(i, temp, prev, env.default_w, reason, power_w)
                 continue
 
-            # Apply
+            # Apply TDP change
             if set_gpu_power_limit_w(i, int(target_w), dry_run=self._dry_run):
                 self._last_limits[i] = target_w
                 results.append((i, target_w, reason))
@@ -497,6 +756,233 @@ class GPUPowerGovernor:
             self._last_tick = now
 
         return results
+
+    # ------------------------------------------------------------------
+    # IMPROVEMENT 1+2: Utilization-based clock management
+    # ------------------------------------------------------------------
+
+    def _tick_utilization_clock_mgmt(
+        self,
+        gpu_idx: int,
+        temp_c: float,
+        power_w: Optional[float],
+        env: GpuPowerEnvelope,
+        results: List[Tuple[int, float, str]],
+    ) -> None:
+        """Handle idle, memory-bound, and active states via clock scaling.
+
+        Called per-GPU on fixed-TDP hardware. Uses utilization queries
+        to decide clock state rather than temperature bands.
+        """
+        cap = self._clock_caps[gpu_idx]
+        supported = self._supported_clocks.get(gpu_idx, [])
+        currently_reduced = self._clocks_reduced.get(gpu_idx, False)
+
+        # Query utilization (cached per tick via self._util_cache)
+        sm_pct, mem_pct = self._get_gpu_util(gpu_idx)
+
+        # IMPROVEMENT 3: Thermal headroom tracking (every tick)
+        spike_temp = self._spike_trigger_c or self._temp_soft_c
+        headroom = spike_temp - temp_c
+        current_clocks = query_gpu_current_clocks()
+        cur_gfx = current_clocks.get(gpu_idx, 0)
+        boost_sustained = (cur_gfx >= cap.max_graphics_mhz - 15)  # within 15MHz of max
+        _log.info(
+            "[GPU_GOV] tick gpu=%d thermal_headroom=%.1f°C boost_sustained=%s "
+            "sm_util=%d%% mem_util=%d%% temp=%.1f°C power=%.1fW gfx_clock=%dMHz mode=%s",
+            gpu_idx, headroom, boost_sustained,
+            sm_pct, mem_pct, temp_c, power_w or 0.0, cur_gfx,
+            self._gpu_mode.get(gpu_idx, "unknown"),
+        )
+        if headroom > 10.0 and boost_sustained:
+            _log.info(
+                "[GPU_GOV] fan_optimization_benefit=confirmed gpu=%d "
+                "headroom=%.1f°C — fan layer enabling GPU boost",
+                gpu_idx, headroom,
+            )
+
+        # Efficiency gate check — never reduce if gate is blocked
+        gate_blocked = not self._efficiency_gate_open(temp_c, power_w)
+
+        # === State machine: idle → memory_bound → active_compute ===
+
+        # IMPROVEMENT 1: Idle detection (utilization < 5% for 3 ticks)
+        if sm_pct < 5:
+            self._idle_ticks[gpu_idx] = self._idle_ticks.get(gpu_idx, 0) + 1
+            self._membound_ticks[gpu_idx] = 0
+        else:
+            self._idle_ticks[gpu_idx] = 0
+
+        # IMPROVEMENT 2: Memory-bound detection
+        if sm_pct < 40 and mem_pct > 80:
+            self._membound_ticks[gpu_idx] = self._membound_ticks.get(gpu_idx, 0) + 1
+        else:
+            self._membound_ticks[gpu_idx] = 0
+
+        prev_mode = self._gpu_mode.get(gpu_idx, "active_compute")
+
+        # --- Transition to idle_efficiency ---
+        if self._idle_ticks.get(gpu_idx, 0) >= 3 and not gate_blocked:
+            if prev_mode != "idle_efficiency":
+                # Apply minimum supported clocks
+                min_gfx = supported[-1] if supported else int(cap.max_graphics_mhz * 0.50)
+                if set_gpu_clocks(gpu_idx, cap.max_memory_mhz, min_gfx, dry_run=self._dry_run):
+                    self._clocks_reduced[gpu_idx] = True
+                    self._gpu_mode[gpu_idx] = "idle_efficiency"
+                    _log.info(
+                        "[GPU_GOV] mode=idle_efficiency clocks_reduced=True gpu=%d "
+                        "gfx→%dMHz utilization=%d%% power_draw=%.1fW",
+                        gpu_idx, min_gfx, sm_pct, power_w or 0.0,
+                    )
+                    results.append((gpu_idx, env.default_w, "idle_efficiency"))
+            return
+
+        # --- Transition to memory_bound ---
+        if self._membound_ticks.get(gpu_idx, 0) >= 5 and not gate_blocked:
+            if prev_mode != "memory_bound":
+                # 75% of max core clock, keep memory at max
+                target_gfx = int(cap.max_graphics_mhz * 0.75)
+                reduced_gfx = snap_to_supported_clock(target_gfx, supported) if supported else target_gfx
+                if set_gpu_clocks(gpu_idx, cap.max_memory_mhz, reduced_gfx, dry_run=self._dry_run):
+                    self._clocks_reduced[gpu_idx] = True
+                    self._gpu_mode[gpu_idx] = "memory_bound"
+                    _log.info(
+                        "[GPU_GOV] mode=memory_bound sm=%d%% mem_util=%d%% gpu=%d "
+                        "core_clock_reduced=True gfx→%dMHz",
+                        sm_pct, mem_pct, gpu_idx, reduced_gfx,
+                    )
+                    results.append((gpu_idx, env.default_w, "memory_bound"))
+            return
+
+        # --- Transition to active_compute (immediate restore) ---
+        # Restore clocks if: utilization > 15% (leaving idle) or SM > 60% (leaving membound)
+        need_restore = False
+        if prev_mode == "idle_efficiency" and sm_pct >= 15:
+            need_restore = True
+        elif prev_mode == "memory_bound" and sm_pct >= 60:
+            need_restore = True
+        elif prev_mode in ("idle_efficiency", "memory_bound") and gate_blocked:
+            need_restore = True  # Gate demands full power
+
+        if need_restore and currently_reduced:
+            if reset_gpu_clocks(gpu_idx, dry_run=self._dry_run):
+                self._clocks_reduced[gpu_idx] = False
+                self._gpu_mode[gpu_idx] = "active_compute"
+                _log.info(
+                    "[GPU_GOV] mode=active_compute clocks_restored=True gpu=%d "
+                    "utilization=%d%% from=%s",
+                    gpu_idx, sm_pct, prev_mode,
+                )
+                results.append((gpu_idx, env.default_w, "active_compute"))
+            return
+
+        # No transition needed — hold current state
+        self._maybe_log(gpu_idx, temp_c, env.default_w, env.default_w,
+                        prev_mode, power_w)
+
+    def _get_gpu_util(self, gpu_idx: int) -> Tuple[int, int]:
+        """Get SM and memory utilization for a GPU, caching per tick."""
+        if not hasattr(self, "_util_cache_time") or (time.monotonic() - self._util_cache_time) > 1.0:
+            self._util_cache: Dict[int, Tuple[int, int]] = {}
+            for idx, sm, mem in query_gpu_utilization():
+                self._util_cache[idx] = (sm, mem)
+            self._util_cache_time = time.monotonic()
+        return self._util_cache.get(gpu_idx, (0, 0))
+
+    # ------------------------------------------------------------------
+    # FIX 1: Efficiency gate
+    # ------------------------------------------------------------------
+
+    def _efficiency_gate_open(self, temp_c: float, power_w: Optional[float]) -> bool:
+        """Check if efficiency-mode TDP reduction is allowed.
+
+        Returns True if reduction is permitted, False if blocked.
+        BLOCKS reduction when ALL three conditions are simultaneously true:
+          1. Current GPU power > 90W
+          2. Current GPU temperature is within 3°C of spike_trigger_temp_c
+          3. GPU power trend is positive (current power > EWMA from previous tick)
+        """
+        spike_temp = self._spike_trigger_c or self._temp_soft_c
+
+        # All three must be true to BLOCK
+        cond_power_high = (power_w is not None and power_w > 90.0)
+        cond_near_spike = (temp_c >= spike_temp - 3.0)
+        cond_power_ramping = (
+            power_w is not None
+            and self._ewma_power_w is not None
+            and power_w > self._ewma_power_w
+        )
+
+        if cond_power_high and cond_near_spike and cond_power_ramping:
+            return False  # BLOCKED — all three danger conditions met
+
+        return True  # OPEN — safe to reduce
+
+    # ------------------------------------------------------------------
+    # FIX 2: Continuous learning
+    # ------------------------------------------------------------------
+
+    def _check_continuous_learning(self, now: float) -> None:
+        """Perform mini-recalibration and drift detection from rolling samples."""
+        if len(self._recent_samples) < 30:
+            return  # Need minimum samples
+
+        # Drift detection: check if recent temp mean shifted > 4°C from baseline
+        if self._baseline_temp_mean is not None:
+            recent_temps = [t for t, _ in list(self._recent_samples)[-100:]]
+            recent_mean = sum(recent_temps) / len(recent_temps)
+            drift = abs(recent_mean - self._baseline_temp_mean)
+            if drift >= self._drift_threshold_c:
+                _log.info(
+                    "[GPU_GOV] Drift detected: baseline=%.1f°C current_mean=%.1f°C "
+                    "drift=%.1f°C — triggering immediate recalibration",
+                    self._baseline_temp_mean, recent_mean, drift,
+                )
+                self._apply_mini_recalibration()
+                self._baseline_temp_mean = recent_mean
+                self._last_recal_time = now
+                return
+
+        # Periodic mini-recalibration every _recal_interval_s
+        if now - self._last_recal_time >= self._recal_interval_s:
+            self._apply_mini_recalibration()
+            self._last_recal_time = now
+
+    def _apply_mini_recalibration(self) -> None:
+        """EWMA-smooth observed idle/peak power from recent samples."""
+        if not self._recent_samples:
+            return
+
+        powers = sorted(p for _, p in self._recent_samples if p > 0)
+        if len(powers) < 10:
+            return
+
+        n = len(powers)
+        new_idle = powers[max(0, int(n * 0.10))]
+        new_peak = powers[min(n - 1, int(n * 0.90))]
+
+        alpha = self._ewma_alpha
+        if self._observed_idle_w > 0:
+            self._observed_idle_w = alpha * new_idle + (1 - alpha) * self._observed_idle_w
+        else:
+            self._observed_idle_w = new_idle
+
+        if self._observed_peak_w > 0:
+            self._observed_peak_w = alpha * new_peak + (1 - alpha) * self._observed_peak_w
+        else:
+            self._observed_peak_w = new_peak
+
+        # Update per-GPU min_allowed_limit
+        for env in self._envelopes:
+            self._min_allowed_limit_w[env.index] = max(
+                env.min_w,
+                self._observed_idle_w * 1.10,
+            )
+
+        _log.info(
+            "[GPU_GOV] Mini-recalibration: idle=%.1fW peak=%.1fW (EWMA α=%.2f, %d samples)",
+            self._observed_idle_w, self._observed_peak_w, alpha, len(powers),
+        )
 
     def _maybe_log(
         self,
@@ -533,10 +1019,67 @@ class GPUPowerGovernor:
     # ------------------------------------------------------------------
 
     def reset_to_defaults(self) -> None:
-        """Restore all GPUs to driver default power limits."""
+        """Restore all GPUs to driver default power limits and clocks."""
         reset_all_gpus_to_default(self._envelopes, dry_run=self._dry_run)
+        # Reset clocks on fixed-TDP GPUs
+        for idx in self._clocks_reduced:
+            if self._clocks_reduced[idx]:
+                reset_gpu_clocks(idx, dry_run=self._dry_run)
+                self._clocks_reduced[idx] = False
         self._last_limits.clear()
-        _log.info("[GPU_GOV] All GPUs restored to default power limits.")
+        _log.info("[GPU_GOV] All GPUs restored to default power limits and clocks.")
+
+    # ------------------------------------------------------------------
+    # FIX 2: State persistence
+    # ------------------------------------------------------------------
+
+    def save_state(self, path: str) -> None:
+        """Persist governor learning state to JSON alongside calibration profile."""
+        state = {
+            "observed_idle_w": self._observed_idle_w,
+            "observed_peak_w": self._observed_peak_w,
+            "baseline_temp_mean": self._baseline_temp_mean,
+            "min_allowed_limit_w": self._min_allowed_limit_w,
+            "calibrated": self._calibrated,
+            "temp_full_c": self._temp_full_c,
+            "temp_soft_c": self._temp_soft_c,
+            "temp_hard_c": self._temp_hard_c,
+            "spike_trigger_c": self._spike_trigger_c,
+            "active_compute_trigger_w": self._active_compute_trigger_w,
+            "performance_mode": self._performance_mode,
+        }
+        with open(path, "w") as f:
+            json.dump(state, f, indent=2)
+        _log.info("[GPU_GOV] State saved to %s", path)
+
+    def load_state(self, path: str) -> bool:
+        """Restore governor learning state from JSON. Returns True on success."""
+        try:
+            with open(path) as f:
+                state = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
+            _log.warning("[GPU_GOV] Failed to load state from %s: %s", path, e)
+            return False
+
+        self._observed_idle_w = state.get("observed_idle_w", self._observed_idle_w)
+        self._observed_peak_w = state.get("observed_peak_w", self._observed_peak_w)
+        self._baseline_temp_mean = state.get("baseline_temp_mean", self._baseline_temp_mean)
+        loaded_min = state.get("min_allowed_limit_w", {})
+        # JSON keys are strings — convert back to int
+        self._min_allowed_limit_w = {int(k): v for k, v in loaded_min.items()}
+        self._calibrated = state.get("calibrated", self._calibrated)
+        self._temp_full_c = state.get("temp_full_c", self._temp_full_c)
+        self._temp_soft_c = state.get("temp_soft_c", self._temp_soft_c)
+        self._temp_hard_c = state.get("temp_hard_c", self._temp_hard_c)
+        self._spike_trigger_c = state.get("spike_trigger_c", self._spike_trigger_c)
+        self._active_compute_trigger_w = state.get("active_compute_trigger_w", self._active_compute_trigger_w)
+        self._performance_mode = state.get("performance_mode", self._performance_mode)
+
+        _log.info(
+            "[GPU_GOV] State loaded from %s — idle=%.1fW peak=%.1fW calibrated=%s",
+            path, self._observed_idle_w, self._observed_peak_w, self._calibrated,
+        )
+        return True
 
     # ------------------------------------------------------------------
     # Factory
