@@ -2070,7 +2070,7 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
 
 @app.get("/api/v1/thermal-history")
 async def get_thermal_history(
-    owner_id: str = Depends(_require_clerk_fixed_owner_id),
+    owner_id: str = Depends(_require_api_key_or_clerk),
     hours: int = 6,
     mode: str = "aggregated",
 ):
@@ -2169,7 +2169,7 @@ _MAX_EXPORT_DAYS = 60
 
 @app.get("/api/v1/thermal-history/export")
 async def export_thermal_history_csv(
-    owner_id: str = Depends(_require_clerk_fixed_owner_id),
+    owner_id: str = Depends(_require_api_key_or_clerk),
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     days: Optional[int] = None,
@@ -2580,7 +2580,7 @@ async def get_savings_chart(
 
 
 @app.get("/api/v1/stats")
-async def get_live_stats(owner_id: str = Depends(_require_clerk_fixed_owner_id)):
+async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
     """Live power-savings stats scoped to the authenticated owner's nodes.
 
     Uses Fan Affinity Law to estimate wattage from RPM.  Accumulates kWh
@@ -2996,7 +2996,7 @@ async def get_telemetry_logs(hours: int = 1):
 
 
 @app.get("/api/v1/nodes/list")
-async def get_nodes_list(owner_id: str = Depends(_require_clerk_fixed_owner_id)):
+async def get_nodes_list(owner_id: str = Depends(_require_api_key_or_clerk)):
     """
     List the two tracked servers: Pilot (CooledAI predictive) and Control (traditional).
     Returns hardware details for identification.
@@ -3308,7 +3308,7 @@ async def agent_optimize_control(
 
 
 @app.get("/api/v1/optimization-reasoning")
-async def get_optimization_reasoning(owner_id: str = Depends(_require_clerk_fixed_owner_id)):
+async def get_optimization_reasoning(owner_id: str = Depends(_require_api_key_or_clerk)):
     """
     Run optimization on live thermal history and return AI reasoning.
     Returns diagnostic_reasoning, recommendations, reasoning_log for the UI.
@@ -3345,7 +3345,7 @@ async def get_optimization_reasoning(owner_id: str = Depends(_require_clerk_fixe
 
 
 @app.get("/api/v1/facility/hourly-metrics")
-async def get_hourly_facility_metrics(owner_id: str = Depends(_require_clerk_fixed_owner_id)):
+async def get_hourly_facility_metrics(owner_id: str = Depends(_require_api_key_or_clerk)):
     """
     Hourly average PUE and acoustic load (from last hour of telemetry).
     PUE derived from fan power ratio; acoustic from fan RPM (dB ≈ 30 + RPM/80).
