@@ -1,298 +1,404 @@
-# Lenovo ThinkSystem ST550 — Fan Control Reference
+# Lenovo ThinkSystem ST550 — Fan Optimization Runbook
 
 **Last Updated**: 2026-03-24
 **BMC Firmware**: 1.90
-**XCC Interface**: USB-over-Ethernet at `169.254.95.118` (link-local, interface `enx9a29a6faed33`)
+**XCC Interface**: USB-over-Ethernet at `169.254.95.118`
 
 ---
 
-## Executive Summary
+## Quick Start: How to Enable Fan Optimization
 
-The Lenovo ST550 BMC supports fan speed control via IPMI-over-LAN (0x3a 0x07 Lenovo OEM)
-**when the BIOS Operating Mode is set to CustomMode**. In other modes (Efficiency_FavorPower,
-Efficiency_FavorPerformance), the commands are accepted but silently ignored.
+Follow these steps in order. Skip steps already completed.
 
-**Telemetry proof (Session 23, 30,510 samples over 16 hours):**
-- CooledAI mean fan RPM: **2,735** vs Control: **3,216** — **481 RPM lower (15% reduction)**
-- CooledAI fan range: **2,037 – 4,458 RPM** (continuous 21 RPM steps = active control)
-- Control fan range: **2,709 – 4,308 RPM** (BMC auto only)
-- Fan power saving via cubic law: (2735/3216)^3 = **0.62x — 38% less fan energy**
+### Prerequisites
+
+| Item | Pilot Node | Control Node |
+|------|-----------|-------------|
+| Tailscale IP | 100.92.29.44 | 100.123.202.94 |
+| LAN IP | 192.168.12.100 | 192.168.12.101 |
+| SSH | cooledaiadmin / ***REDACTED_SSH_PASS*** | cooledaiadmin / ***REDACTED_SSH_PASS*** |
+| XCC BMC IP | 169.254.95.118 (USB-ethernet) | 169.254.95.118 (USB-ethernet) |
+| XCC Credentials | USERID / ***REDACTED_BMC_PASS*** | USERID / ***REDACTED_BMC_PASS*** |
+| Host USB-ethernet IP | 169.254.95.120 | 169.254.95.120 |
 
 ---
 
-## What Works
+### Step 1: Set BIOS to CustomMode (ONE-TIME, requires reboot)
 
-### BIOS Operating Mode Change (via Redfish)
+Fan optimization ONLY works when BIOS is in **CustomMode**. In any other mode
+(Efficiency_FavorPower, Efficiency_FavorPerformance, etc.), IPMI fan commands
+are silently ignored by the BMC.
 
-This is the **only method that actually changes fan behavior**.
-
-**Credentials**: `USERID:***REDACTED_BMC_PASS***` (Redfish Basic Auth)
-
-**Step 1 — Read current mode:**
+**Check current mode:**
 ```bash
+ssh cooledaiadmin@100.92.29.44
 curl -skL -u USERID:'***REDACTED_BMC_PASS***' \
   https://169.254.95.118/redfish/v1/Systems/1/Bios/ \
   | python3 -c "import json,sys; d=json.load(sys.stdin); \
     print(d['Attributes']['OperatingModes_ChooseOperatingMode'])"
 ```
 
-**Step 2 — Set new mode (pending reboot):**
+If it already says `CustomMode`, skip to Step 2.
+
+**Change to CustomMode (requires reboot):**
 ```bash
+# Stage the BIOS change (Lenovo uses /Bios/Pending, NOT /Bios/Settings)
 curl -sk -u USERID:'***REDACTED_BMC_PASS***' -X PATCH \
   -H 'Content-Type: application/json' \
   -d '{"Attributes":{"OperatingModes_ChooseOperatingMode":"CustomMode"}}' \
   'https://169.254.95.118/redfish/v1/Systems/1/Bios/Pending'
-```
-- Returns HTTP 200 on success
-- **IMPORTANT**: Uses `/Bios/Pending` (Lenovo-specific), NOT `/Bios/Settings` (returns 404)
-- Attribute key uses underscores: `OperatingModes_ChooseOperatingMode`
 
-**Step 3 — Verify pending change:**
-```bash
+# Verify the pending change
 curl -skL -u USERID:'***REDACTED_BMC_PASS***' \
   https://169.254.95.118/redfish/v1/Systems/1/Bios/Pending \
   | python3 -c "import json,sys; d=json.load(sys.stdin); \
-    print(d['Attributes']['OperatingModes_ChooseOperatingMode'])"
-```
+    print('Pending:', d['Attributes']['OperatingModes_ChooseOperatingMode'])"
 
-**Step 4 — Reboot to apply:**
-```bash
+# Reboot to apply (server takes 5-8 minutes to come back)
 curl -sk -u USERID:'***REDACTED_BMC_PASS***' -X POST \
   -H 'Content-Type: application/json' \
   -d '{"ResetType":"GracefulRestart"}' \
   'https://169.254.95.118/redfish/v1/Systems/1/Actions/ComputerSystem.Reset'
 ```
-- Server takes ~5-8 minutes for full BIOS POST + OS boot
-- SSH will drop during reboot
 
-### Available Operating Modes
-
-| Mode | Fan Behavior | Use Case |
-|------|-------------|----------|
-| `MinimalPower` | Lowest fan speeds | Quiet environments |
-| `Efficiency_FavorPower` | Low fans, favor power savings | Default for efficiency |
-| `Efficiency_FavorPerformance` | Moderate fans, favor performance | Balanced |
-| `CustomMode` | **Lower baseline** (~24% reduction vs FavorPerformance) | **CooledAI recommended** |
-| `MaximumPerformance` | Highest fan speeds | Maximum cooling |
-
-### Measured Fan Speeds by Mode
-
-| Mode | Fan 1 (RPM) | Fan 2 (RPM) | Fan 3 (RPM) | Average |
-|------|------------|------------|------------|---------|
-| Efficiency_FavorPerformance | 3,525 | 2,925 | 3,000 | 3,150 |
-| CustomMode (idle) | 2,500 | 2,350 | 2,500 | 2,450 |
-| CustomMode (under load) | 3,850 | 3,150 | 3,225 | 3,408 |
-
-**Net effect of CustomMode**: ~24% RPM reduction at idle, ~8% at load. Fan power follows cubic law: (2450/3150)^3 = 0.47x — 53% less fan energy at idle.
-
----
-
-## What Works — IPMI Fan Speed Override (CustomMode ONLY)
-
-### IPMI OEM Commands (0x3a 0x07 — Lenovo OEM)
-
-**These commands WORK in CustomMode but are IGNORED in other BIOS modes.**
-
-```bash
-# Step 1: Enable manual mode
-ipmitool -I lanplus -H 169.254.95.118 -U USERID -P '***REDACTED_BMC_PASS***' \
-  raw 0x3a 0x07 0x01 0x00
-
-# Step 2: Set fan duty (hex percentage: 0x1e=30%, 0x32=50%, 0x64=100%)
-ipmitool -I lanplus -H 169.254.95.118 -U USERID -P '***REDACTED_BMC_PASS***' \
-  raw 0x3a 0x07 0x01 0x1e    # Set 30% (~2100 RPM)
-```
-
-**CRITICAL**: Must use `-I lanplus` (IPMI over LAN). Local `-I open` does NOT have
-`/dev/ipmi0` on the ST550 — there is no in-band IPMI driver. All commands go through
-the XCC BMC over the USB-ethernet interface at 169.254.95.118.
-
-**IMPORTANT**: When testing manually via SSH, the CooledAI agent may be sending its
-own fan commands every 3 seconds, immediately overwriting your test command. Stop the
-agent first (`sudo systemctl stop cooledai-agent`) before manual testing.
-
-### Telemetry-Confirmed Fan Ranges (Session 23)
-
-| Duty Command | Approximate RPM | Notes |
-|-------------|----------------|-------|
-| 29% (0x1d) | ~2,037 RPM | Lowest observed (idle stepping) |
-| 30% (0x1e) | ~2,100 RPM | Bootstrap floor |
-| 38% (0x26) | ~2,667 RPM | Typical compute floor |
-| 48% (0x30) | ~3,360 RPM | Sustained high load |
-| 63% (0x3f) | ~4,400 RPM | Spike response |
-
----
-
-## What Does NOT Work
-
-### IPMI OEM Commands (0x32 — Lenovo Legacy)
-
-```bash
-ipmitool raw 0x32 0x9b 0x01       # "Invalid command"
-ipmitool raw 0x32 0x69 0x00 0x19  # "Invalid command"
-```
-
-### IPMI Dell-Style Commands (0x30 0x30)
-
-```bash
-ipmitool raw 0x30 0x30 0x01 0x00  # "Invalid command"
-ipmitool raw 0x30 0x30 0x02 0xff 0x1e  # "Invalid command"
-```
-
-### IPMI SuperMicro-Style Commands (0x30 0x70 0x66)
-
-```bash
-ipmitool raw 0x30 0x70 0x66 0x01 0x00 0x64  # "Invalid command"
-```
-
-### Redfish PATCH on Thermal
-
-```bash
-# All return 405 Method Not Allowed
-curl -sk -X PATCH -u USERID:'***REDACTED_BMC_PASS***' \
-  -H 'Content-Type: application/json' \
-  -d '{"Fans":[{"MemberId":"0","Reading":20}]}' \
-  'https://169.254.95.118/redfish/v1/Chassis/1/Thermal/'
-
-curl -sk -X PATCH -u USERID:'***REDACTED_BMC_PASS***' \
-  -H 'Content-Type: application/json' \
-  -d '{"Oem":{"Lenovo":{"FanMinimumSpeed":20}}}' \
-  'https://169.254.95.118/redfish/v1/Chassis/1/Thermal/'
-```
-
-### Redfish OEM Fan Endpoints
-
-```bash
-# All return 404 Not Found
-/redfish/v1/Managers/1/Oem/Lenovo/FanControl
-/redfish/v1/Managers/1/Oem/Lenovo/ThermalManagement
-/redfish/v1/Managers/1/Actions/Oem/LenovoManager.SetFanControlMode
-```
-
-### XCC Web API (/api/login)
-
-The XCC web interface at `https://169.254.95.118` has a `/api/login` endpoint that returns JWT tokens for a different auth system. **All credential combinations fail** (USERID/PASSW0RD, USERID/***REDACTED_BMC_PASS***, cooledaiadmin/***REDACTED_SSH_PASS***). Redfish Basic Auth works fine, but the XCC web API uses a separate JWT mechanism that appears locked/broken on this firmware.
-
-### hwmon / PWM / sysfs
-
-No fan control sysfs paths exist on the ST550:
-- `/sys/class/hwmon/*/pwm*` — no entries
-- `/sys/class/hwmon/*/fan*_target` — no entries
-- The BMC manages fans entirely through its own firmware, not exposed to the OS
-
-### nvidia-smi GPU Power Limiting
-
-GPUs are 2x Quadro P2000 with fixed TDP: min=max=75W. `nvidia-smi -pl` cannot reduce below 75W.
-
----
-
-## What Works for Monitoring (Read-Only)
-
-### Redfish Thermal (GET)
-
+**After reboot, verify:**
 ```bash
 curl -skL -u USERID:'***REDACTED_BMC_PASS***' \
-  'https://169.254.95.118/redfish/v1/Chassis/1/Thermal/' \
+  https://169.254.95.118/redfish/v1/Systems/1/Bios/ \
   | python3 -c "import json,sys; d=json.load(sys.stdin); \
-    [print(f'{f[\"Name\"]}: {f[\"Reading\"]}% ({f.get(\"Status\",{}).get(\"State\",\"?\")})')
-     for f in d.get('Fans',[])]"
-```
-Returns fan percentages (0-100), temperatures (Ambient, Exhaust, CPU1, CPU2, DTS).
-
-### IPMI SDR (local)
-
-```bash
-sudo ipmitool sdr type Fan
-# Fan 1 Tach | C0h | ok | 29.1 | 3150 RPM
-# Fan 2 Tach | C1h | ok | 29.2 | 3075 RPM
-# Fan 3 Tach | C2h | ok | 29.3 | 3225 RPM
-```
-
-### IPMI over LAN (remote)
-
-```bash
-ipmitool -I lanplus -H 169.254.95.118 -U USERID -P '***REDACTED_BMC_PASS***' sdr type Fan
+    print(d['Attributes']['OperatingModes_ChooseOperatingMode'])"
+# Should print: CustomMode
 ```
 
 ---
 
-## Network & Credentials
+### Step 2: Configure Agent Environment
 
-| Interface | IP | Protocol | Credentials |
-|-----------|-----|----------|-------------|
-| XCC USB-Ethernet | 169.254.95.118 | Redfish HTTPS | USERID / ***REDACTED_BMC_PASS*** |
-| XCC USB-Ethernet | 169.254.95.118 | IPMI lanplus (623) | USERID / ***REDACTED_BMC_PASS*** |
-| OS SSH | 100.92.29.44 (Tailscale) | SSH | cooledaiadmin / ***REDACTED_SSH_PASS*** |
-| OS SSH | 192.168.12.100 (LAN) | SSH | cooledaiadmin / ***REDACTED_SSH_PASS*** |
+Ensure `/etc/cooledai/agent.env` has these settings:
+```bash
+ssh cooledaiadmin@100.92.29.44
+cat /etc/cooledai/agent.env
+```
 
-**Note**: The host OS IP on the USB-ethernet interface is `169.254.95.120`, BMC is at `169.254.95.118`.
+Required variables:
+```env
+COOLEDAI_API_KEY=***REDACTED_API_KEY***
+COOLEDAI_NODE_ID=ST550-CooledAI-Predictive
+COOLEDAI_API_URL=https://proactive-creativity-production.up.railway.app
+COOLEDAI_GPU_POWER_MGMT=true
+COOLEDAI_GPU_PERF_MODE=false
+XCC_BMC_HOST=169.254.95.118
+XCC_BMC_USER=USERID
+XCC_BMC_PASS=***REDACTED_BMC_PASS***
+```
+
+If any are missing, add them:
+```bash
+echo '***REDACTED_SSH_PASS***' | sudo -S bash -c 'cat >> /etc/cooledai/agent.env << EOF
+COOLEDAI_GPU_POWER_MGMT=true
+COOLEDAI_GPU_PERF_MODE=false
+XCC_BMC_HOST=169.254.95.118
+XCC_BMC_USER=USERID
+XCC_BMC_PASS=***REDACTED_BMC_PASS***
+EOF'
+```
 
 ---
 
-## CooledAI Optimization Strategy for ST550
+### Step 3: Deploy Latest Agent Code
 
-CooledAI optimizes through multiple layers:
+```bash
+# On the pilot node, pull latest code
+cd ~/coolingai_simulator && git pull origin main
 
-1. **BIOS Operating Mode** — Set to `CustomMode` for lowest safe BMC baseline
-2. **Fan Speed Control** — Local IPMI 0x3a 0x07 as primary path (runs as root via systemd), XCC IPMI-over-LAN as fallback
-3. **GPU Clock Management** — Idle clock reduction, memory-bound optimization (nvidia-smi -ac/-rac)
-4. **Predictive Thermal Management** — Pre-cooling and workload-aware scheduling
-5. **Telemetry & Monitoring** — Rich Redfish + IPMI telemetry for dashboard, alerting, and trend analysis
+# Copy to systemd service location
+echo '***REDACTED_SSH_PASS***' | sudo -S cp scripts/cooledai_agent.py /opt/cooledai/cooledai_agent.py
+echo '***REDACTED_SSH_PASS***' | sudo -S cp core/optimization/thermal_calibrator.py /opt/cooledai/core/optimization/thermal_calibrator.py
+echo '***REDACTED_SSH_PASS***' | sudo -S cp core/optimization/gpu_power_governor.py /opt/cooledai/core/optimization/gpu_power_governor.py
+echo '***REDACTED_SSH_PASS***' | sudo -S cp core/hardware/xcc_fan_controller.py /opt/cooledai/core/hardware/xcc_fan_controller.py
+```
 
-### Fan Control Priority Order (in set_fan_duty)
+---
 
-1. **Local IPMI** (`/dev/ipmi0`, `caps.ipmi=True`) — requires root, uses 0x3a 0x07 commands
-2. **XCC IPMI-over-LAN** (`_optimization_owns_control=True`) — fallback when local IPMI unavailable
-3. **PWM** — if hwmon paths exist (not on ST550)
-4. **GPU Fan** — nvidia GPU fan control (not applicable for chassis fans)
+### Step 4: Delete Stale Calibration Profile (if exists)
 
-### Important: Local IPMI vs IPMI-over-LAN
+A stale profile with bad fan_idle_rpm will prevent optimization. Delete it
+before starting the agent fresh:
+```bash
+echo '***REDACTED_SSH_PASS***' | sudo -S rm -f /var/lib/cooledai/calibration_profile.json
+```
 
-Both use the same OEM command (0x3a 0x07), but through different IPMI interfaces:
-- **Local IPMI** (`ipmitool raw 0x3a 0x07 ...`) — through `/dev/ipmi0`, requires root
-- **XCC IPMI-over-LAN** (`ipmitool -I lanplus -H 169.254.95.118 ...`) — through network
+---
 
-The BMC may respond differently to the same command depending on the interface.
-Local IPMI is preferred because it bypasses the network stack.
+### Step 5: Start/Restart the Agent via systemd
 
-### Previous Wrong Commands (DO NOT USE)
+**The agent MUST run as root** via systemd for local IPMI (`/dev/ipmi0`) access.
+Do NOT run manually as cooledaiadmin — that path lacks IPMI and falls back to
+XCC-over-LAN which is less effective.
 
-The old Lenovo IPMI commands **do not work** on this firmware:
-- `0x32 0x9b` / `0x32 0x69` — return "Invalid command" (legacy Lenovo, not ThinkSystem)
-- These were in the original `_try_ipmi_set_duty()` for `ipmi_variant="lenovo"` and have been replaced with `0x3a 0x07`
+```bash
+echo '***REDACTED_SSH_PASS***' | sudo -S systemctl restart cooledai-agent
+echo '***REDACTED_SSH_PASS***' | sudo -S systemctl status cooledai-agent
+```
 
-### Live Telemetry Proof (Current Session)
+Expected status: `Active: active (running)`
 
-From API `/nodes/status`:
-- **CooledAI**: fan_rpm=2,688, GPU temp=58.5°C
-- **Control**: fan_rpm=3,325, GPU temp=60.0°C
-- **Delta**: 637 RPM lower (19% reduction)
-- **Fan power saving**: (2688/3325)^3 = 0.53x — **47% less fan energy**
+---
 
-Note: `ipmitool sdr type Fan` may show different readings than what the telemetry script
-reports to the API. The API telemetry is the authoritative source.
+### Step 6: Verify Fan Optimization is Working
+
+**Within first 10 seconds — check startup logs:**
+```bash
+echo '***REDACTED_SSH_PASS***' | sudo -S journalctl -u cooledai-agent --since '30 sec ago' --no-pager | head -20
+```
+
+Look for these 4 lines:
+1. `Discovered: CPU(sysfs:3zones) GPU(nvidia) IPMI(lenovo) Redfish(...) XCC_FAN(active)` — IPMI(lenovo) confirms local IPMI available
+2. `[XCC_FAN] optimization_owns_control=True` — XCC taken over at startup
+3. `[GPU_GOV] Governor initialized` — GPU power governor active
+4. `CooledAI calibrating — using bootstrap defaults` — calibration starting (30 min window)
+
+**After 30 seconds — check FAN_DIAG:**
+```bash
+echo '***REDACTED_SSH_PASS***' | sudo -S journalctl -u cooledai-agent --since '10 sec ago' --no-pager | grep FAN_DIAG
+```
+
+Look for: `method=ipmi` (local IPMI) or `method=xcc_ipmi_lan` (LAN fallback)
+
+**Check live telemetry on API:**
+```bash
+curl -s -H "X-API-Key: ***REDACTED_API_KEY***" \
+  https://proactive-creativity-production.up.railway.app/api/v1/nodes/status \
+  | python3 -m json.tool
+```
+
+CooledAI fan_rpm should be LOWER than Control fan_rpm.
+
+---
+
+### Step 7: Also Start Telemetry Script
+
+The telemetry script (separate from the agent) posts GPU/CPU/fan data to the
+Railway API portal. Start it alongside the agent:
+```bash
+cd ~/coolingai_simulator
+nohup python3 -u scripts/st550_telemetry.py \
+  --node-id ST550-CooledAI-Predictive > ~/cooledai_telemetry.log 2>&1 &
+```
+
+For the control node:
+```bash
+ssh cooledaiadmin@100.123.202.94
+cd ~/coolingai_simulator
+COOLEDAI_NODE_ID=ST550-Control-Traditional nohup python3 -u scripts/st550_telemetry.py \
+  --node-id ST550-Control-Traditional > ~/cooledai_telemetry.log 2>&1 &
+```
+
+---
+
+### Step 8: Start Identical Workloads on Both Nodes
+
+```bash
+# On BOTH nodes (pilot and control), run the same benchmark:
+nohup python3 -u ~/thermal_workload_benchmark.py \
+  --model llama3.2:3b --seed 42 --ports 11434,11435 > ~/workload.log 2>&1 &
+```
+
+Both Ollama instances must be running first:
+```bash
+# GPU 0 (default)
+sudo systemctl start ollama  # or: ollama serve &
+
+# GPU 1 (second instance on port 11435)
+sudo CUDA_VISIBLE_DEVICES=1 OLLAMA_HOST=0.0.0.0:11435 \
+  OLLAMA_MODELS=/opt/ollama_gpu1/models ollama serve &
+```
+
+---
+
+## How Fan Optimization Works (Technical)
+
+### Fan Control Command
+
+The working IPMI OEM command for Lenovo ThinkSystem ST550:
+```
+ipmitool raw 0x3a 0x07 0x01 {hex_pct}
+```
+- `0x3a` = Lenovo OEM NetFn
+- `0x07` = Fan control command
+- `0x01` = Manual mode enable
+- `{hex_pct}` = Fan duty in hex (0x1e=30%, 0x32=50%, 0x64=100%)
+
+**This command ONLY works when BIOS is in CustomMode.**
+
+### Fan Control Priority in Agent (`set_fan_duty()`)
+
+1. **Local IPMI** (`/dev/ipmi0`) — primary, requires root, uses `0x3a 0x07`
+2. **XCC IPMI-over-LAN** — fallback when no `/dev/ipmi0` (e.g., agent run as non-root)
+3. **PWM sysfs** — not available on ST550
+4. **GPU fan** — not applicable for chassis fans
+
+### Commands That Do NOT Work
+
+| Command | Result | Notes |
+|---------|--------|-------|
+| `raw 0x32 0x9b 0x01` | Invalid command | Legacy Lenovo, not ThinkSystem |
+| `raw 0x32 0x69 0x00 {pct}` | Invalid command | Legacy Lenovo |
+| `raw 0x30 0x30 0x01 0x00` | Invalid command | Dell-style |
+| `raw 0x30 0x70 0x66 ...` | Invalid command | SuperMicro-style |
+| `PATCH /Chassis/1/Thermal/` | 405 Method Not Allowed | Firmware blocks Redfish writes |
+| `POST SetFanControlMode` | 404 / 501 | OEM action not implemented |
+
+### Agent Startup Sequence
+
+1. Agent starts via systemd as root
+2. XCC controller probes Redfish endpoints (PATCH 405, OEM 501)
+3. XCC detects IPMI-over-LAN is reachable (chassis status OK)
+4. XCC sends `set_manual_fan_percent(50)` → `optimization_owns_control=True`
+5. Main loop begins: reads sensors → calls Railway API → gets target_duty → applies via local IPMI
+6. ThermalCalibrator runs 30-min observation window with idle stepping
+7. After calibration, profile is saved to `/var/lib/cooledai/calibration_profile.json`
+8. Next restart loads saved profile and skips observation window
+
+### Calibration Idle Stepping (Circular Reference Fix)
+
+During the 30-min observation window, when GPU power drops below the active
+compute trigger (~15W), the agent forces fans to the bootstrap floor (2,100 RPM)
+instead of the optimizer's computed target. This ensures the calibrator measures
+true hardware idle fan behavior, not its own inflated commands.
+
+Log line: `[THERMAL_CAL] calibration_idle_step: gpu_power=5.4W fan_forced_to=30% (2100 RPM)`
+
+### Profile Rejection on Load
+
+On startup, if a saved profile has `fan_idle_rpm / fan_ceiling_rpm > 0.90`
+(idle and ceiling within 10%), the profile is rejected as a circular reference
+artifact and a fresh observation window runs instead.
+
+Log line: `[THERMAL_CAL] Stale profile rejected: fan_idle_rpm=X within 10% of fan_ceiling_rpm=Y`
+
+---
+
+## Proven Results
+
+### Session 23 (30,510 samples, 16 hours)
+
+| Metric | CooledAI | Control | Delta |
+|--------|---------|---------|-------|
+| Mean Fan RPM | 2,735 | 3,216 | -481 (15% lower) |
+| Min Fan RPM | 2,037 | 2,709 | -672 |
+| Max Fan RPM | 4,458 | 4,308 | +150 |
+| Fan Energy | 0.62x | 1.0x | **38% savings** |
+
+### Current Live Telemetry
+
+| Metric | CooledAI | Control | Delta |
+|--------|---------|---------|-------|
+| Fan RPM | 2,688 | 3,325 | -637 (19% lower) |
+| GPU Temp | 58.5°C | 60.0°C | -1.5°C |
+| Fan Energy | 0.53x | 1.0x | **47% savings** |
+
+Fan power follows the cubic law: Power ~ RPM^3. A 19% RPM reduction = 47% energy savings.
 
 ---
 
 ## Troubleshooting
 
-### Fans stuck at high RPM after BIOS change
-The BIOS change requires a **reboot** to take effect. Check `/redfish/v1/Systems/1/Bios/Pending` to verify the pending change, then reboot via Redfish.
+### "Fans stuck at 3850/3075/3225 RPM"
 
-### BIOS mode reverted after power cycle
-Some firmware versions revert BIOS settings on AC power loss. Re-apply the PATCH and reboot.
+1. **Check BIOS mode** — must be `CustomMode`. If not, follow Step 1 above.
+2. **Check agent is running as root via systemd** — `sudo systemctl status cooledai-agent`. PID should be owned by root.
+3. **Check FAN_DIAG method** — must show `method=ipmi` (local) not `method=none`. If `none`, local IPMI isn't working.
+4. **Check calibration state** — during the 30-min observation window, the brain uses cautionary cooling (+5-15% duty). Wait for calibration to complete.
+5. **Stop the agent before manual testing** — `sudo systemctl stop cooledai-agent`. The agent sends commands every 3 seconds and will overwrite your test.
 
-### Redfish returns empty responses
-Add `-L` to curl to follow 301 redirects. Lenovo XCC redirects `/Thermal` to `/Thermal/` (trailing slash).
+### "method=xcc_ipmi_lan instead of method=ipmi"
 
-### "Invalid data field in request" on 0x3a 0x07 0x00 0x00
-The auto-restore command format is wrong for this firmware version. The BMC doesn't support programmatic fan mode switching.
+The agent doesn't detect local IPMI. Possible causes:
+- Agent not running as root (systemd service runs as root, manual python3 does not)
+- `/dev/ipmi0` doesn't exist — check: `ls -la /dev/ipmi0`
+- IPMI kernel module not loaded — check: `lsmod | grep ipmi`
+
+### "method=none on every FAN_DIAG"
+
+No fan control path is working. Check:
+1. `caps.ipmi` detection: `journalctl -u cooledai-agent | grep "Discovered:"`
+2. IPMI variant: should show `IPMI(lenovo)` not `IPMI(generic)`
+3. XCC availability: should show `XCC_FAN(active)`
+
+### "API returns target_duty=47-48% instead of lower"
+
+The Railway API brain is in cautionary cooling mode (low confidence). This happens after
+every Railway redeploy (wipes in-memory thermal history). Wait 30+ minutes for the brain
+to accumulate enough history and confidence will rise above the threshold, allowing the
+optimizer's lower recommendations to flow through.
+
+### "Stale profile rejected" on every restart
+
+The previous calibration ran with the circular reference bug (optimizer commanding high
+RPM during idle → calibrator measuring commanded RPM as idle baseline). Delete the bad
+profile and let a clean observation run with the idle-stepping fix:
+```bash
+sudo rm /var/lib/cooledai/calibration_profile.json
+sudo systemctl restart cooledai-agent
+```
+
+### "BIOS mode reverted after power cycle"
+
+Some firmware versions lose BIOS settings on AC power loss. Re-run the Redfish PATCH
+from Step 1 and reboot.
+
+### "Redfish returns empty responses"
+
+Add `-L` to curl to follow 301 redirects. Lenovo XCC redirects `/Thermal` to `/Thermal/`
+(trailing slash required).
 
 ---
 
-## Firmware-Specific Notes
+## BIOS Operating Modes Reference
 
-- **XCC Firmware 1.90**: No writable fan endpoints via Redfish or IPMI OEM
-- **Redfish v1.0.2**: Read-only Thermal, BIOS PATCH via `/Bios/Pending` (not `/Bios/Settings`)
-- **BIOS PATCH path**: `/redfish/v1/Systems/1/Bios/Pending` — the standard `/Bios/Settings` returns 404
-- **Attribute format**: Underscores (`OperatingModes_ChooseOperatingMode`), not dots
+| Mode | Fan Behavior | CooledAI Compatible |
+|------|-------------|-------------------|
+| `MinimalPower` | Lowest BMC curve | Unknown — not tested |
+| `Efficiency_FavorPower` | Low BMC curve | NO — ignores IPMI commands |
+| `Efficiency_FavorPerformance` | Moderate BMC curve | NO — ignores IPMI commands |
+| `CustomMode` | Lower baseline, accepts IPMI | **YES — required for CooledAI** |
+| `MaximumPerformance` | Highest BMC curve | Unknown — not tested |
+
+### Measured Fan Speeds by Mode (at idle)
+
+| Mode | Fan 1 | Fan 2 | Fan 3 | Average |
+|------|-------|-------|-------|---------|
+| Efficiency_FavorPerformance | 3,525 | 2,925 | 3,000 | 3,150 |
+| CustomMode | 2,500 | 2,350 | 2,500 | 2,450 |
+
+---
+
+## Control Node Setup (No Optimization)
+
+The control node runs telemetry only — no fan control, no optimization.
+Its agent.env should have `COOLEDAI_CONTROL_ENABLED=false`:
+
+```env
+COOLEDAI_API_KEY=***REDACTED_API_KEY***
+COOLEDAI_NODE_ID=ST550-Control-Traditional
+COOLEDAI_API_URL=https://proactive-creativity-production.up.railway.app
+COOLEDAI_CONTROL_ENABLED=false
+```
+
+The control node's BIOS should stay in its default operating mode
+(Efficiency_FavorPerformance) to represent the "traditional" cooling baseline.
+
+---
+
+## Firmware & Hardware Notes
+
+- **BMC Firmware**: XCC 1.90
+- **Redfish Version**: v1.0.2
+- **BIOS PATCH Path**: `/redfish/v1/Systems/1/Bios/Pending` (NOT `/Bios/Settings` which returns 404)
+- **BIOS Attribute Format**: Underscores (`OperatingModes_ChooseOperatingMode`), not dots
+- **GPUs**: 2x Quadro P2000, 75W fixed TDP (min=max=75W, nvidia-smi -pl cannot reduce)
+- **Fans**: 3 chassis fans, tach sensors at IPMI SDR addresses C0h/C1h/C2h
+- **USB-Ethernet**: Host at 169.254.95.120, BMC at 169.254.95.118 (interface `enx9a29a6faed33`)
+- **Local IPMI**: `/dev/ipmi0` available when running as root
+- **XCC Web API**: `/api/login` endpoint exists but JWT auth is broken — use Redfish Basic Auth instead
