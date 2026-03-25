@@ -64,6 +64,10 @@ pytest-cov>=4.1.0
 # psutil>=5.9.0
 # pysnmp-lextudio>=4.0.0
 
+# --- Edge Gateway (Phase 1) ---
+redis>=5.0.0
+aiohttp>=3.9.0
+
 # --- Reinforcement Learning (optional, for optimizer) ---
 # Uncomment if training RL agents:
 # stable-baselines3>=2.0.0
