@@ -4159,10 +4159,25 @@ async def ingest_gateway_batch(body: GatewayBatchInput, owner_id: str = Depends(
                 gpu_power_w = telemetry.get("gpu_power_w", 0.0)
                 peak_power_w = telemetry.get("peak_power_w")
                 cpu_temp_c = telemetry.get("cpu_temp_c")
+
+                # --- Derive optimized vs baseline RPM from optimization result ---
+                # fan_rpm from telemetry = what the BMC is actually running (baseline)
+                # optimization.target_rpm = what CooledAI recommended (optimized/pilot)
+                baseline_rpm = float(fan_rpm)
+                opt = entry.optimization or {}
+                if opt.get("target_rpm") is not None:
+                    optimized_rpm = float(opt["target_rpm"])
+                elif opt.get("target_duty") is not None:
+                    # Convert duty % to RPM: duty/100 * max_fan_rpm
+                    optimized_rpm = (float(opt["target_duty"]) / 100.0) * _MAX_FAN_RPM
+                else:
+                    # No optimization data — fall back to telemetry RPM
+                    optimized_rpm = baseline_rpm
+
                 row = (
                     float(now_ts),
-                    float(temp_c), float(temp_c),  # pilot, baseline (same for gateway batch)
-                    float(fan_rpm), float(fan_rpm),
+                    float(temp_c), float(temp_c),          # pilot_temp, baseline_temp
+                    optimized_rpm, baseline_rpm,            # pilot_rpm (optimized), baseline_rpm (raw BMC)
                     float(cpu_temp_c) if cpu_temp_c is not None else None,
                     float(cpu_temp_c) if cpu_temp_c is not None else None,
                     float(gpu_power_w), float(gpu_power_w),
