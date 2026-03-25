@@ -46,3 +46,15 @@ billing:
   electricity_rate: 0.12              # $/kWh — overridden by env COOLEDAI_UTILITY_RATE
   currency: "USD"                     # Display currency for dashboard
   grid_carbon_intensity_kg_per_kwh: 0.386  # US grid average for ESG reporting
+
+# ── Security & Privacy ─────────────────────────────────────────
+# CooledAI operates exclusively at the BMC/IPMI hardware management
+# layer.  These settings enforce that boundary in code.
+security:
+  audit_log_enabled: true
+  audit_log_path: "/var/log/cooledai/audit"
+  audit_log_retention_days: 365
+  interface_whitelist_enforced: true
+  privacy_boundary_violation_action: "halt_and_alert"  # halt_and_alert | log_only
+  attestation_report_enabled: true
+  signing_key: ""                     # HMAC key for audit signatures — set via env COOLEDAI_SIGNING_KEY

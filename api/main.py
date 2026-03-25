@@ -452,6 +452,13 @@ app.add_middleware(
 
 
 # --- Security Headers Middleware ---
+# ── Security Routes ──
+try:
+    from api.routes.security import router as security_router
+    app.include_router(security_router)
+except ImportError:
+    pass  # security routes not available in test environments
+
 from starlette.middleware.base import BaseHTTPMiddleware
 
 

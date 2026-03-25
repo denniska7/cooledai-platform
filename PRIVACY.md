@@ -1,66 +1,69 @@
-# CooledAI Privacy Policy — Data Collection Statement
+# CooledAI Privacy Policy — Data Boundary Documentation
 
 ## What CooledAI Collects
 
-CooledAI collects **only** thermal and power telemetry from monitored servers. Every data field is enforced by a code-level whitelist (`api/telemetry_whitelist.py`).
+CooledAI collects **thermal and power telemetry only** — the physical
+measurements that describe how hot your hardware is running and how much
+power it is consuming.
 
-### Collected Fields
-
-| Category | Fields |
-|----------|--------|
-| **GPU Thermal** | `gpu_temp_c` — GPU die temperature in Celsius |
-| **GPU Power** | `gpu_power_w` — GPU power draw in watts |
-| **GPU Memory** | `gpu_memory_utilization_pct` — VRAM utilization percentage |
-| **CPU Thermal** | `cpu_temp_c` — CPU package temperature in Celsius |
-| **Fan** | `fan_rpm`, `fan_duty_pct` — chassis fan speed and duty cycle |
-| **Ambient** | `ambient_temp_c`, `inlet_temp_c`, `exhaust_temp_c` |
-| **Power** | `power_draw_w`, `peak_power_w` — system-level power |
-| **Metadata** | `node_id`, `timestamp_utc`, `agent_version` |
-
-### Derived Metrics (computed server-side)
-
-- Heating rate (dT/dt)
-- Cooling efficiency (delta-T vs. fan RPM)
-- PUE estimates
-- Calibration profiles (thermal response curves)
+| Data Point | Source | Used For |
+|---|---|---|
+| GPU temperature (C) | nvidia-smi --query-gpu=temperature.gpu | Fan curve optimization |
+| GPU power draw (W) | nvidia-smi --query-gpu=power.draw | Efficiency tracking |
+| GPU utilization (%) | nvidia-smi --query-gpu=utilization.gpu | Idle detection |
+| GPU memory utilization (%) | nvidia-smi --query-gpu=utilization.memory | Memory-bound detection |
+| CPU temperature (C) | /sys/class/hwmon/ | Thermal safety |
+| Fan RPM | ipmitool sdr type Fan (BMC) | Fan health monitoring |
+| Fan duty cycle (%) | Redfish /Thermal (BMC) | Optimization feedback |
+| Ambient temperature (C) | Redfish /Thermal (BMC) | Environmental baseline |
 
 ## What CooledAI Does NOT Collect
 
-CooledAI **never** reads, stores, transmits, or processes:
+CooledAI **never** accesses, reads, stores, or transmits:
 
-- Process lists or running applications
-- Job queue contents (Slurm, Kubernetes, PBS, etc.)
-- Container names, images, or orchestration metadata
-- Application logs or stdout/stderr
-- Network traffic, packet captures, or connection tables
-- Filesystem contents, file names, or directory listings
-- User accounts, authentication tokens, or credentials
-- GPU memory contents or model weights
-- Any data that reveals **what** is running on the server
+- **Running processes or applications** — no `ps`, `top`, or process lists
+- **GPU compute applications** — no `--query-compute-apps`
+- **Memory contents** — no reads of GPU VRAM or system RAM
+- **Network traffic** — no packet capture, no connection monitoring
+- **Filesystem contents** — no file reads outside hardware monitoring paths
+- **Container or VM information** — no Docker, Kubernetes, or hypervisor queries
+- **Application logs** — no journalctl, dmesg, or /var/log reads
+- **User data** — no access to /home, /tmp, or any user directories
 
-## Enforcement
+## How This Is Enforced
 
-The telemetry whitelist is enforced at two levels:
+1. **Hardware Interface Whitelist** (`core/security/interface_policy.py`):
+   Every external command is validated against a strict whitelist before
+   execution. Commands outside the whitelist raise `PrivacyBoundaryViolation`
+   and halt the agent tick.
 
-1. **Agent-side** (defense-in-depth): The CooledAI agent filters outbound telemetry before transmission, sending only whitelisted fields.
+2. **Append-Only Audit Log** (`core/security/audit_log.py`): Every hardware
+   command is recorded with timestamp, type, and arguments before execution.
+   The audit log cannot be modified or deleted.
 
-2. **API-side** (authoritative): The CooledAI API validates every incoming telemetry record against `ALLOWED_TELEMETRY_FIELDS`. Fields outside the whitelist are:
-   - Stripped from the record before storage
-   - Logged as `[SECURITY] telemetry_violation: field={field} rejected`
-   - In strict mode (`telemetry.strict_whitelist: true` in `cooledai.yaml`), the entire record is rejected with a `TelemetryViolationError`
+3. **Security Attestation** (`GET /api/v1/security/attestation`): Generates
+   a signed report that any security auditor can independently verify.
 
-## Data Storage & Retention
+4. **Network Isolation**: The agent connects only to the BMC management
+   network and the CooledAI gateway. No data plane access.
 
-- Telemetry data is stored per-client with strict `client_id` isolation
-- No API key can access telemetry belonging to a different client
-- Data retention follows client agreement terms
-- All stored data contains only the whitelisted fields listed above
+## BMC/IPMI Architecture
 
-## Data Transmission
+CooledAI operates at the **Baseboard Management Controller (BMC)** layer,
+which is a separate microprocessor running independently of the main CPU.
+The BMC has its own network interface (out-of-band management) and cannot
+access the host operating system, hypervisor, or any running workloads.
 
-- All telemetry is transmitted over HTTPS (TLS 1.2+)
-- API authentication via Bearer token (bcrypt-hashed API keys)
-- No telemetry is shared between clients or with third parties
+This is an architectural guarantee, not a policy decision. The BMC
+physically cannot see your data.
+
+## Data Retention
+
+- Telemetry data is transmitted to the CooledAI cloud platform via HTTPS
+- Raw telemetry retained for 7 days
+- Aggregated metrics retained per your contract terms
+- All data encrypted in transit (TLS 1.3) and at rest (AES-256)
+- Data deletion available on request per your service agreement
 
 ## Contact
 

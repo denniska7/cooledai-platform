@@ -2,6 +2,43 @@
 """
 CooledAI Unified Agent — Hardware-Agnostic Thermal Controller
 
+=== PRIVACY & DATA BOUNDARY ===
+
+CooledAI operates EXCLUSIVELY at the BMC/IPMI out-of-band management
+layer.  This agent runs on a separate management plane from customer
+workloads.
+
+DATA THAT COOLEDAI READS (thermal telemetry only):
+  - GPU temperature (C)          via nvidia-smi --query-gpu=temperature.gpu
+  - GPU power draw (W)           via nvidia-smi --query-gpu=power.draw
+  - GPU utilization (%)          via nvidia-smi --query-gpu=utilization.gpu
+  - GPU memory utilization (%)   via nvidia-smi --query-gpu=utilization.memory
+  - CPU temperature (C)          via /sys/class/hwmon/
+  - Fan RPM                      via ipmitool sdr type Fan (BMC)
+  - Fan duty cycle (%)           via Redfish /Thermal (BMC)
+  - Ambient/exhaust temperature  via Redfish /Thermal (BMC)
+
+DATA THAT COOLEDAI WRITES (hardware control only):
+  - Fan duty cycle (%)           via ipmitool raw 0x3a (BMC OOB)
+  - GPU clock frequency          via nvidia-smi -ac (safe, no workload impact)
+  - CPU C-state mask             via /dev/cpu_dma_latency (power state only)
+
+DATA THAT COOLEDAI EXPLICITLY NEVER ACCESSES:
+  - Running processes            (no ps, top, nvidia-smi --query-compute-apps)
+  - Memory contents              (no /proc/*/mem, no GPU memory reads)
+  - Network traffic              (no tcpdump, netstat, ss)
+  - Filesystem contents          (no reads outside /sys/class/hwmon, /sys/class/thermal)
+  - Container/VM names           (no docker, kubectl, crictl)
+  - Application logs             (no journalctl, dmesg, /var/log/*)
+  - User data                    (no /home/*, no /tmp/*)
+
+This boundary is enforced in code by core/security/interface_policy.py
+which raises PrivacyBoundaryViolation for any command outside the whitelist.
+All hardware commands are recorded in an append-only audit log at
+/var/log/cooledai/audit/ before execution.
+
+=== END PRIVACY BOUNDARY ===
+
 Auto-discovers sensors, reports telemetry to the CooledAI portal, pulls
 remote config, and controls cooling via IPMI / PWM / GPU-fan fallback.
 

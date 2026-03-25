@@ -1,6 +1,24 @@
 """
 Dynamic NVIDIA GPU power cap (nvidia-smi -pl) to reduce hard thermal throttling.
 
+=== PRIVACY NOTE ===
+This module uses ONLY the following nvidia-smi flags:
+  -q, -pl, --query-gpu, --query-supported-clocks, -ac, -rac, -L
+
+These flags query thermal/power telemetry and set power limits or clock
+frequencies.  They do NOT expose any information about running workloads,
+processes, containers, or applications.
+
+Specifically, this module NEVER uses:
+  --query-compute-apps  (would list running GPU processes — BLOCKED)
+  --query-accounted-apps (would list completed GPU processes — BLOCKED)
+  -c / --compute-mode    (would modify OS-level compute settings — BLOCKED)
+
+Every nvidia-smi command issued by this module is validated against the
+hardware interface whitelist in core/security/interface_policy.py and
+recorded in the append-only audit log before execution.
+=== END PRIVACY NOTE ===
+
 When GPU temperature is comfortable, allow default TDP. As temperature approaches
 a soft band, reduce power limit smoothly toward a floor so the driver throttles
 gracefully instead of hitting sudden clock drops (poor perf/W).

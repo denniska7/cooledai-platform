@@ -12,7 +12,7 @@ import {
   ResponsiveContainer,
   Legend,
 } from "recharts";
-import { api } from "@/lib/api";
+import { api, apiFetch } from "@/lib/api";
 import { useAuth } from "@clerk/nextjs";
 
 // ---------------------------------------------------------------------------
@@ -788,6 +788,9 @@ export default function AdvancedPage() {
         </motion.section>
       )}
 
+      {/* ========== Security & Compliance ========== */}
+      <SecurityComplianceCard />
+
       {/* ========== Raw JSON Inspector ========== */}
       <motion.section
         initial={{ opacity: 0, y: 12 }}
@@ -865,5 +868,179 @@ function MiniStat({
         {value}
       </p>
     </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Security & Compliance Card
+// ---------------------------------------------------------------------------
+type SecuritySummary = {
+  last_audit_date: string | null;
+  total_commands_30d: number;
+  os_layer_accesses_30d: number;
+  data_plane_touched: boolean;
+  audit_log_enabled: boolean;
+  interface_whitelist_enforced: boolean;
+  commands_by_type_30d: Record<string, number>;
+};
+
+function SecurityComplianceCard() {
+  const [data, setData] = useState<SecuritySummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [downloading, setDownloading] = useState(false);
+
+  useEffect(() => {
+    const fetchSecurity = async () => {
+      try {
+        const res = await apiFetch("/api/v1/security/summary");
+        if (res.ok) {
+          setData(await res.json());
+        }
+      } catch {
+        // ignore
+      } finally {
+        setLoading(false);
+      }
+    };
+    fetchSecurity();
+    const id = setInterval(fetchSecurity, 60_000);
+    return () => clearInterval(id);
+  }, []);
+
+  const handleDownloadAttestation = async () => {
+    setDownloading(true);
+    try {
+      const res = await apiFetch("/api/v1/security/attestation");
+      if (res.ok) {
+        const report = await res.json();
+        const blob = new Blob([JSON.stringify(report, null, 2)], {
+          type: "application/json",
+        });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `cooledai_attestation_${new Date().toISOString().slice(0, 10)}.json`;
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  const osAccessColor =
+    data && data.os_layer_accesses_30d === 0 ? "#22c55e" : "#ef4444";
+  const dataPlaneColor =
+    data && !data.data_plane_touched ? "#22c55e" : "#ef4444";
+
+  return (
+    <motion.section
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, delay: 0.22 }}
+      className="rounded-xl border border-white/10 bg-[#141414] p-6 mb-6"
+    >
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-base font-semibold text-white">
+          Security & Compliance
+        </h2>
+        <div className="flex items-center gap-2">
+          <span
+            className="inline-block w-2 h-2 rounded-full"
+            style={{
+              backgroundColor:
+                data && data.os_layer_accesses_30d === 0 && !data.data_plane_touched
+                  ? "#22c55e"
+                  : "#ef4444",
+            }}
+          />
+          <span className="text-xs text-white/50">
+            {data && data.os_layer_accesses_30d === 0 && !data.data_plane_touched
+              ? "All clear"
+              : "Review needed"}
+          </span>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="animate-pulse space-y-3">
+          <div className="h-4 bg-white/5 rounded w-3/4" />
+          <div className="h-4 bg-white/5 rounded w-1/2" />
+        </div>
+      ) : data ? (
+        <div className="space-y-3 text-sm">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-xs text-white/40 uppercase tracking-wider">
+                Last Audit Date
+              </p>
+              <p className="text-white font-mono">
+                {data.last_audit_date || "No data yet"}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-white/40 uppercase tracking-wider">
+                Commands (30d)
+              </p>
+              <p className="text-white font-mono tabular-nums">
+                {data.total_commands_30d.toLocaleString()}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-white/40 uppercase tracking-wider">
+                OS-Layer Accesses
+              </p>
+              <p className="font-mono font-bold tabular-nums" style={{ color: osAccessColor }}>
+                {data.os_layer_accesses_30d}
+                {data.os_layer_accesses_30d === 0 && (
+                  <span className="text-white/30 font-normal ml-1">confirmed zero</span>
+                )}
+              </p>
+            </div>
+            <div>
+              <p className="text-xs text-white/40 uppercase tracking-wider">
+                Data Plane Touched
+              </p>
+              <p className="font-mono font-bold" style={{ color: dataPlaneColor }}>
+                {data.data_plane_touched ? "YES" : "NO"}
+              </p>
+            </div>
+          </div>
+
+          {Object.keys(data.commands_by_type_30d).length > 0 && (
+            <div className="mt-3 pt-3 border-t border-white/5">
+              <p className="text-xs text-white/40 uppercase tracking-wider mb-2">
+                Command Breakdown (30d)
+              </p>
+              <div className="grid grid-cols-2 gap-1 text-xs font-mono">
+                {Object.entries(data.commands_by_type_30d)
+                  .sort(([, a], [, b]) => (b as number) - (a as number))
+                  .map(([type, count]) => (
+                    <div key={type} className="flex justify-between text-white/60">
+                      <span>{type}</span>
+                      <span className="tabular-nums text-white/40">
+                        {(count as number).toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+              </div>
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={handleDownloadAttestation}
+            disabled={downloading}
+            className="mt-3 w-full py-2 px-4 rounded-lg bg-emerald-600/20 border border-emerald-500/30 text-emerald-400 text-sm font-medium hover:bg-emerald-600/30 transition-colors disabled:opacity-50"
+          >
+            {downloading ? "Generating..." : "Download Attestation Report"}
+          </button>
+        </div>
+      ) : (
+        <p className="text-white/30 text-sm">Security data unavailable</p>
+      )}
+    </motion.section>
   );
 }
