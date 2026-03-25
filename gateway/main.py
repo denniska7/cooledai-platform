@@ -248,11 +248,8 @@ class Gateway:
         except Exception as e:
             _logger.error("Gateway: Failed to start API server: %s", e)
 
-    def _start_async_services(self) -> None:
+    def _start_async_loop(self) -> None:
         """Thread 4: Dedicated asyncio loop for CloudForwarder + PolicySyncer."""
-        self._init_cloud_forwarder()
-        self._init_policy_syncer()
-
         if not self._cloud_forwarder and not self._policy_syncer:
             _logger.info("Gateway: No async services to start")
             return
@@ -288,11 +285,16 @@ class Gateway:
         self._collect_thread.start()
         self._heartbeat_thread.start()
 
+        # Initialize forwarder + syncer BEFORE the API server so the
+        # FastAPI app receives the real CloudForwarder reference (not None).
+        self._init_cloud_forwarder()
+        self._init_policy_syncer()
+
         # Thread 3: API server (Phase 1)
         self._start_api_server()
 
-        # Thread 4: Async services (Phase 1)
-        self._start_async_services()
+        # Thread 4: Async event loop for CloudForwarder + PolicySyncer
+        self._start_async_loop()
 
         _logger.info(
             "Gateway: Started. CONTROL_MODE=%s. Backend=%s. API port=%d",
