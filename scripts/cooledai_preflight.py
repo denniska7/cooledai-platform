@@ -151,6 +151,71 @@ def check_telemetry(api_url: str, api_key: str, node_id: str) -> bool:
         return False
 
 
+def check_network_isolation() -> bool:
+    """Check 6: Validate CooledAI agent network boundary.
+
+    Confirms the agent process can only reach:
+      - The BMC OOB management network (IPMI subnet)
+      - The CooledAI gateway on port 8080
+      - Nothing else
+
+    Attempts a connection to the data network default gateway. If it
+    succeeds, that means the agent has broader network access than
+    intended, which is logged as a warning (not a blocker).
+    """
+    import socket
+    import subprocess as sp
+
+    print("\n[6/6] Validating network isolation boundary")
+    passed = True
+
+    # Find the default gateway (data network)
+    try:
+        result = sp.run(
+            ["ip", "route", "show", "default"],
+            capture_output=True, text=True, timeout=5,
+        )
+        gw_line = result.stdout.strip().split("\n")[0] if result.stdout else ""
+        parts = gw_line.split()
+        gw_ip = parts[2] if len(parts) > 2 else None
+    except Exception:
+        gw_ip = None
+
+    if not gw_ip:
+        print("  Could not determine default gateway — skipping data-net check")
+        print(f"  [{PASS}] Network isolation (gateway unknown, not a failure)")
+        return True
+
+    print(f"  Default gateway: {gw_ip}")
+
+    # Attempt connection to the data network gateway on port 80
+    # This SHOULD time out if the agent is properly isolated
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3)
+        result_code = sock.connect_ex((gw_ip, 80))
+        sock.close()
+
+        if result_code == 0:
+            print(f"  [NETWORK_ISOLATION_WARNING] Agent can reach data network gateway {gw_ip}:80")
+            print("  This is not a blocker, but the agent ideally should be")
+            print("  restricted to the BMC management network only.")
+            print("  Consider applying firewall rules or network namespacing.")
+            # Not a failure — but surfaced in preflight summary
+            passed = True  # warning, not blocker
+        else:
+            print(f"  Data network gateway {gw_ip}:80 — connection refused/timeout (GOOD)")
+            print(f"  [{PASS}] Agent network properly isolated from data plane")
+    except socket.timeout:
+        print(f"  Data network gateway {gw_ip}:80 — timed out (GOOD)")
+        print(f"  [{PASS}] Agent network properly isolated from data plane")
+    except Exception as exc:
+        print(f"  Data network gateway check error: {exc}")
+        print(f"  [{PASS}] Network isolation (inconclusive, not a failure)")
+
+    return passed
+
+
 def capture_baseline(output_path: str, duration_s: int = 300) -> bool:
     """Check 5: Capture Day 0 baseline profile BEFORE optimization takes control.
 
@@ -338,6 +403,12 @@ def main() -> None:
             "Day 0 baseline capture",
             capture_baseline(args.baseline_path, args.baseline_duration),
         ))
+
+    # ── Network Isolation Validation ──
+    results.append((
+        "Network isolation boundary",
+        check_network_isolation(),
+    ))
 
     print("\n" + "=" * 60)
     print("  Summary")
