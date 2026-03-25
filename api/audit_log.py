@@ -10,6 +10,8 @@ existing entries.  Rotation: daily, 90-day retention (see SECURITY.md).
 
 from __future__ import annotations
 
+import hashlib
+import hmac as hmac_mod
 import json
 import logging
 import os
@@ -27,6 +29,9 @@ _DEFAULT_PATH = os.environ.get(
 # Module-level file handle — opened once, append-only.
 _fh: Optional[Any] = None
 _audit_path: Optional[str] = None
+
+# HMAC-SHA256 signing key (from env; empty = signing disabled).
+_signing_key: bytes = os.environ.get("COOLEDAI_AUDIT_SIGNING_KEY", "").encode("utf-8")
 
 
 def _ensure_open(path: Optional[str] = None) -> Any:
@@ -63,13 +68,44 @@ def _write(entry: Dict[str, Any]) -> None:
     fh = _ensure_open()
     if fh is None:
         return  # Graceful degradation — don't crash the request
+    entry["data_plane_touched"] = False
     entry["ts"] = datetime.now(timezone.utc).isoformat()
+    # HMAC-SHA256 sign the entry if signing key is configured
+    if _signing_key:
+        payload = json.dumps(entry, sort_keys=True, default=str)
+        sig = hmac_mod.new(
+            _signing_key, payload.encode("utf-8"), hashlib.sha256
+        ).hexdigest()
+        entry["signature"] = sig
     try:
         line = json.dumps(entry, default=str, separators=(",", ":"))
         fh.write(line + "\n")
         fh.flush()
     except OSError as exc:
         log.warning("[AUDIT] Write failed: %s", exc)
+
+
+def configure_signing_key(key: str) -> None:
+    """Set the signing key (called during startup from config)."""
+    global _signing_key
+    _signing_key = key.encode("utf-8")
+
+
+def verify_audit_entry(entry: dict, signing_key: str) -> bool:
+    """Verify an audit log entry's HMAC-SHA256 signature.
+
+    Returns False for unsigned entries (missing signature field).
+    """
+    sig = entry.get("signature")
+    if not sig:
+        return False
+    check = dict(entry)
+    del check["signature"]
+    payload = json.dumps(check, sort_keys=True, default=str)
+    expected = hmac_mod.new(
+        signing_key.encode("utf-8"), payload.encode("utf-8"), hashlib.sha256
+    ).hexdigest()
+    return hmac_mod.compare_digest(sig, expected)
 
 
 # ── Public API ──────────────────────────────────────────────────

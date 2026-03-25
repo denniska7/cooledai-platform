@@ -684,17 +684,18 @@ class OptimizationBrain:
         self.power_optimizer = power_optimizer or PowerCostOptimizer()
         self.calibration_profile = calibration_profile
 
-        # Sustained compute power history for absolute trigger (FIX B: 12s rolling mean)
-        self._sustained_power_history: List[float] = []
-        self._sustained_power_times: List[float] = []
+        # Per-node sustained compute power history for absolute trigger (FIX B: 12s rolling mean)
+        # Dict[node_id, List[float]] — keyed by node_id for multi-node isolation.
+        self._sustained_power_history: Dict[str, List[float]] = {}
+        self._sustained_power_times: Dict[str, List[float]] = {}
 
-        # FIX A: Peak-hold power buffer (3-second max for spike detection)
-        self._peak_power_buffer: List[float] = []  # power values
-        self._peak_power_times: List[float] = []    # timestamps
+        # Per-node peak-hold power buffer (3-second max for spike detection)
+        self._peak_power_buffer: Dict[str, List[float]] = {}
+        self._peak_power_times: Dict[str, List[float]] = {}
         self._PEAK_HOLD_WINDOW_S = 3.0
 
-        # FIX G: No-response event counter (cycles where no fan command fired)
-        self._no_response_count: int = 0
+        # Per-node no-response event counter (cycles where no fan command fired)
+        self._no_response_count: Dict[str, int] = {}
     
     def _nodes_to_arrays(self, nodes: List[BaseNode]) -> tuple:
         """
@@ -1059,6 +1060,8 @@ class OptimizationBrain:
         policy_context: Optional[Dict[str, Any]] = None,
         thermal_session_key: Optional[str] = None,
         current_cpu_temp_c: Optional[float] = None,
+        calibration_profile: Optional[Any] = None,
+        node_id: Optional[str] = None,
     ) -> EfficiencyGap:
         """Analyze normalized node data and compute Efficiency Gap.
 
@@ -1118,28 +1121,35 @@ class OptimizationBrain:
         sustained_active = sustained_active_compute_signal(np.asarray(power, dtype=float))
 
         # --- FIX A: Peak-hold power buffer (3-second max for spike detection) ---
-        cp = self.calibration_profile
+        # Use passed-in calibration_profile, fallback to instance-level (backward compat)
+        cp = calibration_profile if calibration_profile is not None else self.calibration_profile
         now_mono = time.monotonic()
+        _nid = node_id or "default"
 
-        # Maintain 3-second peak-hold buffer
-        self._peak_power_buffer.append(current_power)
-        self._peak_power_times.append(now_mono)
+        # Per-node 3-second peak-hold buffer
+        _ppb = self._peak_power_buffer.setdefault(_nid, [])
+        _ppt = self._peak_power_times.setdefault(_nid, [])
+        _ppb.append(current_power)
+        _ppt.append(now_mono)
         peak_cutoff = now_mono - self._PEAK_HOLD_WINDOW_S
-        while self._peak_power_times and self._peak_power_times[0] < peak_cutoff:
-            self._peak_power_times.pop(0)
-            self._peak_power_buffer.pop(0)
-        peak_power_3s = max(self._peak_power_buffer) if self._peak_power_buffer else current_power
+        while _ppt and _ppt[0] < peak_cutoff:
+            _ppt.pop(0)
+            _ppb.pop(0)
+        peak_power_3s = max(_ppb) if _ppb else current_power
 
         # --- FIX B: Rolling 12-second mean replaces consecutive counter ---
         active_trigger_w = cp.active_compute_trigger_w if cp is not None else SUSTAINED_COMPUTE_MEAN_THRESHOLD_W
         sustained_window_s = cp.sustained_compute_window_s if cp is not None else 12.0
-        self._sustained_power_history.append(current_power)
-        self._sustained_power_times.append(now_mono)
+        # Per-node sustained power history
+        _sph = self._sustained_power_history.setdefault(_nid, [])
+        _spt = self._sustained_power_times.setdefault(_nid, [])
+        _sph.append(current_power)
+        _spt.append(now_mono)
         # Prune history older than sustained_window_s
         cutoff = now_mono - sustained_window_s
-        while self._sustained_power_times and self._sustained_power_times[0] < cutoff:
-            self._sustained_power_times.pop(0)
-            self._sustained_power_history.pop(0)
+        while _spt and _spt[0] < cutoff:
+            _spt.pop(0)
+            _sph.pop(0)
 
         # FIX F: Require minimum 15 samples before sustained compute decisions
         _MIN_SUSTAINED_SAMPLES = 15
@@ -1152,8 +1162,8 @@ class OptimizationBrain:
         _current_is_idle = current_power < _idle_gate_w
 
         if not _current_is_idle:
-            if len(self._sustained_power_history) >= _MIN_SUSTAINED_SAMPLES:
-                rolling_mean = float(np.mean(self._sustained_power_history))
+            if len(_sph) >= _MIN_SUSTAINED_SAMPLES:
+                rolling_mean = float(np.mean(_sph))
                 if rolling_mean > active_trigger_w:
                     sustained_active = True
             # FIX D: Peak power independently triggers active compute (no temp/confidence gate)
@@ -1174,7 +1184,7 @@ class OptimizationBrain:
         if sustained_active:
             if peak_power_3s > active_trigger_w * 1.5:
                 active_trigger_source = "peak_power_3s"
-            elif len(self._sustained_power_history) >= _MIN_SUSTAINED_SAMPLES and float(np.mean(self._sustained_power_history)) > active_trigger_w:
+            elif len(_sph) >= _MIN_SUSTAINED_SAMPLES and float(np.mean(_sph)) > active_trigger_w:
                 active_trigger_source = "rolling_12s_mean"
             else:
                 active_trigger_source = "legacy_tail"
@@ -1597,12 +1607,14 @@ class OptimizationBrain:
             and sustained_active
             and not gap.emergency_mode
         )
+        _nrc = self._no_response_count.get(_nid, 0)
         if no_response_event:
-            self._no_response_count += 1
+            _nrc += 1
         else:
-            self._no_response_count = 0
+            _nrc = 0
+        self._no_response_count[_nid] = _nrc
         gap.raw_metrics["no_response_event"] = no_response_event
-        gap.raw_metrics["no_response_streak"] = self._no_response_count
+        gap.raw_metrics["no_response_streak"] = _nrc
 
         # Build and log Reasoning String (Glass Box audit)
         gap.reasoning_string = " | ".join(gap.reasoning_log) if gap.reasoning_log else gap.diagnostic_reasoning

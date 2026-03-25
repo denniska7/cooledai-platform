@@ -19,6 +19,7 @@ Endpoints:
 - GET /health - Health check
 """
 
+import asyncio
 import atexit
 import os
 import secrets
@@ -28,6 +29,7 @@ import base64
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from enum import Enum
@@ -117,23 +119,96 @@ FIXED_OWNER_ID = "user_3B2tUMI61WvTOsmR2ZMfHhXjsDa"
 
 
 # --- Multi-Tenant API Key Registry ---
+# New hierarchical format: {"keys": {"sk-...": {"owner_id": "...", "facilities": {...}, ...}}}
+# Legacy flat format ({"sk-...": {"owner_id": "..."}}) is auto-migrated on startup.
 _KEYS_FILE = project_root / "data" / "api_keys.json"
-_api_key_registry: Dict[str, dict] = {}
+_api_key_registry: Dict[str, dict] = {}  # key_string -> key_entry (the "keys" dict contents)
+
+# Lookup indexes built after load/migration
+_key_to_owner: Dict[str, str] = {}           # api_key -> owner_id
+_key_facilities: Dict[str, Dict[str, dict]] = {}  # api_key -> {facility_id: facility_config}
+_owner_nodes: Dict[str, set] = {}            # owner_id -> set of authorized node_ids ("*" = wildcard)
+
+
+def _migrate_legacy_keys(raw: dict) -> dict:
+    """Migrate flat key registry format to hierarchical format.
+
+    Old format: {"sk-abc": {"owner_id": "admin", "label": "...", "created_at": "..."}}
+    New format: {"keys": {"sk-abc": {"owner_id": "admin", "facilities": {"facility-default": {"nodes": ["*"], ...}}, ...}}}
+
+    Legacy keys get a wildcard facility that permits ANY node_id.
+    """
+    if "keys" in raw:
+        return raw  # already in new format
+    migrated_keys = {}
+    for key_str, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        new_entry = dict(entry)
+        if "facilities" not in new_entry:
+            new_entry["facilities"] = {
+                "facility-default": {
+                    "nodes": ["*"],  # wildcard: permit any node_id
+                    "tier": "legacy",
+                    "rate_limit_rps": 100,
+                },
+            }
+        migrated_keys[key_str] = new_entry
+    return {"keys": migrated_keys}
+
+
+def _build_key_indexes() -> None:
+    """Build lookup indexes from the registry for fast access."""
+    global _key_to_owner, _key_facilities, _owner_nodes
+    _key_to_owner = {}
+    _key_facilities = {}
+    _owner_nodes = {}
+    for key_str, entry in _api_key_registry.items():
+        owner = entry.get("owner_id", FIXED_OWNER_ID)
+        _key_to_owner[key_str] = owner
+        facilities = entry.get("facilities", {})
+        _key_facilities[key_str] = facilities
+        if owner not in _owner_nodes:
+            _owner_nodes[owner] = set()
+        for _fid, fconf in facilities.items():
+            for nid in fconf.get("nodes", []):
+                _owner_nodes[owner].add(nid)
 
 
 def _load_key_registry() -> None:
     global _api_key_registry
     try:
         if _KEYS_FILE.exists():
-            _api_key_registry = json.loads(_KEYS_FILE.read_text())
+            raw = json.loads(_KEYS_FILE.read_text())
+            migrated = _migrate_legacy_keys(raw)
+            _api_key_registry = migrated.get("keys", {})
+            # Persist migration if format changed
+            if "keys" not in raw:
+                _save_key_registry()
+                logging.getLogger("api.main").info(
+                    "[KEY_REGISTRY] Migrated %d legacy keys to hierarchical format.",
+                    len(_api_key_registry),
+                )
+        else:
+            _api_key_registry = {}
     except Exception:
         _api_key_registry = {}
+    _build_key_indexes()
 
 
 def _save_key_registry() -> None:
     try:
         _KEYS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        _KEYS_FILE.write_text(json.dumps(_api_key_registry, indent=2))
+        import tempfile
+        # Atomic write: temp file + rename
+        fd, tmp = tempfile.mkstemp(dir=str(_KEYS_FILE.parent), suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({"keys": _api_key_registry}, f, indent=2)
+            os.replace(tmp, str(_KEYS_FILE))
+        except Exception:
+            os.unlink(tmp)
+            raise
     except Exception as exc:
         logging.getLogger("api.main").warning("Failed to save key registry: %s", exc)
 
@@ -154,8 +229,16 @@ def _ensure_admin_key_exists() -> None:
         "owner_id": "admin",
         "label": "Admin (auto-generated on first startup)",
         "created_at": datetime.utcnow().isoformat() + "Z",
+        "facilities": {
+            "facility-default": {
+                "nodes": ["*"],
+                "tier": "legacy",
+                "rate_limit_rps": 100,
+            },
+        },
     }
     _save_key_registry()
+    _build_key_indexes()
     logging.getLogger("api.main").info(
         "\n============================================================\n"
         "  FIRST RUN — Admin API Key Generated\n"
@@ -268,15 +351,71 @@ def _require_admin_key(x_api_key: str = Header(default="", alias="X-API-Key")) -
     return x_api_key
 
 
-def _resolve_owner(x_api_key: str = Header(default="", alias="X-API-Key")) -> str:
-    """Resolve client_id for telemetry ingestion.
+def _extract_api_key(request: Request) -> str:
+    """Extract API key from X-API-Key header or Authorization: Bearer header."""
+    key = request.headers.get("x-api-key", "")
+    if key:
+        return key
+    auth = request.headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return ""
 
-    Returns the client_id bound to this API key for tenant isolation.
+
+def _resolve_owner(request: Request) -> str:
+    """Resolve owner_id for tenant isolation.
+
+    Accepts API key from X-API-Key header or Authorization: Bearer header.
+    Returns the owner_id bound to this API key.
     Falls back to FIXED_OWNER_ID for legacy/master keys.
     """
-    if x_api_key in _api_key_registry:
-        return _api_key_registry[x_api_key].get("owner_id", FIXED_OWNER_ID)
+    key = _extract_api_key(request)
+    if key in _key_to_owner:
+        return _key_to_owner[key]
     return FIXED_OWNER_ID
+
+
+def _resolve_facility(request: Request) -> Optional[str]:
+    """Resolve facility_id for the requesting node.
+
+    Reads node_id from the JSON body (if present). Validates the node belongs
+    to a facility owned by the requesting API key. Returns facility_id or None
+    if no node_id in body.
+
+    Raises HTTP 403 if node_id is not authorized for this key's owner.
+    Wildcard nodes (["*"]) permit any node_id (legacy admin keys).
+    """
+    key = _extract_api_key(request)
+    facilities = _key_facilities.get(key, {})
+    if not facilities:
+        # Legacy env-var key or unknown key — permit all (backward compat)
+        return None
+    # We can't read the body in a sync dependency, so facility validation
+    # is done inline in endpoints that need it (e.g. /optimize/control).
+    return None
+
+
+def _validate_node_access(api_key: str, node_id: str) -> Optional[str]:
+    """Check if node_id is authorized for this API key.
+
+    Returns facility_id if authorized, raises HTTP 403 if not.
+    Wildcard ["*"] in nodes list permits any node_id.
+    """
+    facilities = _key_facilities.get(api_key, {})
+    if not facilities:
+        # Legacy env-var key or unknown — permit all (backward compat)
+        return "facility-default"
+    for fid, fconf in facilities.items():
+        nodes = fconf.get("nodes", [])
+        if "*" in nodes or node_id in nodes:
+            return fid
+    # Check if this is a legacy/env-var key (not in registry)
+    if api_key not in _api_key_registry:
+        return "facility-default"
+    raise HTTPException(
+        status_code=403,
+        detail=f"Node '{node_id}' is not authorized for this API key's facilities.",
+    )
 
 
 # --- File upload limits ---
@@ -677,6 +816,20 @@ _brain = OptimizationBrain()
 _synthetic_sensor = SyntheticSensor()
 _state_machine = SystemStateMachine()
 _derivative_enricher = TelemetryDerivativeEnricher()
+
+# Per-node isolation state (Tasks 0.2 + 0.3)
+_node_profiles_lock = threading.Lock()
+_node_calibration_profiles: Dict[str, Any] = {}   # node_id -> CalibrationProfile
+
+_node_spike_history_lock = threading.Lock()
+_node_spike_history: Dict[str, list] = {}          # node_id -> [(ts, temp_c)]
+
+# Task 0.4: ThreadPoolExecutor for CPU-bound optimization + result cache
+_executor = ThreadPoolExecutor(max_workers=8)
+_result_cache_lock = threading.Lock()
+_result_cache: Dict[str, Tuple[float, dict]] = {}  # node_id -> (timestamp, response)
+_CACHE_TTL = 1.0  # seconds
+
 # Load InfluenceMap from discovery-generated file if present; else empty
 try:
     from core.config import load_influence_map
@@ -1275,6 +1428,8 @@ def _run_optimization_with_state_machine(
     policy_context: Optional[dict] = None,
     thermal_session_key: Optional[str] = None,
     current_cpu_temp_c: Optional[float] = None,
+    calibration_profile: Optional[Any] = None,
+    node_id: Optional[str] = None,
 ) -> OptimizationResponse:
     """
     Run optimization and apply System State Machine.
@@ -1321,6 +1476,8 @@ def _run_optimization_with_state_machine(
         policy_context=policy_context,
         thermal_session_key=thermal_session_key,
         current_cpu_temp_c=current_cpu_temp_c,
+        calibration_profile=calibration_profile,
+        node_id=node_id,
     )
 
     # Persist failing component findings to history (for GET /health/anomalies / Maintenance Task List)
@@ -2950,6 +3107,63 @@ async def debug_clerk_user(request: Request):
     }
 
 
+@app.get("/api/v1/debug/calibrators", dependencies=[Depends(_require_api_key)])
+async def debug_calibrators(request: Request, owner_id: str = Depends(_resolve_owner)):
+    """Return calibration state for all nodes owned by this key."""
+    api_key = _extract_api_key(request)
+    result = {}
+    with _node_profiles_lock:
+        for nid, cp in _node_calibration_profiles.items():
+            # Only show nodes belonging to this owner's facilities
+            try:
+                _validate_node_access(api_key, nid)
+            except HTTPException:
+                continue
+            result[nid] = cp.to_dict() if hasattr(cp, "to_dict") else {"temp_mean_c": getattr(cp, "temp_mean_c", None)}
+    return {"calibrators": result, "owner_id": owner_id}
+
+
+@app.get("/api/v1/debug/calibrators/{node_id}", dependencies=[Depends(_require_api_key)])
+async def debug_calibrator_detail(request: Request, node_id: str, owner_id: str = Depends(_resolve_owner)):
+    """Detailed view of a single node's calibration state."""
+    api_key = _extract_api_key(request)
+    _validate_node_access(api_key, node_id)
+    with _node_profiles_lock:
+        cp = _node_calibration_profiles.get(node_id)
+    if cp is None:
+        raise HTTPException(status_code=404, detail=f"No calibration profile for node '{node_id}'.")
+    return {
+        "node_id": node_id,
+        "owner_id": owner_id,
+        "calibration_profile": cp.to_dict() if hasattr(cp, "to_dict") else vars(cp),
+    }
+
+
+@app.get("/api/v1/debug/safety/{node_id}", dependencies=[Depends(_require_api_key)])
+async def debug_safety_state(request: Request, node_id: str, owner_id: str = Depends(_resolve_owner)):
+    """Return per-node safety state: spike hold, recent spike history."""
+    api_key = _extract_api_key(request)
+    _validate_node_access(api_key, node_id)
+    session_key = f"{owner_id}:{node_id}"
+    # Query spike hold state
+    from core.optimization.spike_hold_state import _until, _lock as _spike_lock
+    now = time.time()
+    with _spike_lock:
+        hold_until = _until.get(session_key, 0.0)
+    hold_active = now < hold_until
+    hold_remaining_s = max(0.0, hold_until - now) if hold_active else 0.0
+    # Recent spike history
+    with _node_spike_history_lock:
+        hist = list(_node_spike_history.get(node_id, []))
+    return {
+        "node_id": node_id,
+        "session_key": session_key,
+        "spike_hold_active": hold_active,
+        "spike_hold_remaining_s": round(hold_remaining_s, 1),
+        "recent_temps": [{"ts": ts, "temp_c": t} for ts, t in hist[-10:]],
+    }
+
+
 @app.get("/api/v1/telemetry-logs", dependencies=[Depends(_require_api_key)])
 async def get_telemetry_logs(hours: int = 1):
     """
@@ -3147,47 +3361,68 @@ def _build_nodes_for_agent_control(
     return nodes
 
 
-@app.post("/api/v1/optimize/control", dependencies=[Depends(_require_api_key)])
-async def agent_optimize_control(
-    body: AgentOptimizeControlInput,
-    owner_id: str = Depends(_resolve_owner),
-):
+def _optimize_control_sync(
+    owner_id: str,
+    node_id: str,
+    temp_c: float,
+    fan_rpm: float,
+    gpu_power_w: float,
+    cpu_temp_c: Optional[float],
+    max_fan_rpm: float,
+    last_commanded_duty: Optional[float],
+    peak_power_w: Optional[float],
+    calibration_profile_dict: Optional[dict],
+) -> dict:
+    """CPU-bound optimization work, called from ThreadPoolExecutor.
+
+    Returns the response dict for /optimize/control.
     """
-    Real-time optimization for the CooledAI agent. Called every 3s.
-    Returns target_duty (0-100) for fan control. Agent falls back to local
-    curve when this endpoint is unreachable.
-    """
-    # Update brain calibration profile from agent when available
-    if body.calibration_profile is not None:
+    from core.optimization.thermal_calibrator import CalibrationProfile
+
+    # Per-node calibration profile (Task 0.2: do NOT mutate singleton _brain)
+    _node_cp = None
+    if calibration_profile_dict is not None:
         try:
-            from core.optimization.thermal_calibrator import CalibrationProfile
-            cp_dict = body.calibration_profile
-            # Only recalibrate if this is a new/changed profile
-            existing_cp = getattr(_brain, "calibration_profile", None)
+            with _node_profiles_lock:
+                existing_cp = _node_calibration_profiles.get(node_id)
             if existing_cp is None or (
                 hasattr(existing_cp, "temp_mean_c")
-                and abs(existing_cp.temp_mean_c - cp_dict.get("temp_mean_c", 0)) > 0.1
+                and abs(existing_cp.temp_mean_c - calibration_profile_dict.get("temp_mean_c", 0)) > 0.1
             ):
                 new_cp = CalibrationProfile(**{
-                    k: v for k, v in cp_dict.items()
+                    k: v for k, v in calibration_profile_dict.items()
                     if k in CalibrationProfile.__dataclass_fields__
                 })
-                _brain.calibration_profile = new_cp
-                _brain.predictor.force_recalibrate(new_cp)
+                with _node_profiles_lock:
+                    _node_calibration_profiles[node_id] = new_cp
                 logging.getLogger("api.main").info(
-                    "[PREDICTOR] Brain calibration profile updated from agent "
+                    "[PREDICTOR] Node %s calibration profile updated "
                     "(temp_mean=%.1f°C, temp_stdev=%.2f°C)",
-                    new_cp.temp_mean_c, new_cp.temp_stdev_c,
+                    node_id, new_cp.temp_mean_c, new_cp.temp_stdev_c,
                 )
         except Exception as exc:
             logging.getLogger("api.main").debug(
-                "Failed to update brain calibration profile: %s", exc
+                "Failed to update calibration profile for node %s: %s", node_id, exc
             )
+    with _node_profiles_lock:
+        _node_cp = _node_calibration_profiles.get(node_id)
+
+    # Build a temporary AgentOptimizeControlInput-like object for _build_nodes_for_agent_control
+    body = AgentOptimizeControlInput(
+        temp_c=temp_c,
+        fan_rpm=fan_rpm,
+        gpu_power_w=gpu_power_w,
+        cpu_temp_c=cpu_temp_c,
+        node_id=node_id,
+        max_fan_rpm=max_fan_rpm,
+        last_commanded_duty=last_commanded_duty,
+        peak_power_w=peak_power_w,
+        calibration_profile=calibration_profile_dict,
+    )
 
     nodes = _build_nodes_for_agent_control(owner_id, body)
     if len(nodes) < 2:
-        # Not enough history; use simple duty from temp
-        delta_temp = body.temp_c - 65.0
+        delta_temp = temp_c - 65.0
         if delta_temp < -15:
             duty = 25
         elif delta_temp < -5:
@@ -3208,41 +3443,38 @@ async def agent_optimize_control(
     try:
         apply_telemetry_filters(nodes, _sanity_check_filter, _moving_avg_filter)
         _derivative_enricher.enrich(nodes)
-        # Spike hold uses shared spike_hold_state; include history peak so excursions
-        # only in rolling history still extend the hold (same as prior agent-only path).
-        history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
-        peaks: List[float] = [float(body.temp_c)]
-        for row in history[-30:]:
-            try:
-                peaks.append(float(_history_row(row)[1]))
-            except (TypeError, ValueError, IndexError):
-                continue
-        # Use calibrated spike trigger from brain's profile when available;
-        # otherwise derive from recent history (P95 + 5°C) so normal operating
-        # temps (e.g. 60°C on Quadro P2000) don't permanently trigger the hold.
+        # Per-node spike detection history (Task 0.3)
+        now_ts = time.time()
+        with _node_spike_history_lock:
+            spike_hist = _node_spike_history.setdefault(node_id, [])
+            spike_hist.append((now_ts, float(temp_c)))
+            if len(spike_hist) > 30:
+                _node_spike_history[node_id] = spike_hist[-30:]
+                spike_hist = _node_spike_history[node_id]
+            peaks: List[float] = [t for _, t in spike_hist]
         _spike_trigger_c = None
         _spike_hold_dur = None
-        _brain_cp = getattr(_brain, "calibration_profile", None)
-        if _brain_cp is not None:
-            _spike_trigger_c = getattr(_brain_cp, "spike_trigger_temp_c", None)
-            _spike_hold_dur = getattr(_brain_cp, "spike_hold_duration_s", None)
+        if _node_cp is not None:
+            _spike_trigger_c = getattr(_node_cp, "spike_trigger_temp_c", None)
+            _spike_hold_dur = getattr(_node_cp, "spike_hold_duration_s", None)
         if _spike_trigger_c is None and len(peaks) >= 5:
-            # Derive: P90 of recent peaks + 5°C margin (avoid using 42°C default
-            # which is below normal GPU operating temp on many cards)
             import numpy as _np
             _spike_trigger_c = float(_np.percentile(peaks, 90)) + 5.0
-            _spike_trigger_c = max(42.0, min(80.0, _spike_trigger_c))  # clamp
+            _spike_trigger_c = max(42.0, min(80.0, _spike_trigger_c))
+        _session_key = f"{owner_id}:{node_id}"
         record_spike_if_hot(
-            owner_id,
-            max(peaks) if peaks else float(body.temp_c),
+            _session_key,
+            max(peaks) if peaks else float(temp_c),
             spike_trigger_temp_c=_spike_trigger_c,
             spike_hold_duration_s=_spike_hold_dur,
         )
         resp = _run_optimization_with_state_machine(
             nodes,
-            thermal_session_key=owner_id,
-            policy_context={"rated_max_fan_rpm": float(body.max_fan_rpm)},
-            current_cpu_temp_c=body.cpu_temp_c,
+            thermal_session_key=_session_key,
+            policy_context={"rated_max_fan_rpm": float(max_fan_rpm)},
+            current_cpu_temp_c=cpu_temp_c,
+            calibration_profile=_node_cp,
+            node_id=node_id,
         )
         delta = resp.recommended_cooling_delta
         current_rpm = body.fan_rpm
@@ -3294,7 +3526,7 @@ async def agent_optimize_control(
         }
     except Exception as e:
         logging.getLogger("api.main").warning("Agent optimize control failed: %s", e)
-        delta_temp = body.temp_c - 65.0
+        delta_temp = temp_c - 65.0
         if delta_temp < -15:
             duty = 25
         elif delta_temp < -5:
@@ -3312,6 +3544,54 @@ async def agent_optimize_control(
             "recommended_cooling_delta": 0.0,
             "source": "fallback_error",
         }
+
+
+@app.post("/api/v1/optimize/control", dependencies=[Depends(_require_api_key)])
+async def agent_optimize_control(
+    request: Request,
+    body: AgentOptimizeControlInput,
+    owner_id: str = Depends(_resolve_owner),
+):
+    """
+    Real-time optimization for the CooledAI agent. Called every 3s.
+    Returns target_duty (0-100) for fan control. Agent falls back to local
+    curve when this endpoint is unreachable.
+    """
+    # Validate node_id belongs to this API key's facilities
+    api_key = _extract_api_key(request)
+    _validate_node_access(api_key, body.node_id)
+
+    # Check result cache (1s TTL prevents duplicate computation for same node)
+    now = time.time()
+    with _result_cache_lock:
+        cached = _result_cache.get(body.node_id)
+        # Lazy cleanup: evict stale entries
+        stale = [k for k, (ts, _) in _result_cache.items() if now - ts > 10.0]
+        for k in stale:
+            del _result_cache[k]
+    if cached and (now - cached[0]) < _CACHE_TTL:
+        return cached[1]
+
+    # Run CPU-bound optimization in thread pool to avoid blocking the event loop
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(
+        _executor,
+        _optimize_control_sync,
+        owner_id,
+        body.node_id,
+        body.temp_c,
+        body.fan_rpm,
+        body.gpu_power_w,
+        body.cpu_temp_c,
+        body.max_fan_rpm,
+        body.last_commanded_duty,
+        body.peak_power_w,
+        body.calibration_profile,
+    )
+
+    with _result_cache_lock:
+        _result_cache[body.node_id] = (time.time(), result)
+    return result
 
 
 @app.get("/api/v1/optimization-reasoning")
@@ -4018,6 +4298,83 @@ async def download_cooledai_agent():
         media_type="text/x-python",
         filename="cooledai_agent.py",
     )
+
+
+# --- Admin API Key Management Endpoints ---
+
+
+class CreateKeyInput(BaseModel):
+    owner_id: str
+    label: str = ""
+    facilities: Optional[Dict[str, dict]] = None
+    expires_at: Optional[str] = None
+
+
+class UpdateFacilitiesInput(BaseModel):
+    facilities: Dict[str, dict]
+
+
+@app.post("/api/v1/admin/keys", dependencies=[Depends(_require_admin_key)])
+async def admin_create_key(body: CreateKeyInput):
+    """Generate a new API key with owner_id and optional facility mapping."""
+    key = _generate_api_key()
+    entry = {
+        "owner_id": body.owner_id,
+        "label": body.label,
+        "created_at": datetime.utcnow().isoformat() + "Z",
+        "facilities": body.facilities or {
+            "facility-default": {
+                "nodes": ["*"],
+                "tier": "standard",
+                "rate_limit_rps": 100,
+            },
+        },
+    }
+    if body.expires_at:
+        entry["expires_at"] = body.expires_at
+    _api_key_registry[key] = entry
+    _save_key_registry()
+    _build_key_indexes()
+    return {"key": key, "owner_id": body.owner_id, "created": True}
+
+
+@app.get("/api/v1/admin/keys", dependencies=[Depends(_require_admin_key)])
+async def admin_list_keys():
+    """List all registered API keys (admin only). Key strings are truncated."""
+    result = []
+    for key_str, entry in _api_key_registry.items():
+        result.append({
+            "key_prefix": key_str[:12] + "...",
+            "key_id": key_str,
+            "owner_id": entry.get("owner_id", ""),
+            "label": entry.get("label", ""),
+            "facilities": entry.get("facilities", {}),
+            "created_at": entry.get("created_at", ""),
+            "expires_at": entry.get("expires_at"),
+        })
+    return {"keys": result}
+
+
+@app.delete("/api/v1/admin/keys/{key_id}", dependencies=[Depends(_require_admin_key)])
+async def admin_revoke_key(key_id: str):
+    """Revoke an API key."""
+    if key_id not in _api_key_registry:
+        raise HTTPException(status_code=404, detail="Key not found.")
+    del _api_key_registry[key_id]
+    _save_key_registry()
+    _build_key_indexes()
+    return {"revoked": True, "key_id": key_id}
+
+
+@app.put("/api/v1/admin/keys/{key_id}/facilities", dependencies=[Depends(_require_admin_key)])
+async def admin_update_facilities(key_id: str, body: UpdateFacilitiesInput):
+    """Update facility/node mapping for an API key."""
+    if key_id not in _api_key_registry:
+        raise HTTPException(status_code=404, detail="Key not found.")
+    _api_key_registry[key_id]["facilities"] = body.facilities
+    _save_key_registry()
+    _build_key_indexes()
+    return {"updated": True, "key_id": key_id, "facilities": body.facilities}
 
 
 if __name__ == "__main__":
