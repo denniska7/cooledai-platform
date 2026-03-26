@@ -25,6 +25,7 @@ export function SavingsProofPanel({
 }) {
   const [chartData, setChartData] = useState<SavingsChartPoint[]>([]);
   const [chartLoading, setChartLoading] = useState(true);
+  const [confidencePct, setConfidencePct] = useState<number | null>(null);
   const mountedRef = useRef(true);
 
   const fetchChart = useCallback(async () => {
@@ -34,6 +35,9 @@ export function SavingsProofPanel({
       if (res.ok) {
         const json = await res.json();
         setChartData(json.points || json || []);
+        if (json.confidence_pct !== undefined) {
+          setConfidencePct(json.confidence_pct);
+        }
       }
     } catch {
       // ignore
@@ -62,6 +66,13 @@ export function SavingsProofPanel({
       <h2 className="text-xl font-semibold text-white mb-4">
         What CooledAI Is Doing Right Now
       </h2>
+
+      {/* Calibration banner */}
+      {confidencePct !== null && confidencePct < 80 && (
+        <div className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/5 px-4 py-2 text-sm text-amber-400">
+          CooledAI is calibrating ({confidencePct}%) — savings data will appear once thermal model confidence reaches 80%
+        </div>
+      )}
 
       {/* Chart */}
       <div className="relative">

@@ -523,4 +523,29 @@ def create_app(
             "data_points_last_hour": len(history),
         }
 
+    # ------------------------------------------------------------------
+    # POST /api/v1/calibration/start — Trigger calibration sweep (stub)
+    # ------------------------------------------------------------------
+
+    @app.post("/api/v1/calibration/start")
+    async def start_calibration_sweep(request: Request):
+        """Trigger a controlled fan duty sweep for thermal model calibration.
+
+        Cycles through 3-4 fan duty setpoints (25%, 40%, 55%, 70%), holds each
+        for 60 seconds, and records the thermal response. This gives the brain
+        diverse (temp, duty) data points to build confidence.
+
+        NOTE: This is a stub endpoint. The actual sweep logic will be
+        implemented when the agent supports duty override commands.
+        Manual trigger only — never auto-triggered.
+        """
+        _require_key(request)
+        # TODO: Implement actual sweep logic when agent supports duty override
+        return {
+            "status": "not_implemented",
+            "message": "Calibration sweep endpoint is a stub. Actual sweep logic pending agent duty override support.",
+            "planned_setpoints": [25, 40, 55, 70],
+            "hold_duration_s": 60,
+        }
+
     return app

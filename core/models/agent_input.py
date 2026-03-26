@@ -19,6 +19,8 @@ class AgentOptimizeControlInput(BaseModel):
     fan_rpm: float
     gpu_power_w: float = 50.0
     cpu_temp_c: Optional[float] = None
+    # TODO Phase 4: Add cpu_power_w to agent telemetry and thermal history tuple.
+    # Currently only GPU power (gpu_power_w) and peak power (peak_power_w) are tracked.
     node_id: str = "ST550-CooledAI-Predictive"
     max_fan_rpm: float = 7000.0  # For duty conversion; agent can override
     # Last fan duty actually applied (0-100). Enables fan-slippage heuristic vs tach.

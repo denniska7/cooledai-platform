@@ -34,8 +34,12 @@ class ConfidenceIntervalResult:
     cautionary_cooling: bool = False
 
 
-# Threshold below which we trigger Cautionary Cooling (safe higher-RPM)
-CAUTIONARY_CONFIDENCE_THRESHOLD = 0.80
+# Threshold below which we trigger Cautionary Cooling (safe higher-RPM).
+# Lowered from 0.80 to 0.65 in Phase 3: at 65% confidence the thermal model
+# has enough data to safely reduce fans below baseline in a controlled lab
+# environment. The +15% safety margin at 61% was too conservative, causing
+# the optimizer to use MORE power than BMC defaults.
+CAUTIONARY_CONFIDENCE_THRESHOLD = 0.65
 
 # Safe baseline delta when in Cautionary Cooling (+15% = conservative)
 CAUTIONARY_BASELINE_DELTA = 0.15

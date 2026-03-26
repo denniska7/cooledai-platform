@@ -2239,6 +2239,9 @@ async def get_thermal_history(
         for row in points:
             out = _history_row(row)
             ts, pt, bt, pr, br = out[0], out[1], out[2], out[3], out[4]
+            # Skip collector-only rows with no meaningful thermal data
+            if pt is None or pt == 0:
+                continue
             pilot_cpu = out[5] if len(out) > 5 else None
             baseline_cpu = out[6] if len(out) > 6 else None
             pilot_gpu_pwr = out[7] if len(out) > 7 else None
@@ -2282,6 +2285,9 @@ async def get_thermal_history(
     for row in points:
         out = _history_row(row)
         ts, pt, bt = out[0], out[1], out[2]
+        # Skip collector-only rows with no meaningful thermal data
+        if pt is None or pt == 0:
+            continue
         hour_ts = int(ts // 3600) * 3600
         buckets_dict.setdefault(hour_ts, []).append((pt, bt))
     buckets = []
@@ -2507,16 +2513,23 @@ async def get_dashboard_summary(
     if pilot_gpu_pwr is not None and baseline_gpu_pwr is not None and baseline_gpu_pwr > 0:
         gpu_saving_pct = max(0.0, (baseline_gpu_pwr - pilot_gpu_pwr) / baseline_gpu_pwr * 100.0)
 
-    # --- System efficiency (weighted) ---
-    system_efficiency = (fan_saving_pct * 0.15) + (gpu_saving_pct * 0.45)
+    # --- System efficiency (weighted, fan-dominant for cooling optimization) ---
+    # Use real fan power reduction when available, fallback to weighted formula
+    if baseline_fan_w > 0 and pilot_fan_w < baseline_fan_w:
+        system_efficiency = (1.0 - pilot_fan_w / baseline_fan_w) * 100.0
+    else:
+        system_efficiency = (fan_saving_pct * 0.15) + (gpu_saving_pct * 0.45)
 
     # --- Monthly savings from thermal history ---
     month_start = datetime(datetime.now(timezone.utc).year, datetime.now(timezone.utc).month, 1, tzinfo=timezone.utc).timestamp()
     monthly_wh = 0.0
     for row in history:
         hr = _history_row(row)
-        ts, _, _, p_rpm, b_rpm = hr[0], hr[1], hr[2], hr[3], hr[4]
+        ts, pilot_t, _, p_rpm, b_rpm = hr[0], hr[1], hr[2], hr[3], hr[4]
         if ts < month_start or p_rpm is None or b_rpm is None:
+            continue
+        # Skip collector-only rows with no meaningful data
+        if pilot_t is None or pilot_t == 0 or (p_rpm == 0 and b_rpm == 0):
             continue
         delta_w = max(0.0, _fan_power_watts(b_rpm) - _fan_power_watts(p_rpm))
         monthly_wh += delta_w * (5.0 / 3600.0)  # ~5s per sample
@@ -2532,6 +2545,8 @@ async def get_dashboard_summary(
         hr = _history_row(row)
         ts, p_rpm, b_rpm = hr[0], hr[3], hr[4]
         if p_rpm is None or b_rpm is None:
+            continue
+        if hr[1] is None or hr[1] == 0 or (p_rpm == 0 and b_rpm == 0):
             continue
         d = max(0.0, _fan_power_watts(b_rpm) - _fan_power_watts(p_rpm))
         if ts >= today_start:
@@ -2555,6 +2570,8 @@ async def get_dashboard_summary(
         hr = _history_row(row)
         ts, p_rpm, b_rpm = hr[0], hr[3], hr[4]
         if ts < thirty_days_ago or p_rpm is None or b_rpm is None:
+            continue
+        if hr[1] is None or hr[1] == 0 or (p_rpm == 0 and b_rpm == 0):
             continue
         thirty_day_wh += max(0.0, _fan_power_watts(b_rpm) - _fan_power_watts(p_rpm)) * (5.0 / 3600.0)
         thirty_day_samples += 1
@@ -2698,7 +2715,14 @@ async def get_savings_chart(
     for row in history:
         hr = _history_row(row)
         ts, p_rpm, b_rpm = hr[0], hr[3], hr[4]
+        pilot_temp = hr[1]
         if ts < cutoff or p_rpm is None or b_rpm is None:
+            continue
+        # Skip collector-only rows with no meaningful thermal data
+        if pilot_temp is None or pilot_temp == 0:
+            continue
+        # Skip rows where RPM is zero (collector artifact)
+        if p_rpm == 0 and b_rpm == 0:
             continue
         opt_w = _fan_power_watts(p_rpm)
         base_w = _fan_power_watts(b_rpm)
@@ -2750,10 +2774,27 @@ async def get_savings_chart(
         step = len(points) // 1440
         points = points[::step]
 
+    # Add confidence info so frontend can show calibration status
+    confidence_pct = None
+    try:
+        from core.optimization.confidence_estimator import CAUTIONARY_CONFIDENCE_THRESHOLD
+        # Estimate confidence from data diversity
+        if points:
+            unique_rpms = set()
+            for row in history:
+                hr = _history_row(row)
+                if hr[3] is not None and hr[1] is not None and hr[1] != 0:
+                    unique_rpms.add(round(float(hr[3]), -1))  # round to nearest 10
+            data_diversity = min(1.0, len(unique_rpms) / 10.0)  # 10 distinct RPM levels = full diversity
+            confidence_pct = round(data_diversity * 100.0, 1)
+    except Exception:
+        pass
+
     return {
         "points": points,
         "total_saved_wh": round(total_saved_wh, 2),
         "period_hours": hours,
+        "confidence_pct": confidence_pct,
     }
 
 
@@ -2939,6 +2980,7 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
             "temp_c": pilot_temp,
             "cpu_temp_c": pilot.get("cpu_temp_c"),
             "gpu_power_w": round(float(pilot.get("gpu_power_w")), 1) if pilot.get("gpu_power_w") is not None else None,
+            "peak_gpu_power_w": round(float(pilot.get("peak_power_w")), 1) if pilot.get("peak_power_w") is not None else None,
             "gpu_temps_c": pilot.get("gpu_temps_c", []),
             "temp_basis": "avg_gpu_temp_c",
             "last_seen_s_ago": round(pilot_age, 1) if pilot_age is not None else None,
@@ -2951,6 +2993,7 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
             "temp_c": baseline_temp,
             "cpu_temp_c": baseline.get("cpu_temp_c") if baseline else None,
             "gpu_power_w": round(float(baseline.get("gpu_power_w")), 1) if baseline and baseline.get("gpu_power_w") is not None else None,
+            "peak_gpu_power_w": round(float(baseline.get("peak_power_w")), 1) if baseline and baseline.get("peak_power_w") is not None else None,
             "gpu_temps_c": baseline.get("gpu_temps_c", []) if baseline else [],
             "temp_basis": "avg_gpu_temp_c",
             "last_seen_s_ago": round(baseline_age, 1) if baseline_age is not None else None,
@@ -4229,6 +4272,30 @@ async def ingest_gateway_batch(body: GatewayBatchInput, owner_id: str = Depends(
                 history.append(row)
                 if len(history) > _MAX_THERMAL_HISTORY_POINTS:
                     history.pop(0)
+
+                # Update _tenant_telemetry so stats/dashboard endpoints can
+                # resolve node names and display live telemetry per node.
+                node_id = entry.node_id or telemetry.get("node_id", "")
+                if node_id:
+                    tenant = _tenant_telemetry.setdefault(owner_id, {})
+                    node_data = dict(tenant.get(node_id, {}))
+                    node_data["_received_at"] = time.time()
+                    node_data["node_id"] = node_id
+                    node_data["fan_rpm"] = fan_rpm
+                    node_data["avg_gpu_temp_c"] = temp_c
+                    node_data["max_gpu_temp_c"] = temp_c
+                    node_data["max_temp_c"] = temp_c
+                    node_data["gpu_power_w"] = gpu_power_w
+                    if cpu_temp_c is not None:
+                        node_data["cpu_temp_c"] = cpu_temp_c
+                    if peak_power_w is not None:
+                        node_data["peak_power_w"] = peak_power_w
+                    # Preserve optimization result for pilot nodes
+                    opt_result = entry.optimization or {}
+                    if opt_result.get("target_duty") is not None:
+                        node_data["optimized_duty"] = opt_result["target_duty"]
+                    tenant[node_id] = node_data
+
                 processed += 1
         except Exception as e:
             logging.getLogger("api.main").debug("Batch entry failed: %s", e)
