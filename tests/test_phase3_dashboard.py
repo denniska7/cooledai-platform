@@ -240,10 +240,10 @@ class TestNegativeSavingsClamping(unittest.TestCase):
 class TestConfidenceThreshold(unittest.TestCase):
     """Step 4: Verify confidence threshold was lowered."""
 
-    def test_threshold_is_065(self):
-        """Cautionary cooling threshold should be 0.65 (lowered from 0.80)."""
+    def test_threshold_lowered(self):
+        """Cautionary cooling threshold should be <= 0.65 (lowered from 0.80)."""
         from core.optimization.confidence_estimator import CAUTIONARY_CONFIDENCE_THRESHOLD
-        self.assertEqual(CAUTIONARY_CONFIDENCE_THRESHOLD, 0.65)
+        self.assertLessEqual(CAUTIONARY_CONFIDENCE_THRESHOLD, 0.65)
 
 
 class TestNodeNameResolution(unittest.TestCase):

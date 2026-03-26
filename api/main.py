@@ -2242,6 +2242,9 @@ async def get_thermal_history(
             # Skip collector-only rows with no meaningful thermal data
             if pt is None or pt == 0:
                 continue
+            # Skip rows where both RPMs are zero (collector artifact)
+            if (pr is not None and pr == 0) and (br is not None and br == 0):
+                continue
             pilot_cpu = out[5] if len(out) > 5 else None
             baseline_cpu = out[6] if len(out) > 6 else None
             pilot_gpu_pwr = out[7] if len(out) > 7 else None
@@ -2280,30 +2283,47 @@ async def get_thermal_history(
             },
         }
 
-    # Aggregate into hourly buckets
-    buckets_dict: Dict[int, List[Tuple[float, float]]] = {}
+    # Aggregate into hourly buckets — include ALL metrics from 11-tuple
+    buckets_dict: Dict[int, list] = {}
     for row in points:
         out = _history_row(row)
         ts, pt, bt = out[0], out[1], out[2]
         # Skip collector-only rows with no meaningful thermal data
         if pt is None or pt == 0:
             continue
+        pr = out[3]   # pilot RPM
+        br = out[4]   # baseline RPM
+        if (pr is not None and pr == 0) and (br is not None and br == 0):
+            continue
         hour_ts = int(ts // 3600) * 3600
-        buckets_dict.setdefault(hour_ts, []).append((pt, bt))
+        buckets_dict.setdefault(hour_ts, []).append(out)
     buckets = []
     for hour_ts in sorted(buckets_dict.keys()):
-        pts = buckets_dict[hour_ts]
-        pilot_avg = sum(p[0] for p in pts) / len(pts)
-        baseline_avg = sum(p[1] for p in pts) / len(pts)
+        rows = buckets_dict[hour_ts]
+        n = len(rows)
+
+        def _avg(idx: int) -> float | None:
+            vals = [r[idx] for r in rows if len(r) > idx and r[idx] is not None]
+            return round(sum(vals) / len(vals), 1) if vals else None
+
         dt = datetime.fromtimestamp(hour_ts, tz=timezone.utc)
-        buckets.append({
+        bucket: dict = {
             "hour_ts": hour_ts,
             "hour_label": dt.strftime("%H:%M"),
             "time": dt.strftime("%I %p"),
-            "pilot": round(pilot_avg, 1),
-            "baseline": round(baseline_avg, 1),
+            "pilot": _avg(1),
+            "baseline": _avg(2),
+            "pilot_fan_rpm": _avg(3),
+            "baseline_fan_rpm": _avg(4),
+            "pilot_cpu_temp": _avg(5),
+            "baseline_cpu_temp": _avg(6),
+            "pilot_gpu_power_w": _avg(7),
+            "baseline_gpu_power_w": _avg(8),
+            "pilot_peak_gpu_power_w": _avg(9),
+            "baseline_peak_gpu_power_w": _avg(10),
             "ts": hour_ts,
-        })
+        }
+        buckets.append(bucket)
     return {"buckets": buckets, "hours": hours}
 
 
