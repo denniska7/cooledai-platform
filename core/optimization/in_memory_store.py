@@ -9,7 +9,7 @@ StateBackend interface. Used by both the cloud API and the edge gateway
 import json
 import threading
 import logging
-from dataclasses import fields as dc_fields
+from dataclasses import asdict as dc_asdict, fields as dc_fields
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
@@ -163,3 +163,40 @@ class InMemoryStateStore:
             tmp.replace(fpath)
         except Exception as e:
             logger.warning("Failed to flush thermal history to %s: %s", fpath, e)
+
+    def load_calibration_from_file(self, path: str) -> None:
+        """Load calibration profiles from JSON file on disk."""
+        fpath = Path(path)
+        if not fpath.exists():
+            return
+        try:
+            raw = json.loads(fpath.read_text(encoding="utf-8"))
+            valid_fields = set(CalibrationProfile.__dataclass_fields__)
+            with self._profiles_lock:
+                for node_id, d in raw.items():
+                    try:
+                        filtered = {k: v for k, v in d.items() if k in valid_fields}
+                        self._profiles[node_id] = CalibrationProfile(**filtered)
+                    except Exception as exc:
+                        logger.debug("Skipped stale calibration for %s: %s", node_id, exc)
+            logger.info("Loaded calibration profiles from %s (%d nodes)", fpath, len(raw))
+        except Exception as e:
+            logger.warning("Failed to load calibration profiles from %s: %s", fpath, e)
+
+    def flush_calibration_to_file(self, path: str) -> None:
+        """Flush calibration profiles to JSON file on disk (atomic write)."""
+        fpath = Path(path)
+        try:
+            fpath.parent.mkdir(parents=True, exist_ok=True)
+            tmp = fpath.with_suffix(".tmp")
+            with self._profiles_lock:
+                data = {}
+                for node_id, profile in self._profiles.items():
+                    try:
+                        data[node_id] = dc_asdict(profile)
+                    except Exception:
+                        pass
+            tmp.write_text(json.dumps(data), encoding="utf-8")
+            tmp.replace(fpath)
+        except Exception as e:
+            logger.warning("Failed to flush calibration profiles to %s: %s", fpath, e)

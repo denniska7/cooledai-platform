@@ -85,6 +85,7 @@ class Gateway:
         self._api_thread: Optional[threading.Thread] = None
         self._async_thread: Optional[threading.Thread] = None
         self._async_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._persistence_thread: Optional[threading.Thread] = None
 
         self._init_optimization_service()
 
@@ -110,11 +111,15 @@ class Gateway:
             except Exception as e:
                 _logger.debug("Gateway: Redis unavailable: %s", e)
 
-            # Fallback to in-memory
+            # Fallback to in-memory with file persistence
             if store is None:
                 from core.optimization.in_memory_store import InMemoryStateStore
-                store = InMemoryStateStore()
-                _logger.info("Gateway: Using InMemoryStateStore (no persistence)")
+                store = InMemoryStateStore(
+                    thermal_history_file="data/gateway_thermal_history.json",
+                )
+                store.load_thermal_history_from_file()
+                store.load_calibration_from_file("data/gateway_calibration.json")
+                _logger.info("Gateway: Using InMemoryStateStore with file persistence")
 
             self._optimization_service = LocalOptimizationService(store)
             self._optimization_service._redis_available = getattr(store, "available", False)
@@ -223,6 +228,28 @@ class Gateway:
                 _logger.debug("Gateway: Heartbeat failed: %s", e)
             time.sleep(HEARTBEAT_INTERVAL)
 
+    def _persistence_loop(self) -> None:
+        """Thread 5: Flush state to disk every 60 seconds (InMemoryStateStore only)."""
+        while self._running:
+            time.sleep(60)
+            self._flush_state_to_disk()
+
+    def _flush_state_to_disk(self) -> None:
+        """Flush thermal history + calibration profiles to disk."""
+        if self._optimization_service is None:
+            return
+        # Skip if Redis is handling persistence
+        if getattr(self._optimization_service, "_redis_available", False):
+            return
+        try:
+            store = self._optimization_service.control_service._store
+            if hasattr(store, "flush_thermal_history_to_file"):
+                store.flush_thermal_history_to_file()
+            if hasattr(store, "flush_calibration_to_file"):
+                store.flush_calibration_to_file("data/gateway_calibration.json")
+        except Exception as e:
+            _logger.debug("Gateway: persistence flush error: %s", e)
+
     def _start_api_server(self) -> None:
         """Thread 3: Start uvicorn serving gateway/api.py."""
         try:
@@ -296,6 +323,14 @@ class Gateway:
         # Thread 4: Async event loop for CloudForwarder + PolicySyncer
         self._start_async_loop()
 
+        # Thread 5: Persistence (Phase 2 — file-based, 60s interval)
+        if not getattr(self._optimization_service, "_redis_available", False):
+            self._persistence_thread = threading.Thread(
+                target=self._persistence_loop, daemon=True, name="persistence"
+            )
+            self._persistence_thread.start()
+            _logger.info("Gateway: Persistence thread started (60s flush interval)")
+
         _logger.info(
             "Gateway: Started. CONTROL_MODE=%s. Backend=%s. API port=%d",
             self.control_gate.mode.value,
@@ -304,7 +339,8 @@ class Gateway:
         )
 
     def stop(self) -> None:
-        """Stop the gateway and all services."""
+        """Stop the gateway and all services. Flushes state before exit."""
+        self._flush_state_to_disk()
         self._running = False
         if self._async_loop:
             self._async_loop.call_soon_threadsafe(self._async_loop.stop)

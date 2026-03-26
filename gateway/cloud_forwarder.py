@@ -47,6 +47,9 @@ class CloudForwarder:
         self._total_batches_sent = 0
         self._total_entries_sent = 0
         self._total_failures = 0
+        self._consecutive_failures = 0
+        self._cloud_disconnected = False
+        self._DISCONNECT_THRESHOLD = 10  # consecutive failures before disconnected mode
 
     def enqueue(self, node_id: str, telemetry: dict, optimization_result: dict) -> None:
         """Thread-safe enqueue. Called from uvicorn thread (Thread 3)."""
@@ -89,10 +92,7 @@ class CloudForwarder:
         try:
             # Use aiohttp for non-blocking HTTP
             import aiohttp
-            import ssl
-            import certifi
-            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
-            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_ctx)) as session:
+            async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{self.cloud_url}/api/v1/gateway/telemetry-batch",
                     json=payload,
@@ -107,12 +107,14 @@ class CloudForwarder:
                         self._last_success = time.time()
                         self._total_batches_sent += 1
                         self._total_entries_sent += len(batch)
-                        logger.info("CloudForwarder: flushed %d entries (total: %d)", len(batch), self._total_entries_sent)
+                        if self._cloud_disconnected:
+                            logger.info("CloudForwarder: Cloud connection restored")
+                        self._consecutive_failures = 0
+                        self._cloud_disconnected = False
                     else:
-                        body_text = await resp.text()
                         logger.warning(
-                            "CloudForwarder: batch rejected (status=%d, entries=%d, body=%s)",
-                            resp.status, len(batch), body_text[:200],
+                            "CloudForwarder: batch rejected (status=%d, entries=%d)",
+                            resp.status, len(batch),
                         )
                         self._re_buffer(batch)
         except ImportError:
@@ -120,9 +122,16 @@ class CloudForwarder:
             logger.warning("CloudForwarder: aiohttp not available, using sync fallback")
             self._flush_sync(payload, batch)
         except Exception as e:
-            logger.warning("CloudForwarder: flush failed: %s", e)
+            logger.debug("CloudForwarder: flush failed: %s", e)
             self._connected = False
             self._total_failures += 1
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self._DISCONNECT_THRESHOLD and not self._cloud_disconnected:
+                self._cloud_disconnected = True
+                logger.warning(
+                    "CloudForwarder: Operating in cloud-disconnected mode (%d consecutive failures)",
+                    self._consecutive_failures,
+                )
             self._re_buffer(batch)
 
     def _flush_sync(self, payload: dict, batch: list) -> None:
@@ -140,11 +149,23 @@ class CloudForwarder:
                 self._last_success = time.time()
                 self._total_batches_sent += 1
                 self._total_entries_sent += len(batch)
+                if self._cloud_disconnected:
+                    logger.info("CloudForwarder: Cloud connection restored")
+                self._consecutive_failures = 0
+                self._cloud_disconnected = False
             else:
+                self._consecutive_failures += 1
                 self._re_buffer(batch)
         except Exception:
             self._connected = False
             self._total_failures += 1
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self._DISCONNECT_THRESHOLD and not self._cloud_disconnected:
+                self._cloud_disconnected = True
+                logger.warning(
+                    "CloudForwarder: Operating in cloud-disconnected mode (%d consecutive failures)",
+                    self._consecutive_failures,
+                )
             self._re_buffer(batch)
 
     def _re_buffer(self, batch: list) -> None:
@@ -162,9 +183,15 @@ class CloudForwarder:
     def seconds_since_last_sync(self) -> float:
         return time.time() - self._last_success
 
+    @property
+    def cloud_disconnected(self) -> bool:
+        return self._cloud_disconnected
+
     def stats(self) -> dict:
         return {
             "connected": self._connected,
+            "cloud_disconnected": self._cloud_disconnected,
+            "consecutive_failures": self._consecutive_failures,
             "seconds_since_last_sync": round(self.seconds_since_last_sync, 1),
             "total_batches_sent": self._total_batches_sent,
             "total_entries_sent": self._total_entries_sent,
