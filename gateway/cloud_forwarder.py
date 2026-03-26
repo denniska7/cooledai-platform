@@ -89,7 +89,10 @@ class CloudForwarder:
         try:
             # Use aiohttp for non-blocking HTTP
             import aiohttp
-            async with aiohttp.ClientSession() as session:
+            import ssl
+            import certifi
+            ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+            async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=ssl_ctx)) as session:
                 async with session.post(
                     f"{self.cloud_url}/api/v1/gateway/telemetry-batch",
                     json=payload,
@@ -104,10 +107,12 @@ class CloudForwarder:
                         self._last_success = time.time()
                         self._total_batches_sent += 1
                         self._total_entries_sent += len(batch)
+                        logger.info("CloudForwarder: flushed %d entries (total: %d)", len(batch), self._total_entries_sent)
                     else:
+                        body_text = await resp.text()
                         logger.warning(
-                            "CloudForwarder: batch rejected (status=%d, entries=%d)",
-                            resp.status, len(batch),
+                            "CloudForwarder: batch rejected (status=%d, entries=%d, body=%s)",
+                            resp.status, len(batch), body_text[:200],
                         )
                         self._re_buffer(batch)
         except ImportError:
@@ -115,7 +120,7 @@ class CloudForwarder:
             logger.warning("CloudForwarder: aiohttp not available, using sync fallback")
             self._flush_sync(payload, batch)
         except Exception as e:
-            logger.debug("CloudForwarder: flush failed: %s", e)
+            logger.warning("CloudForwarder: flush failed: %s", e)
             self._connected = False
             self._total_failures += 1
             self._re_buffer(batch)
