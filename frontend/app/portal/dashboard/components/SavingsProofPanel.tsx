@@ -99,6 +99,7 @@ export function SavingsProofPanel({
                   tickLine={false}
                 />
                 <YAxis
+                  yAxisId="watts"
                   tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 11 }}
                   axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
                   tickLine={false}
@@ -106,6 +107,21 @@ export function SavingsProofPanel({
                     value: "Watts",
                     angle: -90,
                     position: "insideLeft",
+                    fill: "rgba(255,255,255,0.3)",
+                    fontSize: 11,
+                  }}
+                />
+                <YAxis
+                  yAxisId="temp"
+                  orientation="right"
+                  tick={{ fill: "rgba(255,255,255,0.4)", fontSize: 11 }}
+                  axisLine={{ stroke: "rgba(255,255,255,0.1)" }}
+                  tickLine={false}
+                  domain={["dataMin - 5", "dataMax + 5"]}
+                  label={{
+                    value: "\u00B0C",
+                    angle: 90,
+                    position: "insideRight",
                     fill: "rgba(255,255,255,0.3)",
                     fontSize: 11,
                   }}
@@ -121,27 +137,50 @@ export function SavingsProofPanel({
                   labelFormatter={formatTime}
                 />
                 <Area
+                  yAxisId="watts"
                   type="monotone"
                   dataKey="baseline_w"
                   fill="url(#savingsGradient)"
                   stroke="none"
                 />
                 <Line
+                  yAxisId="watts"
                   type="monotone"
                   dataKey="baseline_w"
                   stroke="#6b7280"
                   strokeWidth={1.5}
                   strokeDasharray="4 4"
                   dot={false}
-                  name="Baseline"
+                  name="Baseline Fan W"
                 />
                 <Line
+                  yAxisId="watts"
                   type="monotone"
                   dataKey="optimized_w"
                   stroke="#3b82f6"
                   strokeWidth={2}
                   dot={false}
-                  name="Optimized"
+                  name="CooledAI Fan W"
+                />
+                <Line
+                  yAxisId="temp"
+                  type="monotone"
+                  dataKey="cpu_pilot_c"
+                  stroke="#f97316"
+                  strokeWidth={1.5}
+                  dot={false}
+                  name="CooledAI CPU \u00B0C"
+                />
+                <Line
+                  yAxisId="temp"
+                  type="monotone"
+                  dataKey="cpu_baseline_c"
+                  stroke="#f97316"
+                  strokeWidth={1}
+                  strokeDasharray="4 4"
+                  dot={false}
+                  name="Control CPU \u00B0C"
+                  opacity={0.5}
                 />
               </ComposedChart>
             </ResponsiveContainer>

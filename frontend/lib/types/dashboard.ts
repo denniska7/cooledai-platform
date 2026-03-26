@@ -37,6 +37,10 @@ export type SavingsChartPoint = {
   optimized_w: number;
   baseline_w: number;
   delta_w: number;
+  gpu_pilot_c?: number;
+  gpu_baseline_c?: number;
+  cpu_pilot_c?: number;
+  cpu_baseline_c?: number;
 };
 
 export type Alert = {

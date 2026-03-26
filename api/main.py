@@ -2681,13 +2681,20 @@ async def get_savings_chart(
     hours: int = 24,
     owner_id: str = Depends(_require_api_key_or_clerk),
 ):
-    """Pre-computed wattage chart data for the savings proof panel."""
+    """Pre-computed wattage chart data for the savings proof panel.
+
+    Returns time-bucketed averages (60-second windows) for smooth chart
+    rendering.  Includes fan power (watts), GPU temp, and CPU temp.
+    """
     now = time.time()
     cutoff = now - (hours * 3600)
     history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
 
-    points = []
+    # --- Aggregate into 60-second time buckets for smooth lines ---
+    BUCKET_SECS = 60
+    buckets: dict = {}  # bucket_key -> list of (opt_w, base_w, delta_w, gpu_pilot, gpu_base, cpu_pilot, cpu_base)
     total_saved_wh = 0.0
+
     for row in history:
         hr = _history_row(row)
         ts, p_rpm, b_rpm = hr[0], hr[3], hr[4]
@@ -2697,16 +2704,50 @@ async def get_savings_chart(
         base_w = _fan_power_watts(b_rpm)
         delta_w = max(0.0, base_w - opt_w)
         total_saved_wh += delta_w * (5.0 / 3600.0)
-        points.append({
-            "ts": round(ts, 1),
-            "optimized_w": round(opt_w, 2),
-            "baseline_w": round(base_w, 2),
-            "delta_w": round(delta_w, 2),
-        })
 
-    # Downsample to max 500 points
-    if len(points) > 500:
-        step = len(points) // 500
+        # Temperatures from thermal history row
+        gpu_pilot = hr[1]    # pilot GPU temp
+        gpu_base = hr[2]     # baseline GPU temp
+        cpu_pilot = hr[5]    # pilot CPU temp (may be None)
+        cpu_base = hr[6]     # baseline CPU temp (may be None)
+
+        bucket_key = int(ts // BUCKET_SECS) * BUCKET_SECS
+        if bucket_key not in buckets:
+            buckets[bucket_key] = []
+        buckets[bucket_key].append((opt_w, base_w, delta_w, gpu_pilot, gpu_base, cpu_pilot, cpu_base))
+
+    # Average each bucket
+    points = []
+    for bk in sorted(buckets.keys()):
+        entries = buckets[bk]
+        n = len(entries)
+        avg_opt = sum(e[0] for e in entries) / n
+        avg_base = sum(e[1] for e in entries) / n
+        avg_delta = sum(e[2] for e in entries) / n
+        avg_gpu_p = sum(e[3] for e in entries if e[3] is not None) / max(1, sum(1 for e in entries if e[3] is not None)) if any(e[3] is not None for e in entries) else None
+        avg_gpu_b = sum(e[4] for e in entries if e[4] is not None) / max(1, sum(1 for e in entries if e[4] is not None)) if any(e[4] is not None for e in entries) else None
+        avg_cpu_p = sum(e[5] for e in entries if e[5] is not None) / max(1, sum(1 for e in entries if e[5] is not None)) if any(e[5] is not None for e in entries) else None
+        avg_cpu_b = sum(e[6] for e in entries if e[6] is not None) / max(1, sum(1 for e in entries if e[6] is not None)) if any(e[6] is not None for e in entries) else None
+
+        point: dict = {
+            "ts": round(float(bk) + BUCKET_SECS / 2, 1),  # bucket midpoint
+            "optimized_w": round(avg_opt, 2),
+            "baseline_w": round(avg_base, 2),
+            "delta_w": round(avg_delta, 2),
+        }
+        if avg_gpu_p is not None:
+            point["gpu_pilot_c"] = round(avg_gpu_p, 1)
+        if avg_gpu_b is not None:
+            point["gpu_baseline_c"] = round(avg_gpu_b, 1)
+        if avg_cpu_p is not None:
+            point["cpu_pilot_c"] = round(avg_cpu_p, 1)
+        if avg_cpu_b is not None:
+            point["cpu_baseline_c"] = round(avg_cpu_b, 1)
+        points.append(point)
+
+    # Cap at 1440 points (1 per minute for 24h)
+    if len(points) > 1440:
+        step = len(points) // 1440
         points = points[::step]
 
     return {
