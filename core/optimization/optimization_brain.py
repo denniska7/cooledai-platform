@@ -660,7 +660,7 @@ class OptimizationBrain:
 
     def __init__(
         self,
-        target_temp: float = 65.0,
+        target_temp: float = 75.0,
         lag_threshold_seconds: float = 5.0,
         over_provision_threshold: float = 0.15,
         oscillation_threshold: float = 0.2,
