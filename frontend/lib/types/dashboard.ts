@@ -31,6 +31,8 @@ export type DashboardSummary = {
   currency: string;
   carbon_intensity_kg_per_kwh: number;
   operational_mode?: "shadow" | "supervised" | "active";
+  projected_monthly_usd?: number;
+  projected_annual_usd?: number;
 };
 
 export type SavingsChartPoint = {

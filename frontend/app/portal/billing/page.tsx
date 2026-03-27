@@ -1,8 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { motion } from "framer-motion";
+import { useAuth } from "@clerk/nextjs";
+import { api } from "@/lib/api";
 import { LeadFormModal } from "../../../components/LeadFormModal";
 
 const tiers = [
@@ -57,7 +59,30 @@ const tiers = [
 ];
 
 export default function BillingPage() {
+  const { getToken } = useAuth();
   const [leadModalOpen, setLeadModalOpen] = useState(false);
+  const [stats, setStats] = useState<Record<string, unknown> | null>(null);
+  const [projection, setProjection] = useState<Record<string, unknown> | null>(null);
+
+  const fetchData = useCallback(async () => {
+    try {
+      const token = await getToken();
+      const [sRes, pRes] = await Promise.all([
+        api.getStats(token),
+        api.getSavingsProjection(token),
+      ]);
+      if (sRes.ok) setStats(await sRes.json());
+      if (pRes.ok) setProjection(await pRes.json());
+    } catch { /* ignore */ }
+  }, [getToken]);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
+
+  const nodesMonitored = 2;
+  const uptimeH = (stats?.uptime_hours as number) ?? 0;
+  const savedKwh = (stats?.power_reclaimed_kwh as number) ?? 0;
+  const annualCo2 = (projection?.projected_co2_avoided_kg as number) ?? 0;
+  const annualUsd = (projection?.projected_annual_usd_saved as number) ?? 0;
 
   return (
     <div className="p-6 md:p-8 max-w-6xl mx-auto">
@@ -69,6 +94,37 @@ export default function BillingPage() {
         <h1 className="text-2xl font-semibold tracking-tight text-white">Plan Selection</h1>
         <p className="text-sm text-white/50 mt-0.5">Choose the tier that fits your facility</p>
       </motion.div>
+
+      {/* Usage Summary */}
+      <motion.div
+        initial={{ opacity: 0, y: 12 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.05 }}
+        className="mt-6 grid grid-cols-2 md:grid-cols-4 gap-4"
+      >
+        {[
+          { label: "Nodes Monitored", value: String(nodesMonitored) },
+          { label: "Uptime", value: `${uptimeH.toFixed(1)}h` },
+          { label: "Energy Saved", value: `${savedKwh.toFixed(2)} kWh` },
+          { label: "CO\u2082 Avoided", value: `${annualCo2.toFixed(1)} kg/yr` },
+        ].map((s) => (
+          <div key={s.label} className="rounded-xl border border-white/10 bg-[#141414] p-4">
+            <p className="text-xs text-white/50 uppercase tracking-wider">{s.label}</p>
+            <p className="text-lg font-bold text-white mt-1">{s.value}</p>
+          </div>
+        ))}
+      </motion.div>
+
+      {annualUsd > 0 && (
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.1 }}
+          className="mt-4 rounded-xl border border-[#00FFCC]/20 bg-[#00FFCC]/5 p-4 text-sm text-white/80"
+        >
+          Projected savings: <span className="font-semibold text-[#00FFCC]">${annualUsd.toFixed(0)}/year</span> at current rates ($0.12/kWh)
+        </motion.div>
+      )}
 
       <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-6">
         {tiers.map((tier, i) => (

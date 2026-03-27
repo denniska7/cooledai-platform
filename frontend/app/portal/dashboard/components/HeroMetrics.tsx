@@ -22,34 +22,52 @@ export function HeroMetrics({
   loading: boolean;
   onStatusClick: () => void;
 }) {
-  // Card 1: Saved This Month
+  const isShadow = data?.operational_mode === "shadow";
+
+  // Card 1: Saved This Month (with projected in shadow mode)
   let savedValue = "--";
   let savedSublabel: string | undefined;
   if (data) {
-    if (data.savings_confidence === "HIGH") {
-      savedValue = formatUSD(data.saved_this_month_usd);
-    } else if (data.savings_confidence === "MEDIUM") {
-      const low = Math.round(data.saved_this_month_usd * 0.8);
-      const high = Math.round(data.saved_this_month_usd * 1.2);
-      savedValue = `${formatUSD(low)} \u2013 ${formatUSD(high)}`;
+    if (data.saved_this_month_usd > 0) {
+      if (data.savings_confidence === "HIGH") {
+        savedValue = formatUSD(data.saved_this_month_usd);
+      } else {
+        const low = Math.round(data.saved_this_month_usd * 0.8);
+        const high = Math.round(data.saved_this_month_usd * 1.2);
+        savedValue = `${formatUSD(low)} \u2013 ${formatUSD(high)}`;
+      }
+    } else if (isShadow && data.projected_monthly_usd && data.projected_monthly_usd > 0) {
+      savedValue = "$0";
+      savedSublabel = `Projected if active: ~${formatUSD(data.projected_monthly_usd)}/mo`;
     } else {
-      const low = Math.round(data.saved_this_month_usd * 0.5);
-      const high = Math.round(data.saved_this_month_usd * 1.5);
-      savedValue = `${formatUSD(low)} \u2013 ${formatUSD(high)}`;
-      savedSublabel =
-        "Workload shifted \u2014 estimate based on fan savings only";
+      savedValue = "$0";
+      savedSublabel = isShadow ? "Switch to Active to start saving" : undefined;
     }
   }
 
-  // Card 2: System Efficiency
-  const efficiencyValue = data
-    ? `${data.system_efficiency_today_pct.toFixed(1)}%`
-    : "--";
+  // Card 2: System Efficiency (show calibration progress in shadow)
+  let efficiencyValue = "--";
+  if (data) {
+    if (data.system_efficiency_today_pct > 0) {
+      efficiencyValue = `${data.system_efficiency_today_pct.toFixed(1)}%`;
+    } else if (isShadow) {
+      efficiencyValue = `Calibrating (${data.calibration_confidence_pct ?? 0}%)`;
+    } else {
+      efficiencyValue = "0.0%";
+    }
+  }
 
   // Card 3: Projected Annual Savings
-  const annualValue = data
-    ? `${formatUSD(data.projected_annual_savings_low_usd)} \u2013 ${formatUSD(data.projected_annual_savings_high_usd)}`
-    : "--";
+  let annualValue = "--";
+  if (data) {
+    if (data.projected_annual_savings_low_usd > 0) {
+      annualValue = `${formatUSD(data.projected_annual_savings_low_usd)} \u2013 ${formatUSD(data.projected_annual_savings_high_usd)}`;
+    } else if (isShadow && data.projected_annual_usd && data.projected_annual_usd > 0) {
+      annualValue = `~${formatUSD(data.projected_annual_usd)}`;
+    } else {
+      annualValue = "$0";
+    }
+  }
 
   return (
     <div className="relative">

@@ -1844,6 +1844,10 @@ _tenant_mode: Dict[str, dict] = {}
 _mode_audit_log: List[dict] = []
 _MAX_THERMAL_HISTORY_POINTS = 60 * 24 * 60 * 12  # 60 days at 5s interval
 
+# ── Activity feed (brain decisions log) ──────────────────────────────
+_activity_feed: List[dict] = []  # Last N brain decisions, newest first
+_MAX_ACTIVITY_FEED = 100
+
 # ── Thermal history persistence ──────────────────────────────────────
 # Flush in-memory thermal history to JSON every 60 s so CSV exports
 # survive Railway redeploys and container restarts.
@@ -2725,6 +2729,27 @@ async def get_dashboard_summary(
         "currency": _BILLING_CURRENCY,
         "carbon_intensity_kg_per_kwh": _CARBON_INTENSITY,
         "operational_mode": _get_tenant_mode(owner_id).get("mode", "shadow"),
+        # Projected savings for shadow mode (what brain WOULD save)
+        "projected_monthly_usd": round(
+            sum(
+                max(0.0, _fan_power_watts(_history_row(r)[4]) - _fan_power_watts(_history_row(r)[3]))
+                for r in history
+                if _history_row(r)[1] and _history_row(r)[1] != 0
+                and _history_row(r)[3] is not None and _history_row(r)[4] is not None
+                and _history_row(r)[3] < _history_row(r)[4]
+            ) / max(1, len([1 for r in history if _history_row(r)[1] and _history_row(r)[1] != 0]))
+            * 8760 / 12 / 1000.0 * _USD_PER_KWH, 2
+        ),
+        "projected_annual_usd": round(
+            sum(
+                max(0.0, _fan_power_watts(_history_row(r)[4]) - _fan_power_watts(_history_row(r)[3]))
+                for r in history
+                if _history_row(r)[1] and _history_row(r)[1] != 0
+                and _history_row(r)[3] is not None and _history_row(r)[4] is not None
+                and _history_row(r)[3] < _history_row(r)[4]
+            ) / max(1, len([1 for r in history if _history_row(r)[1] and _history_row(r)[1] != 0]))
+            * 8760 / 1000.0 * _USD_PER_KWH, 2
+        ),
     }
 
 
@@ -3010,6 +3035,25 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
         oldest_ts = min(float(r[0]) for r in history)
         data_hours = (now - oldest_ts) / 3600.0
 
+    # --- Projected savings (what brain WOULD save in active mode) ---
+    projected_power_w = 0.0
+    brain_rec_count = 0
+    total_rpm_reduction = 0.0
+    for row in history:
+        hr = _history_row(row)
+        if hr[1] is None or hr[1] == 0:
+            continue
+        p_rpm, b_rpm = hr[3], hr[4]
+        if p_rpm is not None and b_rpm is not None and p_rpm < b_rpm:
+            projected_power_w += _fan_power_watts(b_rpm) - _fan_power_watts(p_rpm)
+            brain_rec_count += 1
+            total_rpm_reduction += (b_rpm - p_rpm)
+    avg_projected_w = projected_power_w / brain_rec_count if brain_rec_count > 0 else 0.0
+    avg_rpm_reduction = total_rpm_reduction / brain_rec_count if brain_rec_count > 0 else 0.0
+    # Annualize: avg watts * 8760 hours / 1000 → kWh * USD
+    projected_annual_usd = (avg_projected_w * 8760.0 / 1000.0) * _USD_PER_KWH
+    projected_monthly_usd = projected_annual_usd / 12.0
+
     has_live = bool(pilot)
     pilot_age = (now - pilot["_received_at"]) if pilot.get("_received_at") else None
     baseline_age = (now - baseline["_received_at"]) if baseline.get("_received_at") else None
@@ -3067,6 +3111,18 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
         "calibration_updated_at": calib_updated_at,
         "data_hours": round(data_hours, 1),
         "operational_mode": _get_tenant_mode(owner_id).get("mode", "shadow"),
+        # Projected savings (what brain would save in active mode)
+        "projected_savings_usd": round(projected_annual_usd, 2),
+        "projected_monthly_usd": round(projected_monthly_usd, 2),
+        "projected_power_reduction_watts": round(avg_projected_w, 2),
+        "projected_efficiency_gain_pct": round(
+            (avg_projected_w / _fan_power_watts(baseline_rpm) * 100.0) if baseline_rpm and baseline_rpm > 0 else 0.0, 1
+        ),
+        "brain_recommendations_count": brain_rec_count,
+        "brain_avg_recommended_rpm_reduction": round(avg_rpm_reduction, 0),
+        # Per-GPU power arrays
+        "pilot_node_gpu_powers_w": pilot.get("gpu_powers_w", []),
+        "baseline_node_gpu_powers_w": baseline.get("gpu_powers_w", []) if baseline else [],
     }
 
 
@@ -3126,6 +3182,63 @@ async def get_hourly_facility_metrics(owner_id: str = Depends(_require_api_key_o
         "period_hours": 1,
         "pilot_samples": len(pilot_rpms),
         "control_samples": len(baseline_rpms),
+    }
+
+
+@app.get("/api/v1/activity-feed")
+async def get_activity_feed(
+    limit: int = 20,
+    owner_id: str = Depends(_require_api_key_or_clerk),
+):
+    """Recent brain decisions and telemetry events for the activity feed."""
+    entries = _activity_feed[:min(limit, 100)]
+    return {
+        "entries": entries,
+        "total": len(_activity_feed),
+    }
+
+
+@app.get("/api/v1/savings-projection")
+async def get_savings_projection(owner_id: str = Depends(_require_api_key_or_clerk)):
+    """Detailed savings breakdown — what CooledAI would save in active mode."""
+    now = time.time()
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    mode_state = _get_tenant_mode(owner_id)
+
+    total_delta_w = 0.0
+    count = 0
+    for row in history:
+        hr = _history_row(row)
+        if hr[1] is None or hr[1] == 0:
+            continue
+        p_rpm, b_rpm = hr[3], hr[4]
+        if p_rpm is not None and b_rpm is not None and p_rpm < b_rpm:
+            total_delta_w += _fan_power_watts(b_rpm) - _fan_power_watts(p_rpm)
+            count += 1
+
+    avg_delta_w = total_delta_w / count if count > 0 else 0.0
+    annual_kwh = avg_delta_w * 8760 / 1000.0
+    annual_usd = annual_kwh * _USD_PER_KWH
+    co2_kg = annual_kwh * _CARBON_INTENSITY
+
+    data_hours = 0.0
+    if history:
+        oldest = min(float(r[0]) for r in history)
+        data_hours = (now - oldest) / 3600.0
+
+    return {
+        "mode": mode_state.get("mode", "shadow"),
+        "avg_power_reduction_watts": round(avg_delta_w, 2),
+        "recommendations_with_savings": count,
+        "total_data_points": len(history),
+        "data_hours": round(data_hours, 1),
+        "projected_annual_kwh_saved": round(annual_kwh, 1),
+        "projected_annual_usd_saved": round(annual_usd, 2),
+        "projected_monthly_usd_saved": round(annual_usd / 12, 2),
+        "projected_co2_avoided_kg": round(co2_kg, 1),
+        "electricity_rate_usd_per_kwh": _USD_PER_KWH,
+        "carbon_intensity_kg_per_kwh": _CARBON_INTENSITY,
+        "fan_affinity_formula": "P = (RPM / 7000)^3 * 12W * 6 fans",
     }
 
 
@@ -4445,6 +4558,36 @@ async def ingest_gateway_batch(body: GatewayBatchInput, owner_id: str = Depends(
                     if opt_result.get("target_duty") is not None:
                         node_data["optimized_duty"] = opt_result["target_duty"]
                     tenant[node_id] = node_data
+
+                # Log to activity feed
+                opt = entry.optimization or {}
+                source = opt.get("source", "unknown")
+                target_rpm_val = opt.get("target_rpm")
+                if target_rpm_val is not None and temp_c > 0:
+                    saving_w = max(0.0, _fan_power_watts(fan_rpm) - _fan_power_watts(target_rpm_val))
+                    feed_entry = {
+                        "ts": time.time(),
+                        "type": "optimization" if "brain" in source else "telemetry",
+                        "node_id": node_id,
+                        "message": (
+                            f"Brain recommended {int(target_rpm_val)} RPM "
+                            f"(current: {int(fan_rpm)}) — "
+                            f"{'saving' if saving_w > 0 else 'margin'} {saving_w:.1f}W"
+                        ) if "brain" in source else (
+                            f"Telemetry: GPU {temp_c:.0f}°C, "
+                            f"{'CPU ' + str(round(cpu_temp_c, 0)) + '°C, ' if cpu_temp_c else ''}"
+                            f"Fan {int(fan_rpm)} RPM"
+                        ),
+                        "gpu_temp_c": temp_c,
+                        "fan_rpm": fan_rpm,
+                        "target_rpm": target_rpm_val,
+                        "saving_w": round(saving_w, 1),
+                        "source": source,
+                        "confidence_pct": opt.get("confidence_pct"),
+                    }
+                    _activity_feed.insert(0, feed_entry)
+                    if len(_activity_feed) > _MAX_ACTIVITY_FEED:
+                        _activity_feed.pop()
 
                 processed += 1
         except Exception as e:

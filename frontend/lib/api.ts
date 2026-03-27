@@ -159,4 +159,16 @@ export const api = {
     apiFetch(`/api/v1/savings-chart?hours=${hours}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : undefined,
     }),
+  getActivityFeed: (limit: number = 20, token?: string | null) =>
+    apiFetch(`/api/v1/activity-feed?limit=${limit}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    }),
+  getSavingsProjection: (token?: string | null) =>
+    apiFetch("/api/v1/savings-projection", {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    }),
+  getGatewayMode: (token?: string | null) =>
+    apiFetch("/api/v1/gateway/mode", {
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    }),
 };

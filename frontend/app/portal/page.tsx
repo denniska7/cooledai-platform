@@ -11,6 +11,7 @@ import { LivePerformancePanel } from "./dashboard/components/LivePerformancePane
 import { CarbonPanel } from "./dashboard/components/CarbonPanel";
 import { AlertDrawer } from "./dashboard/components/AlertDrawer";
 import { ModeToggle } from "./dashboard/components/ModeToggle";
+import { ActivityFeed } from "./dashboard/components/ActivityFeed";
 
 export default function PortalPage() {
   const { getToken } = useAuth();
@@ -66,6 +67,10 @@ export default function PortalPage() {
 
       <div className="mb-6">
         <SavingsProofPanel data={data} loading={loading} />
+      </div>
+
+      <div className="mb-6">
+        <ActivityFeed />
       </div>
 
       <div className="mb-6">

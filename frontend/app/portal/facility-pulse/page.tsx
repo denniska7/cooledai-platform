@@ -4,6 +4,7 @@ import { motion } from "framer-motion";
 import { useState, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@clerk/nextjs";
+import { ComparisonChart } from "./ComparisonChart";
 
 function LeafIcon({ className }: { className?: string }) {
   return (
@@ -179,6 +180,11 @@ export default function FacilityPulsePage() {
           </div>
           <p className="text-xs text-white/40 mt-2">Based on efficiency delta vs baseline</p>
         </motion.div>
+      </div>
+
+      {/* Multi-Metric Comparison Chart */}
+      <div className="mt-8">
+        <ComparisonChart />
       </div>
 
       {/* Tracked servers — predictive vs traditional */}
