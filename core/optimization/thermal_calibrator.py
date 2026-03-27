@@ -451,7 +451,9 @@ class ThermalCalibrator:
             cpu_std = float(np.std(cpu_arr))
             if cpu_std < 0.5:
                 cpu_std = 0.5
-            cpu_ceiling = cpu_mean + 2.0 * cpu_std
+            # CPU ceiling: use 3σ with a minimum of 55°C to avoid false
+            # thermal guard triggers during normal operation (mean~37°C).
+            cpu_ceiling = max(55.0, cpu_mean + 3.0 * cpu_std)
         else:
             cpu_mean = 0.0
             cpu_std = 0.0
@@ -462,7 +464,10 @@ class ThermalCalibrator:
 
         # --- Derived thresholds ---
         active_floor = fan_idle + fan_range * 0.12
-        active_trigger_w = gpu_idle * 1.30
+        # Active compute trigger: must be well above idle to avoid false positives.
+        # gpu_idle * 1.30 is too tight when idle is low (7W → 9W trigger).
+        # Use max(50W, gpu_idle * 2.5) so real GPU work (50W+) triggers, not noise.
+        active_trigger_w = max(50.0, gpu_idle * 2.5)
         spike_hold_floor = fan_ceiling * 1.10
         # Spike trigger: derive from HW limit with safety margin, not p99.
         # Old formula (temp_mean + 2.5σ) placed trigger too close to normal ops.

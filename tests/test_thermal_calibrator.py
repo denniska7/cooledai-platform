@@ -121,7 +121,7 @@ class TestProfileComputation:
             p.fan_idle_rpm + fan_range * 0.12, rel=0.01,
         )
         assert p.active_compute_trigger_w == pytest.approx(
-            p.gpu_idle_w * 1.30, rel=0.01,
+            max(50.0, p.gpu_idle_w * 2.5), rel=0.01,
         )
         # spike_hold_fan_floor = fan_ceiling * 1.10 (clamped to rated*0.95)
         raw_spike_floor = p.fan_ceiling_rpm * 1.10
