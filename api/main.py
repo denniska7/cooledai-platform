@@ -2677,16 +2677,13 @@ async def get_dashboard_summary(
         idle_periods += int(gov.get("idle_periods_24h", 0))
         idle_wh += float(gov.get("idle_wh_saved_24h", 0))
 
-    # --- Calibration status ---
+    # --- Calibration status (unified with /gateway/mode) ---
+    _, _, calib_confidence, _ = _check_activation_prerequisites(owner_id)
+    # Use most recent thermal history timestamp as "last updated"
     calib_updated = None
-    calib_confidence = None
-    for nid in agent_keys:
-        node_data = all_nodes.get(nid, {})
-        cp = node_data.get("calibration_profile", {})
-        if isinstance(cp, dict) and cp.get("calibration_state") == "CALIBRATED":
-            calib_updated = cp.get("saved_at")
-            calib_confidence = cp.get("sample_count", 0) / 3.0  # rough confidence %
-            calib_confidence = min(100.0, calib_confidence)
+    if history:
+        newest_ts = max(float(r[0]) for r in history)
+        calib_updated = datetime.fromtimestamp(newest_ts, tz=timezone.utc).isoformat()
 
     # --- System status ---
     system_status = "green"
@@ -3012,28 +3009,14 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
     annual_kwh = (reclaimed_kwh / uptime_h * 8760.0) if uptime_h > 0.1 else 0.0
     annual_savings = annual_kwh * _USD_PER_KWH
 
-    # Calibration status from pilot node's calibration profile
-    calib_profile = pilot.get("calibration_profile", {})
-    calib_updated_at = None
-    calib_confidence_pct = None
-    if isinstance(calib_profile, dict) and calib_profile.get("calibration_state") == "CALIBRATED":
-        calib_updated_at = calib_profile.get("saved_at")
-        sample_count = calib_profile.get("sample_count", 0)
-        calib_confidence_pct = min(100.0, sample_count / 3.0)
-    # Fallback: compute confidence from thermal history diversity
-    if calib_confidence_pct is None and history:
-        unique_rpms = set()
-        for row in history:
-            hr = _history_row(row)
-            if hr[3] is not None and hr[1] is not None and hr[1] != 0:
-                unique_rpms.add(round(float(hr[3]), -1))
-        calib_confidence_pct = min(100.0, len(unique_rpms) * 10.0)
+    # Calibration status — unified with /gateway/mode using same function
+    _, _, calib_confidence_pct, data_hours = _check_activation_prerequisites(owner_id)
 
-    # Data hours from thermal history
-    data_hours = 0.0
+    # calibration_updated_at: use most recent thermal history timestamp
+    calib_updated_at = None
     if history:
-        oldest_ts = min(float(r[0]) for r in history)
-        data_hours = (now - oldest_ts) / 3600.0
+        newest_ts = max(float(r[0]) for r in history)
+        calib_updated_at = datetime.fromtimestamp(newest_ts, tz=timezone.utc).isoformat()
 
     # --- Projected savings (what brain WOULD save in active mode) ---
     projected_power_w = 0.0

@@ -158,7 +158,12 @@ export function HardwareIntelligencePanel({
               <p className="text-xs text-white/50 mt-1">
                 Last updated:{" "}
                 {data?.calibration_last_updated
-                  ? new Date(data.calibration_last_updated).toLocaleDateString()
+                  ? (() => {
+                      const ago = Math.round((Date.now() - new Date(data.calibration_last_updated).getTime()) / 1000);
+                      if (ago < 60) return `${ago}s ago`;
+                      if (ago < 3600) return `${Math.round(ago / 60)} min ago`;
+                      return `${Math.round(ago / 3600)}h ago`;
+                    })()
                   : "Never"}
               </p>
               <p className="text-xs text-white/50 mt-0.5">
