@@ -687,9 +687,49 @@ except Exception:
 _cooling_unit_previous_state: Dict[str, Any] = {}
 
 # Phase 6.2: Deploy version + per-node recommendation tracking for /debug/brain-state
-DEPLOY_VERSION = "6.3"
+DEPLOY_VERSION = "6.4"
 _last_brain_recommendation: Dict[str, dict] = {}
 _last_brain_recommendation_lock = threading.Lock()
+
+# Phase 6.4: Activity feed — in-memory log of brain recommendations
+_activity_feed: list = []  # newest first
+_activity_feed_lock = threading.Lock()
+_MAX_ACTIVITY_ENTRIES = 200
+
+
+def _append_activity_entry(node_id: str, temp_c: float, fan_rpm: float, result: dict) -> None:
+    """Build and append an activity feed entry from a brain recommendation."""
+    target_rpm = result.get("target_rpm", fan_rpm)
+    source = result.get("source", "unknown")
+    delta = result.get("recommended_cooling_delta", 0)
+    saving_w = max(0, _fan_power_watts(fan_rpm) - _fan_power_watts(target_rpm))
+
+    if delta < -0.01:
+        msg = f"Reducing fans to {target_rpm:.0f} RPM (saving {saving_w:.1f}W)"
+        action = "reducing"
+    elif delta > 0.01:
+        msg = f"Increasing fans to {target_rpm:.0f} RPM (thermal protection)"
+        action = "increasing"
+    else:
+        msg = f"Holding fans at {fan_rpm:.0f} RPM (optimal)"
+        action = "holding"
+
+    entry = {
+        "ts": int(time.time()),
+        "type": f"brain_{action}",
+        "node_id": node_id,
+        "message": msg,
+        "gpu_temp_c": round(temp_c, 1),
+        "fan_rpm": round(fan_rpm),
+        "target_rpm": round(target_rpm),
+        "saving_w": round(saving_w, 2),
+        "delta": round(delta, 4),
+        "source": source,
+    }
+    with _activity_feed_lock:
+        _activity_feed.insert(0, entry)
+        if len(_activity_feed) > _MAX_ACTIVITY_ENTRIES:
+            _activity_feed.pop()
 
 # Shadow mode: when True, proposed actions are logged to shadow_logs and no writes are sent to hardware
 try:
@@ -1887,6 +1927,9 @@ def _append_thermal_history(owner_id: str, now_ts: float) -> None:
     # Phase 6.3: baseline_temp can be None — use pilot_temp as surrogate for chart compatibility
     if baseline_temp is None:
         baseline_temp = pilot_temp
+    # Phase 6.4: baseline_rpm surrogate so savings chart renders
+    if baseline_rpm is None:
+        baseline_rpm = _BASELINE_FAN_RPM if _BASELINE_FAN_RPM > 0 else pilot_rpm
     history = _thermal_history.setdefault(owner_id, [])
     # Carry forward last non-zero GPU power when 0 (NVML/nvidia-smi often report 0 when idle)
     if history and (pilot_gpu_pwr == 0 or baseline_gpu_pwr == 0):
@@ -2590,8 +2633,11 @@ async def get_savings_chart(
     for row in history:
         hr = _history_row(row)
         ts, p_rpm, b_rpm = hr[0], hr[3], hr[4]
-        if ts < cutoff or p_rpm is None or b_rpm is None:
+        if ts < cutoff or p_rpm is None:
             continue
+        # Phase 6.4: handle missing baseline RPM gracefully
+        if b_rpm is None:
+            b_rpm = _BASELINE_FAN_RPM if _BASELINE_FAN_RPM > 0 else p_rpm
         opt_w = _fan_power_watts(p_rpm)
         base_w = _fan_power_watts(b_rpm)
         delta_w = max(0.0, base_w - opt_w)
@@ -2866,6 +2912,110 @@ async def debug_brain_state():
         "pilot_found": pilot_found,
         "baseline_found": baseline_found,
         "tenant_node_count": len(tenant_nodes),
+    }
+
+
+@app.get("/api/v1/activity-feed")
+async def get_activity_feed(
+    limit: int = 15,
+    owner_id: str = Depends(_require_api_key_or_clerk),
+):
+    """Recent brain recommendation activity for the portal dashboard."""
+    with _activity_feed_lock:
+        entries = list(_activity_feed[:limit])
+    return {"entries": entries, "total": len(_activity_feed)}
+
+
+@app.get("/api/v1/savings-projection")
+async def get_savings_projection(
+    owner_id: str = Depends(_require_api_key_or_clerk),
+):
+    """Projected savings from thermal optimization for the savings roadmap."""
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    now = time.time()
+
+    total_saved_w = 0.0
+    n_points = 0
+    for row in history:
+        hr = _history_row(row)
+        p_rpm, b_rpm = hr[3], hr[4]
+        if p_rpm is None:
+            continue
+        if b_rpm is None:
+            b_rpm = _BASELINE_FAN_RPM if _BASELINE_FAN_RPM > 0 else p_rpm
+        delta_w = max(0.0, _fan_power_watts(b_rpm) - _fan_power_watts(p_rpm))
+        total_saved_w += delta_w
+        n_points += 1
+
+    avg_saved_w = total_saved_w / n_points if n_points > 0 else 0.0
+    data_hours = 0.0
+    if len(history) >= 2:
+        try:
+            data_hours = (float(history[-1][0]) - float(history[0][0])) / 3600.0
+        except (TypeError, ValueError):
+            pass
+
+    # Projections
+    hours_per_year = 8760
+    hours_per_month = 730
+    annual_kwh = avg_saved_w * hours_per_year / 1000.0
+    monthly_kwh = avg_saved_w * hours_per_month / 1000.0
+    co2_factor = 0.42  # kg CO2/kWh US grid average
+
+    # Count unique nodes
+    tenant_nodes = _tenant_telemetry.get(owner_id, {})
+    nodes_monitored = len([k for k in tenant_nodes if "/" not in k])
+
+    # Check recommendations with savings from activity feed
+    with _activity_feed_lock:
+        recs_with_savings = [e for e in _activity_feed if e.get("saving_w", 0) > 0][:20]
+
+    return {
+        "mode": os.environ.get("COOLEDAI_MODE", "shadow"),
+        "avg_power_reduction_watts": round(avg_saved_w, 2),
+        "recommendations_with_savings": recs_with_savings,
+        "projected_annual_usd_saved": round(annual_kwh * _USD_PER_KWH, 2),
+        "projected_monthly_usd_saved": round(monthly_kwh * _USD_PER_KWH, 2),
+        "projected_co2_avoided_kg": round(annual_kwh * co2_factor, 1),
+        "data_hours": round(data_hours, 2),
+        "nodes_monitored": nodes_monitored,
+    }
+
+
+@app.get("/api/v1/gateway/mode")
+async def get_gateway_mode(
+    owner_id: str = Depends(_require_api_key_or_clerk),
+):
+    """Current gateway operating mode and brain calibration status."""
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    data_hours = 0.0
+    if len(history) >= 2:
+        try:
+            data_hours = (float(history[-1][0]) - float(history[0][0])) / 3600.0
+        except (TypeError, ValueError):
+            pass
+
+    pred = getattr(_brain, "predictor", None)
+    confidence_pct = 0
+    if pred is not None:
+        try:
+            confidence_pct = int(getattr(pred, "confidence", 0) * 100)
+        except Exception:
+            pass
+
+    if confidence_pct >= 80:
+        cal_state = "CALIBRATED"
+    elif confidence_pct > 0:
+        cal_state = "CALIBRATING"
+    else:
+        cal_state = "WAITING"
+
+    return {
+        "mode": os.environ.get("COOLEDAI_MODE", "shadow"),
+        "confidence_pct": confidence_pct,
+        "data_hours": round(data_hours, 2),
+        "calibration_state": cal_state,
+        "target_temp": getattr(_brain, "target_temp", None),
     }
 
 
@@ -3273,6 +3423,25 @@ async def receive_gateway_batch(request: Request, owner_id: str = Depends(_resol
             record["peak_power_w"] = snapshot["peak_power_w"]
         tenant[node_id] = record
         ingested += 1
+        # Phase 6.4: Extract brain recommendation from forwarded result
+        result = entry.get("result", {})
+        if result and result.get("source") not in (None, "control_passthrough"):
+            with _last_brain_recommendation_lock:
+                _last_brain_recommendation[node_id] = {
+                    "target_duty": result.get("target_duty"),
+                    "target_rpm": result.get("target_rpm"),
+                    "delta": result.get("recommended_cooling_delta"),
+                    "source": result.get("source", "unknown"),
+                    "ts": int(now_ts),
+                    "origin": "gateway_forwarded",
+                }
+            # Build activity entry from forwarded result
+            temp_c = snapshot.get("temp_c", 0)
+            fan_rpm = snapshot.get("fan_rpm", 0)
+            try:
+                _append_activity_entry(node_id, temp_c, fan_rpm, result)
+            except Exception:
+                pass
     _append_thermal_history(owner_id, now_ts)
     logging.getLogger("api.main").info(
         "[GATEWAY_BATCH] Received %d entries from gateway=%s, owner=%s",
@@ -3426,6 +3595,12 @@ async def agent_optimize_control(
         target_rpm = (target_duty / 100.0) * max_rpm
 
         # Track last recommendation per node for /debug/brain-state
+        _result_for_tracking = {
+            "target_duty": target_duty,
+            "target_rpm": round(target_rpm, 0),
+            "recommended_cooling_delta": delta,
+            "source": "optimization_brain",
+        }
         with _last_brain_recommendation_lock:
             _last_brain_recommendation[body.node_id] = {
                 "target_duty": target_duty,
@@ -3434,6 +3609,7 @@ async def agent_optimize_control(
                 "source": "optimization_brain",
                 "ts": int(time.time()),
             }
+        _append_activity_entry(body.node_id, body.temp_c, body.fan_rpm, _result_for_tracking)
 
         return {
             "target_duty": target_duty,
