@@ -1836,6 +1836,12 @@ _tenant_telemetry: Dict[str, Dict[str, dict]] = {}
 _tenant_accumulators: Dict[str, dict] = {}
 # Rolling thermal history for 6H/24H aggregated charts: { owner_id: [(ts, pilot_temp, baseline_temp), ...] }
 _thermal_history: Dict[str, list] = {}
+
+# ── Tenant operational mode ──────────────────────────────────────────
+# Tracks shadow / supervised / active mode per tenant.
+# Default: shadow (observe-only). In-memory — resets to shadow on redeploy.
+_tenant_mode: Dict[str, dict] = {}
+_mode_audit_log: List[dict] = []
 _MAX_THERMAL_HISTORY_POINTS = 60 * 24 * 60 * 12  # 60 days at 5s interval
 
 # ── Thermal history persistence ──────────────────────────────────────
@@ -2710,6 +2716,7 @@ async def get_dashboard_summary(
         "electricity_rate": _USD_PER_KWH,
         "currency": _BILLING_CURRENCY,
         "carbon_intensity_kg_per_kwh": _CARBON_INTENSITY,
+        "operational_mode": _get_tenant_mode(owner_id).get("mode", "shadow"),
     }
 
 
@@ -4336,6 +4343,7 @@ async def gateway_config(
 
     Pulled by the gateway every 60 seconds via PolicySyncer.
     """
+    mode_state = _get_tenant_mode(owner_id)
     return {
         "system_state": _state_machine.state.value if _state_machine else "OPTIMIZING",
         "safety_overrides": {},
@@ -4343,7 +4351,182 @@ async def gateway_config(
         "maintenance_mode_ids": list(_maintenance_mode_ids),
         "model_version": "v1.0",
         "updated_at": datetime.utcnow().isoformat() + "Z",
+        "mode": mode_state["mode"],
+        "fan_rpm_floor_pct": mode_state.get("fan_rpm_floor_pct", 0.90),
+        "thermal_ceiling_c": mode_state.get("thermal_ceiling_c", 85.0),
     }
+
+
+# ── Operational Mode Toggle ───────────────────────────────────────────
+
+_VALID_MODES = ("shadow", "supervised", "active")
+_MODE_ACTIVATION_MIN_CONFIDENCE = 80
+_MODE_ACTIVATION_MIN_DATA_HOURS = 1.0
+
+
+def _get_tenant_mode(owner_id: str) -> dict:
+    """Return mode state for a tenant, initializing to shadow if absent."""
+    if owner_id not in _tenant_mode:
+        _tenant_mode[owner_id] = {
+            "mode": "shadow",
+            "changed_at": time.time(),
+            "changed_by": "system",
+            "reason": "default",
+            "fan_rpm_floor_pct": 0.90,
+            "thermal_ceiling_c": 85.0,
+        }
+    return _tenant_mode[owner_id]
+
+
+def _check_activation_prerequisites(owner_id: str) -> tuple:
+    """Check if tenant can activate supervised/active mode. Returns (can_activate, blockers)."""
+    blockers = []
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    now = time.time()
+
+    # Confidence check (from dashboard summary logic)
+    confidence_pct = 0
+    if history:
+        unique_rpms = set()
+        for row in history:
+            hr = _history_row(row)
+            if hr[3] is not None and hr[1] is not None and hr[1] != 0:
+                unique_rpms.add(round(float(hr[3]), -1))
+        confidence_pct = min(100, len(unique_rpms) * 10)
+    if confidence_pct < _MODE_ACTIVATION_MIN_CONFIDENCE:
+        blockers.append(f"Confidence too low ({confidence_pct}%). Minimum: {_MODE_ACTIVATION_MIN_CONFIDENCE}%")
+
+    # Data hours check
+    data_hours = 0.0
+    if history:
+        oldest_ts = min(float(r[0]) for r in history)
+        data_hours = (now - oldest_ts) / 3600.0
+    if data_hours < _MODE_ACTIVATION_MIN_DATA_HOURS:
+        blockers.append(f"Not enough observation data ({data_hours:.1f}h). Minimum: {_MODE_ACTIVATION_MIN_DATA_HOURS}h")
+
+    # Live data check
+    all_nodes = _tenant_telemetry.get(owner_id, {})
+    has_live = any(
+        (now - n.get("_received_at", 0)) < 300
+        for n in all_nodes.values()
+    )
+    if not has_live and all_nodes:
+        blockers.append("No live telemetry in last 5 minutes")
+
+    return len(blockers) == 0, blockers, confidence_pct, data_hours
+
+
+@app.get("/api/v1/gateway/mode")
+async def get_gateway_mode(owner_id: str = Depends(_require_api_key_or_clerk)):
+    """Return the current operational mode and activation prerequisites."""
+    mode_state = _get_tenant_mode(owner_id)
+    can_activate, blockers, confidence_pct, data_hours = _check_activation_prerequisites(owner_id)
+    return {
+        "mode": mode_state["mode"],
+        "available_modes": list(_VALID_MODES),
+        "can_activate": can_activate,
+        "activation_blockers": blockers,
+        "confidence_pct": confidence_pct,
+        "data_hours": round(data_hours, 1),
+        "fan_rpm_floor_pct": mode_state.get("fan_rpm_floor_pct", 0.90),
+        "thermal_ceiling_c": mode_state.get("thermal_ceiling_c", 85.0),
+        "changed_at": datetime.fromtimestamp(mode_state["changed_at"], tz=timezone.utc).isoformat(),
+        "changed_by": mode_state.get("changed_by", "system"),
+    }
+
+
+class ModeChangeInput(BaseModel):
+    mode: str
+    reason: str = ""
+
+
+@app.post("/api/v1/gateway/mode")
+async def set_gateway_mode(body: ModeChangeInput, owner_id: str = Depends(_require_api_key_or_clerk)):
+    """Change the operational mode for the tenant's gateway."""
+    if body.mode not in _VALID_MODES:
+        raise HTTPException(status_code=400, detail=f"Invalid mode: {body.mode}. Must be one of: {_VALID_MODES}")
+
+    mode_state = _get_tenant_mode(owner_id)
+    previous_mode = mode_state["mode"]
+
+    # Switching to shadow is always allowed (safe fallback)
+    if body.mode != "shadow":
+        can_activate, blockers, _, _ = _check_activation_prerequisites(owner_id)
+        if not can_activate:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Cannot activate {body.mode} mode: {'; '.join(blockers)}",
+            )
+
+    now = time.time()
+    mode_state["mode"] = body.mode
+    mode_state["changed_at"] = now
+    mode_state["changed_by"] = owner_id
+    mode_state["reason"] = body.reason or "user_request"
+
+    # Audit log
+    audit_entry = {
+        "tenant_id": owner_id,
+        "from_mode": previous_mode,
+        "to_mode": body.mode,
+        "timestamp": now,
+        "at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+        "user_id": owner_id,
+        "reason": body.reason or "user_request",
+        "details": "",
+    }
+    _mode_audit_log.append(audit_entry)
+    logging.getLogger("api.main").info(
+        "[MODE_CHANGE] owner=%s %s → %s reason=%s",
+        owner_id, previous_mode, body.mode, body.reason,
+    )
+
+    return {
+        "ok": True,
+        "mode": body.mode,
+        "previous_mode": previous_mode,
+        "changed_at": datetime.fromtimestamp(now, tz=timezone.utc).isoformat(),
+        "message": f"Mode changed to {body.mode.upper()}.",
+    }
+
+
+@app.get("/api/v1/gateway/mode/history")
+async def get_mode_history(owner_id: str = Depends(_require_api_key_or_clerk)):
+    """Return the last 50 mode changes for the tenant."""
+    tenant_history = [e for e in _mode_audit_log if e.get("tenant_id") == owner_id]
+    return {"history": list(reversed(tenant_history[-50:]))}
+
+
+@app.post("/api/v1/gateway/mode/fallback", dependencies=[Depends(_require_api_key)])
+async def receive_mode_fallback(body: dict, owner_id: str = Depends(_resolve_owner)):
+    """Receive auto-fallback notification from gateway."""
+    mode_state = _get_tenant_mode(owner_id)
+    previous_mode = mode_state["mode"]
+    mode_state["mode"] = "shadow"
+    mode_state["changed_at"] = time.time()
+    mode_state["changed_by"] = "system"
+    mode_state["reason"] = "auto_fallback"
+
+    audit_entry = {
+        "tenant_id": owner_id,
+        "from_mode": previous_mode,
+        "to_mode": "shadow",
+        "timestamp": time.time(),
+        "at": datetime.fromtimestamp(time.time(), tz=timezone.utc).isoformat(),
+        "user_id": "system",
+        "reason": "auto_fallback",
+        "details": f"GPU temp {body.get('gpu_temp_c', '?')}°C exceeded {body.get('ceiling_c', 85)}°C ceiling",
+    }
+    _mode_audit_log.append(audit_entry)
+    logging.getLogger("api.main").critical(
+        "[AUTO_FALLBACK] owner=%s gpu_temp=%.1f°C ceiling=%.1f°C",
+        owner_id, body.get("gpu_temp_c", 0), body.get("ceiling_c", 85),
+    )
+    return {"status": "recorded", "mode": "shadow"}
+
+
+# Also include mode in the gateway config response so PolicySyncer picks it up.
+# (The existing gateway_config endpoint is modified below via the _get_tenant_mode call.)
 
 
 @app.post("/api/v1/events/failover", dependencies=[Depends(_require_api_key)])

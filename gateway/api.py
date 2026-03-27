@@ -219,6 +219,7 @@ class _KeyRegistry:
 def create_app(
     optimization_service: Any = None,
     cloud_forwarder: Any = None,
+    policy_syncer: Any = None,
     keys_file: Optional[str] = None,
 ) -> FastAPI:
     """Create the gateway FastAPI application.
@@ -226,6 +227,7 @@ def create_app(
     Args:
         optimization_service: LocalOptimizationService instance
         cloud_forwarder: CloudForwarder instance (optional, for telemetry batching)
+        policy_syncer: PolicySyncer instance (optional, for mode sync)
         keys_file: Path to api_keys.json (defaults to data/api_keys.json)
     """
     app = FastAPI(
@@ -289,6 +291,21 @@ def create_app(
         else:
             # Pilot node: full optimization
             result = optimization_service.optimize(owner_id, body)
+
+            # Apply mode-aware RPM clamping
+            current_mode = "shadow"
+            if policy_syncer is not None:
+                current_mode = getattr(policy_syncer, "current_mode", "shadow")
+            result["mode"] = current_mode
+            result["applied"] = current_mode in ("supervised", "active")
+
+            if current_mode == "supervised" and result.get("target_duty") is not None:
+                # Clamp: never reduce RPM more than 10% below baseline
+                floor_pct = getattr(policy_syncer, "fan_rpm_floor_pct", 0.90) if policy_syncer else 0.90
+                min_duty = int(round((body.fan_rpm * floor_pct / body.max_fan_rpm) * 100))
+                if result["target_duty"] < min_duty:
+                    result["target_duty"] = min_duty
+                    result["source"] = result.get("source", "") + "_supervised_clamped"
 
         # Write telemetry to thermal history so the brain accumulates time-series data
         try:

@@ -30,6 +30,7 @@ export type DashboardSummary = {
   electricity_rate: number;
   currency: string;
   carbon_intensity_kg_per_kwh: number;
+  operational_mode?: "shadow" | "supervised" | "active";
 };
 
 export type SavingsChartPoint = {

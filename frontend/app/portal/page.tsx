@@ -10,6 +10,7 @@ import { HardwareIntelligencePanel } from "./dashboard/components/HardwareIntell
 import { LivePerformancePanel } from "./dashboard/components/LivePerformancePanel";
 import { CarbonPanel } from "./dashboard/components/CarbonPanel";
 import { AlertDrawer } from "./dashboard/components/AlertDrawer";
+import { ModeToggle } from "./dashboard/components/ModeToggle";
 
 export default function PortalPage() {
   const { getToken } = useAuth();
@@ -36,6 +37,32 @@ export default function PortalPage() {
           onStatusClick={() => setDrawerOpen(true)}
         />
       </div>
+
+      <div className="mb-6">
+        <ModeToggle />
+      </div>
+
+      {/* Mode-aware status banner */}
+      {data?.operational_mode === "shadow" && (
+        <div className="mb-4 rounded-xl border border-blue-500/20 bg-blue-500/5 px-5 py-3 flex items-center justify-between">
+          <div>
+            <span className="text-sm text-blue-400 font-medium">CooledAI is in Shadow Mode</span>
+            <span className="text-xs text-white/40 ml-2">Currently observing thermal patterns. Switch to Active to start saving energy.</span>
+          </div>
+        </div>
+      )}
+      {data?.operational_mode === "active" && (
+        <div className="mb-4 rounded-xl border border-emerald-500/20 bg-emerald-500/5 px-5 py-3">
+          <span className="text-sm text-emerald-400 font-medium">CooledAI Active — Optimizing fan speeds</span>
+          <span className="text-xs text-white/40 ml-2">Auto-fallback enabled (85°C threshold)</span>
+        </div>
+      )}
+      {data?.operational_mode === "supervised" && (
+        <div className="mb-4 rounded-xl border border-amber-500/20 bg-amber-500/5 px-5 py-3">
+          <span className="text-sm text-amber-400 font-medium">CooledAI Supervised — Conservative fan control</span>
+          <span className="text-xs text-white/40 ml-2">Max 10% reduction from baseline</span>
+        </div>
+      )}
 
       <div className="mb-6">
         <SavingsProofPanel data={data} loading={loading} />

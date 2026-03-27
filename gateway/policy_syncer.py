@@ -40,6 +40,11 @@ class PolicySyncer:
         self._last_config: Optional[dict] = None
         self._connected = True
 
+        # Operational mode (synced from cloud)
+        self.current_mode: str = "shadow"
+        self.fan_rpm_floor_pct: float = 0.90
+        self.thermal_ceiling_c: float = 85.0
+
     async def sync_loop(self) -> None:
         """Background task on Thread 4's asyncio loop."""
         logger.info("PolicySyncer: started (sync every %.0fs from %s)", self.interval, self.cloud_url)
@@ -74,6 +79,15 @@ class PolicySyncer:
 
     def _apply_config(self, config: dict) -> None:
         """Apply pulled configuration locally."""
+        # Update operational mode
+        new_mode = config.get("mode")
+        if new_mode and new_mode in ("shadow", "supervised", "active"):
+            if new_mode != self.current_mode:
+                logger.info("PolicySyncer: Mode changed %s → %s", self.current_mode, new_mode)
+            self.current_mode = new_mode
+        self.fan_rpm_floor_pct = float(config.get("fan_rpm_floor_pct", 0.90))
+        self.thermal_ceiling_c = float(config.get("thermal_ceiling_c", 85.0))
+
         # Update local API key registry if present
         key_registry = config.get("api_key_registry")
         if key_registry:

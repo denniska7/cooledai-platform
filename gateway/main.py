@@ -259,6 +259,7 @@ class Gateway:
             app = create_app(
                 optimization_service=self._optimization_service,
                 cloud_forwarder=self._cloud_forwarder,
+                policy_syncer=self._policy_syncer,
             )
             config = uvicorn.Config(
                 app,
