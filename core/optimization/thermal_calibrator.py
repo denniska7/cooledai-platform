@@ -468,7 +468,7 @@ class ThermalCalibrator:
         # gpu_idle * 1.30 is too tight when idle is low (7W → 9W trigger).
         # Use max(50W, gpu_idle * 2.5) so real GPU work (50W+) triggers, not noise.
         active_trigger_w = max(50.0, gpu_idle * 2.5)
-        spike_hold_floor = fan_ceiling * 1.10
+        spike_hold_floor = fan_ceiling
         # Spike trigger: derive from HW limit with safety margin, not p99.
         # Old formula (temp_mean + 2.5σ) placed trigger too close to normal ops.
         spike_trigger = min(

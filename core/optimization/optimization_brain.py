@@ -1337,12 +1337,15 @@ class OptimizationBrain:
             max_cooling_by_unit = {uid: max_per_unit for uid in cooling_unit_ids}
 
         # Pre-compute spike bypass flag so the optimizer can skip its slew cap
+        # Temperature gate: only bypass slew when temp is within 10°C of spike trigger
         _is_spike_bypass = (
             cp is not None
             and peak_power_3s > active_trigger_w * 2.0
             and not _current_is_idle
             and cp.spike_hold_fan_floor_rpm > 0
             and current_cooling < cp.spike_hold_fan_floor_rpm
+            and cp.spike_trigger_temp_c > 0
+            and current_thermal >= cp.spike_trigger_temp_c - 10.0
         )
 
         opt_result = self.power_optimizer.optimize_for_min_power(
@@ -1499,11 +1502,19 @@ class OptimizationBrain:
         # --- SPIKE BYPASS: when peak power is a true spike (>2× trigger), bypass slew rate ---
         # The slew rate limit exists to prevent oscillation during gradual ramps — it should
         # not apply to sudden spike events where fans need to jump immediately.
+        # Temperature gate: only fire when temp is within 10°C of the spike trigger —
+        # at 70°C with trigger 75°C, normal compute doesn't need emergency fan ramp.
+        _spike_temp_gate = (
+            cp is not None
+            and cp.spike_trigger_temp_c > 0
+            and current_thermal >= cp.spike_trigger_temp_c - 10.0
+        )
         if (
             cp is not None
             and peak_power_3s > active_trigger_w * 2.0
             and not _current_is_idle
             and cp.spike_hold_fan_floor_rpm > 0
+            and _spike_temp_gate
         ):
             # Compute delta to jump current_cooling directly to spike_hold_floor
             spike_floor = cp.spike_hold_fan_floor_rpm

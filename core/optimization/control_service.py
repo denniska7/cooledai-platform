@@ -325,6 +325,9 @@ class ControlService:
                         new_cp.spike_trigger_temp_c = max(
                             hw - 8.0, min(hw * 0.92, new_cp.spike_trigger_temp_c)
                         )
+                    # Cap spike hold floor: should not exceed fan_ceiling (max observed RPM)
+                    if new_cp.fan_ceiling_rpm > 0 and new_cp.spike_hold_fan_floor_rpm > new_cp.fan_ceiling_rpm:
+                        new_cp.spike_hold_fan_floor_rpm = new_cp.fan_ceiling_rpm
                     self._store.set_calibration_profile(node_id, new_cp)
                     logger.info(
                         "[PREDICTOR] Node %s calibration profile updated "
