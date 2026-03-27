@@ -1345,7 +1345,7 @@ class OptimizationBrain:
             and cp.spike_hold_fan_floor_rpm > 0
             and current_cooling < cp.spike_hold_fan_floor_rpm
             and cp.spike_trigger_temp_c > 0
-            and current_thermal >= cp.spike_trigger_temp_c - 10.0
+            and current_thermal >= cp.spike_trigger_temp_c - 3.0
         )
 
         opt_result = self.power_optimizer.optimize_for_min_power(
@@ -1507,7 +1507,7 @@ class OptimizationBrain:
         _spike_temp_gate = (
             cp is not None
             and cp.spike_trigger_temp_c > 0
-            and current_thermal >= cp.spike_trigger_temp_c - 10.0
+            and current_thermal >= cp.spike_trigger_temp_c - 3.0
         )
         if (
             cp is not None

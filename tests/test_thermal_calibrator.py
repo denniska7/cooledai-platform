@@ -123,9 +123,8 @@ class TestProfileComputation:
         assert p.active_compute_trigger_w == pytest.approx(
             max(50.0, p.gpu_idle_w * 2.5), rel=0.01,
         )
-        # spike_hold_fan_floor = fan_ceiling * 1.10 (clamped to rated*0.95)
-        raw_spike_floor = p.fan_ceiling_rpm * 1.10
-        expected_spike_floor = min(raw_spike_floor, 7000.0 * 0.95)
+        # spike_hold_fan_floor = fan_ceiling (clamped to rated*0.95)
+        expected_spike_floor = min(p.fan_ceiling_rpm, 7000.0 * 0.95)
         assert p.spike_hold_fan_floor_rpm == pytest.approx(expected_spike_floor, rel=0.01)
 
         # hysteresis = fan_range * 0.08, clamped [20, 60]
