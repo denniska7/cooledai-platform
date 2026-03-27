@@ -68,13 +68,19 @@ RATE_OF_CHANGE_WINDOW_S = 30.0           # Rolling window for dT/dt
 THERMAL_CEILING_C = _env_float("COOLEDAI_THERMAL_CEILING_C", 85.0)
 
 # --- Power-slope pre-ramp (proactive fan before temp crosses target) ---
-POWER_SLOPE_PRE_RAMP_MODERATE_W_S = 1.5   # W/s — block reduction-only path; bias toward increase
-POWER_SLOPE_PRE_RAMP_STEEP_W_S = 4.0      # W/s — enforce stronger bump after optimization
-POWER_SLOPE_STEEP_MIN_DELTA = 0.12
+# Phase 6.1: Raised thresholds — 1.5 W/s fires constantly during normal GPU
+# inference workloads (Llama ~65W fluctuating), blocking ALL reduction candidates.
+# New values: only trigger pre-ramp when power is ramping hard AND margin is small.
+POWER_SLOPE_PRE_RAMP_MODERATE_W_S = 8.0   # W/s — was 1.5; only block reductions under steep ramp
+POWER_SLOPE_PRE_RAMP_STEEP_W_S = 15.0     # W/s — was 4.0; enforce bump only under very steep ramp
+POWER_SLOPE_STEEP_MIN_DELTA = 0.08         # was 0.12; less aggressive bump
+# Margin threshold: only trigger pre-ramp when headroom is small
+POWER_SLOPE_PRE_RAMP_MARGIN_C = 5.0       # Only pre-ramp if within 5°C of target (was 15°C)
 
 # --- Safety net: never “silent” under rising load ---
-SAFETY_NET_POWER_SLOPE_W_S = 0.25
-SAFETY_NET_MIN_DELTA = 0.06
+# Phase 6.1: Raised from 0.25 W/s — normal inference fluctuation exceeds this.
+SAFETY_NET_POWER_SLOPE_W_S = 5.0           # was 0.25; only net for significant power ramp
+SAFETY_NET_MIN_DELTA = 0.03                # was 0.06; gentler floor
 
 
 def sustained_active_compute_signal(power: np.ndarray) -> bool:

@@ -298,7 +298,14 @@ class PowerCostOptimizer:
             )
 
         # Power-slope pre-ramp: rising package power ⇒ treat as warming even if T+10 is still calm.
-        if power_slope_w_per_s >= POWER_SLOPE_PRE_RAMP_MODERATE_W_S:
+        # Phase 6.1: Add margin check — do NOT force temp_rising when we have lots of headroom.
+        # The brain already applies its own pre-ramp with margin check; the optimizer
+        # should NOT blindly override that with a stricter (margin-less) version.
+        _opt_margin = target_temp - current_thermal
+        if (
+            power_slope_w_per_s >= POWER_SLOPE_PRE_RAMP_MODERATE_W_S
+            and _opt_margin <= 5.0  # Only when within 5°C of target
+        ):
             temp_rising = True
 
         # Thermal-adequacy guard: refuse to reduce cooling when headroom is thin.

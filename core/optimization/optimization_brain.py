@@ -1313,10 +1313,12 @@ class OptimizationBrain:
         temp_for_decision = predicted_t10 if pred and pred.confidence > 0.6 else current_thermal
         temp_rising = temp_for_decision > self.target_temp + 5
         # Power-slope pre-ramp: rising package power ⇒ cooling headroom before temp moves.
-        # Skip pre-ramp when thermal margin is very large (>15°C below target) — a moderate
-        # power ramp with 30°C headroom has minutes of thermal inertia before any risk.
+        # Phase 6.1: Tightened margin from 15°C to 5°C — with 20°C headroom, even steep
+        # power ramps have minutes of thermal inertia before any risk.  The old 15°C
+        # threshold fired constantly because servers run 55-68°C with target 85°C (17-30°C margin),
+        # meaning ANY power fluctuation >1.5 W/s blocked ALL reductions.
         _pre_ramp_margin = self.target_temp - temp_for_decision
-        if power_slope >= POWER_SLOPE_PRE_RAMP_MODERATE_W_S and _pre_ramp_margin <= 15:
+        if power_slope >= POWER_SLOPE_PRE_RAMP_MODERATE_W_S and _pre_ramp_margin <= 5:
             temp_rising = True
 
         # Power-cost optimizer: solve for lowest zone power (Fan Affinity Laws)
