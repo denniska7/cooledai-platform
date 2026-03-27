@@ -412,8 +412,15 @@ class ControlService:
                 nodes, target_duty, last_commanded_duty, fan_rpm, max_rpm,
             )
             # Update target_duty if posture applied boost/floor
+            pre_posture_duty = target_duty
             if isinstance(failure_payload, tuple):
                 target_duty, failure_payload = failure_payload
+            if target_duty != pre_posture_duty:
+                logger.warning(
+                    "[POSTURE_BOOST] node=%s duty %d%% -> %d%% reasons=%s",
+                    node_id, pre_posture_duty, target_duty,
+                    failure_payload.get("reasons", []) if isinstance(failure_payload, dict) else "?",
+                )
 
             # Align reported RPM with final duty
             target_rpm = (target_duty / 100.0) * max_rpm
