@@ -260,6 +260,7 @@ class Gateway:
                 optimization_service=self._optimization_service,
                 cloud_forwarder=self._cloud_forwarder,
                 policy_syncer=self._policy_syncer,
+                control_gate=self.control_gate,
             )
             config = uvicorn.Config(
                 app,

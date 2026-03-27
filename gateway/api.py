@@ -221,6 +221,7 @@ def create_app(
     cloud_forwarder: Any = None,
     keys_file: Optional[str] = None,
     control_gate: Any = None,
+    policy_syncer: Any = None,
 ) -> FastAPI:
     """Create the gateway FastAPI application.
 
@@ -229,6 +230,7 @@ def create_app(
         cloud_forwarder: CloudForwarder instance (optional, for telemetry batching)
         keys_file: Path to api_keys.json (defaults to data/api_keys.json)
         control_gate: ControlGate instance (optional, for mode switching)
+        policy_syncer: PolicySyncer instance (optional)
     """
     app = FastAPI(
         title="CooledAI Edge Gateway",
