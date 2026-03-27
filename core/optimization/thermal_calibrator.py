@@ -270,7 +270,7 @@ class ThermalCalibrator:
             gpu_hw_thermal_limit_c=self._gpu_hw_limit,
             # Bootstrap defaults
             active_compute_fan_floor_rpm=rated * 0.30,
-            active_compute_trigger_w=15.0,
+            active_compute_trigger_w=50.0,
             spike_hold_fan_floor_rpm=rated * 0.36,
             spike_trigger_temp_c=42.0,
             hysteresis_rpm=30.0,
@@ -665,6 +665,9 @@ class ThermalCalibrator:
         old.slew_rate_up_rpm_per_cycle = max(30.0, old.slew_rate_up_rpm_per_cycle)
         old.min_response_quantum_rpm = max(30.0, old.min_response_quantum_rpm)
         old.spike_hold_duration_s = max(120.0, min(600.0, old.spike_hold_duration_s))
+        # Floor guards for thresholds that must not be too sensitive
+        old.active_compute_trigger_w = max(50.0, old.active_compute_trigger_w)
+        old.cpu_safe_ceiling_c = max(55.0, old.cpu_safe_ceiling_c)
 
         # Apply floor guards (warmup + sanity)
         self._apply_floor_guards(old)
@@ -779,6 +782,11 @@ class ThermalCalibrator:
         self._profile = loaded
         self._profile.calibration_state = CALIBRATION_STATE_CALIBRATED
         self._calibrated_once = True
+        # Apply floor guards to loaded profiles (in case code changed thresholds)
+        self._profile.active_compute_trigger_w = max(50.0, self._profile.active_compute_trigger_w)
+        self._profile.cpu_safe_ceiling_c = max(55.0, self._profile.cpu_safe_ceiling_c)
+        hw = self._gpu_hw_limit
+        self._profile.spike_trigger_temp_c = max(hw - 8.0, min(hw * 0.92, self._profile.spike_trigger_temp_c))
         _log.info(
             "[THERMAL_CAL] Loaded saved profile from %s saved_at=%s — "
             "skipping observation window",

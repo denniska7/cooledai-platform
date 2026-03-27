@@ -85,7 +85,7 @@ class TestBootstrapDefaults:
         p = cal.profile
         assert p.active_compute_fan_floor_rpm == pytest.approx(7000.0 * 0.30, rel=0.01)
         assert p.spike_hold_fan_floor_rpm == pytest.approx(7000.0 * 0.36, rel=0.01)
-        assert p.active_compute_trigger_w == 15.0
+        assert p.active_compute_trigger_w == 50.0
         assert p.spike_trigger_temp_c == 42.0
         assert p.hysteresis_rpm == 30.0
         assert p.slew_rate_up_rpm_per_cycle == 40.0
