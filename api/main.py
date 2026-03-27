@@ -2635,18 +2635,26 @@ async def get_dashboard_summary(
     thermal_trend_alert = (thermal_7d - thermal_30d) > 3.0 if temps_7d and temps_30d else False
 
     # --- Fan bearing health (RPM std dev) ---
+    # NOTE: Normal RPM variance from brain optimization (~200-400 RPM) is NOT
+    # vibration. True bearing degradation shows high-frequency oscillation at
+    # FIXED duty. Thresholds raised to avoid false alarms from control adjustments.
     recent_rpms = []
     rpm_cutoff = now - 86400
     for row in history:
         hr = _history_row(row)
         if hr[0] >= rpm_cutoff and hr[3] is not None:
+            # Skip zero-value rows
+            if hr[1] is None or hr[1] == 0:
+                continue
             recent_rpms.append(hr[3])
     if len(recent_rpms) > 10:
         import statistics
         rpm_std = statistics.stdev(recent_rpms)
-        if rpm_std > 500:
+        # Raised thresholds: 500→1500 (alert), 300→1000 (monitor)
+        # Normal control variance of ±200-500 RPM should not trigger alerts
+        if rpm_std > 1500:
             bearing_status = "alert"
-        elif rpm_std > 300:
+        elif rpm_std > 1000:
             bearing_status = "monitor"
         else:
             bearing_status = "healthy"
@@ -2979,6 +2987,29 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
     annual_kwh = (reclaimed_kwh / uptime_h * 8760.0) if uptime_h > 0.1 else 0.0
     annual_savings = annual_kwh * _USD_PER_KWH
 
+    # Calibration status from pilot node's calibration profile
+    calib_profile = pilot.get("calibration_profile", {})
+    calib_updated_at = None
+    calib_confidence_pct = None
+    if isinstance(calib_profile, dict) and calib_profile.get("calibration_state") == "CALIBRATED":
+        calib_updated_at = calib_profile.get("saved_at")
+        sample_count = calib_profile.get("sample_count", 0)
+        calib_confidence_pct = min(100.0, sample_count / 3.0)
+    # Fallback: compute confidence from thermal history diversity
+    if calib_confidence_pct is None and history:
+        unique_rpms = set()
+        for row in history:
+            hr = _history_row(row)
+            if hr[3] is not None and hr[1] is not None and hr[1] != 0:
+                unique_rpms.add(round(float(hr[3]), -1))
+        calib_confidence_pct = min(100.0, len(unique_rpms) * 10.0)
+
+    # Data hours from thermal history
+    data_hours = 0.0
+    if history:
+        oldest_ts = min(float(r[0]) for r in history)
+        data_hours = (now - oldest_ts) / 3600.0
+
     has_live = bool(pilot)
     pilot_age = (now - pilot["_received_at"]) if pilot.get("_received_at") else None
     baseline_age = (now - baseline["_received_at"]) if baseline.get("_received_at") else None
@@ -3032,6 +3063,69 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
             "rated_fan_watts": _RATED_FAN_WATTS,
             "num_fans": _NUM_FANS,
         },
+        "confidence_pct": round(calib_confidence_pct, 1) if calib_confidence_pct is not None else None,
+        "calibration_updated_at": calib_updated_at,
+        "data_hours": round(data_hours, 1),
+        "operational_mode": _get_tenant_mode(owner_id).get("mode", "shadow"),
+    }
+
+
+@app.get("/api/v1/facility/hourly-metrics")
+async def get_hourly_facility_metrics(owner_id: str = Depends(_require_api_key_or_clerk)):
+    """Hourly PUE and acoustic metrics for Facility Pulse page."""
+    now = time.time()
+    one_hour_ago = now - 3600
+    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+
+    pilot_rpms = []
+    baseline_rpms = []
+    pilot_gpu_powers = []
+    baseline_gpu_powers = []
+
+    for row in history:
+        hr = _history_row(row)
+        ts = hr[0]
+        if ts < one_hour_ago:
+            continue
+        if hr[1] is None or hr[1] == 0:
+            continue
+        if hr[3] is not None and hr[3] > 0:
+            pilot_rpms.append(float(hr[3]))
+        if hr[4] is not None and hr[4] > 0:
+            baseline_rpms.append(float(hr[4]))
+        if hr[7] is not None:
+            pilot_gpu_powers.append(float(hr[7]))
+        if hr[8] is not None:
+            baseline_gpu_powers.append(float(hr[8]))
+
+    def _avg(lst: list) -> float | None:
+        return sum(lst) / len(lst) if lst else None
+
+    # PUE = (IT Power + Cooling Power) / IT Power
+    # Simplified: cooling = fan power from affinity law, IT = GPU power
+    pilot_fan_w = _fan_power_watts(_avg(pilot_rpms) or 0)
+    baseline_fan_w = _fan_power_watts(_avg(baseline_rpms) or 0)
+    pilot_it_w = _avg(pilot_gpu_powers)
+    baseline_it_w = _avg(baseline_gpu_powers)
+
+    pilot_pue = round((pilot_it_w + pilot_fan_w) / pilot_it_w, 2) if pilot_it_w and pilot_it_w > 0 else None
+    control_pue = round((baseline_it_w + baseline_fan_w) / baseline_it_w, 2) if baseline_it_w and baseline_it_w > 0 else None
+
+    # Acoustic load estimate from RPM (rough: 30 dB at 1000 RPM, +10 dB per doubling)
+    def _rpm_to_db(rpm: float | None) -> float | None:
+        if rpm is None or rpm <= 0:
+            return None
+        import math
+        return round(30 + 10 * math.log2(rpm / 1000), 1)
+
+    return {
+        "pilot_pue": pilot_pue,
+        "control_pue": control_pue,
+        "pilot_acoustic_db": _rpm_to_db(_avg(pilot_rpms)),
+        "control_acoustic_db": _rpm_to_db(_avg(baseline_rpms)),
+        "period_hours": 1,
+        "pilot_samples": len(pilot_rpms),
+        "control_samples": len(baseline_rpms),
     }
 
 
@@ -4299,6 +4393,22 @@ async def ingest_gateway_batch(body: GatewayBatchInput, owner_id: str = Depends(
                 history.append(row)
                 if len(history) > _MAX_THERMAL_HISTORY_POINTS:
                     history.pop(0)
+
+                # Initialize power savings accumulator so uptime_hours works
+                if owner_id not in _tenant_accumulators:
+                    _tenant_accumulators[owner_id] = {
+                        "power_reclaimed_wh": 0.0,
+                        "stats_started_at": time.time(),
+                        "last_accumulation_ts": time.time(),
+                    }
+                # Accumulate savings from gateway batch
+                acc = _tenant_accumulators[owner_id]
+                dt_h = (time.time() - acc["last_accumulation_ts"]) / 3600.0
+                if dt_h > 0 and optimized_rpm < baseline_rpm:
+                    delta_watts = _fan_power_watts(baseline_rpm) - _fan_power_watts(optimized_rpm)
+                    if delta_watts > 0:
+                        acc["power_reclaimed_wh"] += delta_watts * dt_h
+                acc["last_accumulation_ts"] = time.time()
 
                 # Update _tenant_telemetry so stats/dashboard endpoints can
                 # resolve node names and display live telemetry per node.
