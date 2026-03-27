@@ -176,7 +176,14 @@ class InMemoryStateStore:
                 for node_id, d in raw.items():
                     try:
                         filtered = {k: v for k, v in d.items() if k in valid_fields}
-                        self._profiles[node_id] = CalibrationProfile(**filtered)
+                        cp = CalibrationProfile(**filtered)
+                        # Apply floor guards (code may have raised thresholds since save)
+                        cp.active_compute_trigger_w = max(50.0, cp.active_compute_trigger_w)
+                        cp.cpu_safe_ceiling_c = max(55.0, cp.cpu_safe_ceiling_c)
+                        hw = cp.gpu_hw_thermal_limit_c
+                        if hw > 0:
+                            cp.spike_trigger_temp_c = max(hw - 8.0, min(hw * 0.92, cp.spike_trigger_temp_c))
+                        self._profiles[node_id] = cp
                     except Exception as exc:
                         logger.debug("Skipped stale calibration for %s: %s", node_id, exc)
             logger.info("Loaded calibration profiles from %s (%d nodes)", fpath, len(raw))
