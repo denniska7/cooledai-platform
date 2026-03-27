@@ -572,6 +572,12 @@ class MechanicalLongevityLayer:
         if floor_target is not None and float(floor_target) > 0 and gap.recommended_cooling_delta > 0:
             return gap  # Policy floor driving delta up — do not suppress
 
+        # Bypass hysteresis when guardrails reduced a large delta to a small one.
+        # The brain wanted a significant change; guardrails (policy floors, safe-temp
+        # clamp) bounded it. Suppressing the bounded result defeats the guardrail intent.
+        if gap.recommended_cooling_delta < 0 and floor_target is not None and float(floor_target) > 0:
+            return gap  # Guardrail-bounded reduction: allow it through
+
         # Aggregate delta
         delta = gap.recommended_cooling_delta
         if abs(delta) < deadband and abs(delta) > 1e-9:
