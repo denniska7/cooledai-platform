@@ -34,13 +34,13 @@ def _create_defaults():
     defaults["brain"] = OptimizationBrain()
 
     try:
-        from core.telemetry.derivative_enricher import TelemetryDerivativeEnricher
+        from core.ingestion import TelemetryDerivativeEnricher
         defaults["derivative_enricher"] = TelemetryDerivativeEnricher()
     except ImportError:
         defaults["derivative_enricher"] = None
 
     try:
-        from core.telemetry.synthetic_sensor import SyntheticSensor
+        from core.synthetic.synthetic_sensor import SyntheticSensor
         defaults["synthetic_sensor"] = SyntheticSensor()
     except ImportError:
         defaults["synthetic_sensor"] = None
@@ -52,13 +52,13 @@ def _create_defaults():
         defaults["sanity_check_filter"] = None
 
     try:
-        from core.telemetry.ewma_filter import EwmaTelemetryFilter
+        from core.ingestion.telemetry_smoothing import EwmaTelemetryFilter
         defaults["moving_avg_filter"] = EwmaTelemetryFilter(alpha=0.33)
     except ImportError:
         defaults["moving_avg_filter"] = None
 
     try:
-        from core.telemetry.ingestor import DataIngestor
+        from core.ingestion.data_ingestor import DataIngestor
         defaults["ingestor"] = DataIngestor(
             node_type=ServerNode,
             sanity_check_filter=defaults["sanity_check_filter"],
@@ -381,6 +381,13 @@ class ControlService:
 
             # Convert recommended_cooling_delta to target_duty
             delta = gap.recommended_cooling_delta
+            logger.warning(
+                "[CONTROL_DEBUG] node=%s delta=%.4f fan_rpm=%.0f target_rpm=%.0f "
+                "target_duty=%d reasoning=%s",
+                node_id, delta, fan_rpm, fan_rpm * (1.0 + delta),
+                int(round((fan_rpm * (1.0 + delta) / max(max_fan_rpm, 1000)) * 100)),
+                (gap.reasoning_log or ["none"])[-1][:120],
+            )
             current_rpm = fan_rpm
             max_rpm = max(max_fan_rpm, 1000.0)
             target_rpm = current_rpm * (1.0 + delta)
@@ -538,7 +545,7 @@ class ControlService:
     def _apply_filters_and_enrichment(self, nodes: List[BaseNode]) -> None:
         """Apply telemetry filters and derivative enrichment to nodes."""
         try:
-            from core.telemetry.filters import apply_telemetry_filters
+            from core.ingestion import apply_telemetry_filters
             apply_telemetry_filters(nodes, self.sanity_check_filter, self.moving_avg_filter)
         except ImportError:
             pass

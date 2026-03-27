@@ -32,11 +32,6 @@ CONTROL_NODE_PREFIXES = ["control", "traditional", "baseline"]
 _latest_snapshots: Dict[str, dict] = {}
 _latest_snapshots_lock = threading.Lock()
 
-# Rate-of-change temperature history: node_id -> [(ts, temp_c), ...]
-_temp_history: Dict[str, list] = {}
-_temp_history_lock = threading.Lock()
-_TEMP_HISTORY_MAX = 60  # Keep last 60 readings (~3 min at 3s interval)
-
 
 def _is_control_node(node_id: str) -> bool:
     """Return True if node_id is a control/baseline node (no optimization)."""
@@ -224,7 +219,6 @@ class _KeyRegistry:
 def create_app(
     optimization_service: Any = None,
     cloud_forwarder: Any = None,
-    policy_syncer: Any = None,
     keys_file: Optional[str] = None,
 ) -> FastAPI:
     """Create the gateway FastAPI application.
@@ -232,7 +226,6 @@ def create_app(
     Args:
         optimization_service: LocalOptimizationService instance
         cloud_forwarder: CloudForwarder instance (optional, for telemetry batching)
-        policy_syncer: PolicySyncer instance (optional, for mode sync)
         keys_file: Path to api_keys.json (defaults to data/api_keys.json)
     """
     app = FastAPI(
@@ -290,83 +283,12 @@ def create_app(
         # Record latest snapshot for every node (pilot or control)
         _update_latest_snapshot(body.node_id, body)
 
-        # Track temperature history for rate-of-change safety
-        with _temp_history_lock:
-            hist = _temp_history.setdefault(body.node_id, [])
-            hist.append((time.time(), float(body.temp_c)))
-            if len(hist) > _TEMP_HISTORY_MAX:
-                _temp_history[body.node_id] = hist[-_TEMP_HISTORY_MAX:]
-
         if _is_control_node(body.node_id):
             # Control node: skip optimization, passthrough only
             result = {"target_duty": None, "source": "control_passthrough"}
         else:
-            # Determine current mode
-            current_mode = "shadow"
-            if policy_syncer is not None:
-                current_mode = getattr(policy_syncer, "current_mode", "shadow")
-
-            if current_mode == "shadow":
-                # Phase 6: Shadow = pure passthrough. Brain runs simulation-only
-                # for projected savings, but does NOT produce a target_duty for BMC.
-                result = optimization_service.optimize(owner_id, body)
-                result["mode"] = "shadow"
-                result["applied"] = False
-                # The target_rpm in result is what the brain WOULD recommend
-                # (used for projected savings calculations in the cloud)
-            elif current_mode == "supervised":
-                # Phase 6: Supervised = brain controls with BMC baseline clamping.
-                # Max 20% reduction from what BMC currently runs.
-                result = optimization_service.optimize(owner_id, body)
-                result["mode"] = "supervised"
-                result["applied"] = True
-                if result.get("target_duty") is not None:
-                    # Clamp: max 20% reduction from BMC baseline (body.fan_rpm)
-                    bmc_baseline_duty = (body.fan_rpm / body.max_fan_rpm) * 100.0
-                    floor_duty = int(round(bmc_baseline_duty * 0.80))
-                    if result["target_duty"] < floor_duty:
-                        result["target_duty"] = floor_duty
-                        result["target_rpm"] = floor_duty / 100.0 * body.max_fan_rpm
-                        result["source"] = result.get("source", "") + "_supervised_clamped"
-            else:
-                # Active mode: brain has full authority within physics limits
-                result = optimization_service.optimize(owner_id, body)
-                result["mode"] = "active"
-                result["applied"] = True
-
-        # Rate-of-change safety check (supervised/active only)
-        if result.get("applied") and result.get("mode") in ("supervised", "active"):
-            from core.optimization.cooling_safety_policy import (
-                check_rate_of_change, THERMAL_CEILING_C,
-            )
-            with _temp_history_lock:
-                node_temps = list(_temp_history.get(body.node_id, []))
-            roc_status = check_rate_of_change(node_temps)
-            result["rate_of_change_status"] = roc_status
-
-            if roc_status == "emergency":
-                # Revert to BMC baseline RPM immediately
-                bmc_duty = int(round((body.fan_rpm / body.max_fan_rpm) * 100))
-                result["target_duty"] = bmc_duty
-                result["target_rpm"] = body.fan_rpm
-                result["source"] = "rate_of_change_emergency"
-                logger.warning("[ROC_SAFETY] Emergency revert for %s: temp rising fast", body.node_id)
-            elif roc_status == "caution":
-                # Freeze: don't reduce below current RPM
-                current_duty = int(round((body.fan_rpm / body.max_fan_rpm) * 100))
-                if result.get("target_duty") is not None and result["target_duty"] < current_duty:
-                    result["target_duty"] = current_duty
-                    result["target_rpm"] = body.fan_rpm
-                    result["source"] = result.get("source", "") + "_roc_frozen"
-
-            # Absolute temperature ceiling
-            if body.temp_c >= THERMAL_CEILING_C:
-                result["target_duty"] = 100
-                result["target_rpm"] = body.max_fan_rpm
-                result["source"] = "thermal_ceiling_emergency"
-                result["applied"] = True
-                logger.critical("[THERMAL_CEILING] %s: %.1f°C >= %.1f°C — MAX RPM",
-                                body.node_id, body.temp_c, THERMAL_CEILING_C)
+            # Pilot node: full optimization
+            result = optimization_service.optimize(owner_id, body)
 
         # Write telemetry to thermal history so the brain accumulates time-series data
         try:
@@ -599,31 +521,6 @@ def create_app(
             "savings_watts": round(savings_w, 2),
             "savings_percent": round(savings_pct, 1),
             "data_points_last_hour": len(history),
-        }
-
-    # ------------------------------------------------------------------
-    # POST /api/v1/calibration/start — Trigger calibration sweep (stub)
-    # ------------------------------------------------------------------
-
-    @app.post("/api/v1/calibration/start")
-    async def start_calibration_sweep(request: Request):
-        """Trigger a controlled fan duty sweep for thermal model calibration.
-
-        Cycles through 3-4 fan duty setpoints (25%, 40%, 55%, 70%), holds each
-        for 60 seconds, and records the thermal response. This gives the brain
-        diverse (temp, duty) data points to build confidence.
-
-        NOTE: This is a stub endpoint. The actual sweep logic will be
-        implemented when the agent supports duty override commands.
-        Manual trigger only — never auto-triggered.
-        """
-        _require_key(request)
-        # TODO: Implement actual sweep logic when agent supports duty override
-        return {
-            "status": "not_implemented",
-            "message": "Calibration sweep endpoint is a stub. Actual sweep logic pending agent duty override support.",
-            "planned_setpoints": [25, 40, 55, 70],
-            "hold_duration_s": 60,
         }
 
     return app

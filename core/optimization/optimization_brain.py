@@ -1362,6 +1362,17 @@ class OptimizationBrain:
             spike_bypass=_is_spike_bypass,
         )
 
+        _reasoning_logger.warning(
+            "[BRAIN_DEBUG] target_temp=%.1f temp_for_decision=%.1f temp_rising=%s "
+            "over_prov=%.3f power_slope=%.2f pre_ramp_margin=%.1f "
+            "pred_t10=%.1f pred_conf=%.2f "
+            "opt_delta=%.4f current_cooling=%.0f max_cooling=%.0f",
+            self.target_temp, temp_for_decision, temp_rising,
+            over_provisioning, power_slope, _pre_ramp_margin,
+            predicted_t10 if pred else -1, pred.confidence if pred else -1,
+            opt_result.recommended_delta, current_cooling, max_cooling,
+        )
+
         gap.recommended_cooling_delta = opt_result.recommended_delta
         gap.cooling_power_w = opt_result.total_cooling_power_w
         gap.power_savings_w = opt_result.power_savings_vs_current_w

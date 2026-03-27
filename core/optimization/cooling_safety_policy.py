@@ -52,35 +52,25 @@ ACTIVE_COMPUTE_MIN_FAN_RPM = _env_float("COOLEDAI_ACTIVE_COMPUTE_MIN_FAN_RPM", 2
 ACTIVE_COMPUTE_MAX_FRAC_OF_RATED = 0.92
 
 # --- Post-spike thermal hold (residual heat) ---
-# NOTE Phase 6: Raised from 42→75°C. At 42°C (normal operating temp), spike hold
-# fired constantly and blocked all optimization. 75°C is a real spike indicator.
-SPIKE_HOLD_ENTER_TEMP_C = _env_float("COOLEDAI_SPIKE_HOLD_ENTER_TEMP_C", 75.0)
-SPIKE_HOLD_DURATION_S = _env_float("COOLEDAI_SPIKE_HOLD_DURATION_S", 120.0)  # 2 min (reduced from 4)
+SPIKE_HOLD_ENTER_TEMP_C = _env_float("COOLEDAI_SPIKE_HOLD_ENTER_TEMP_C", 42.0)
+SPIKE_HOLD_DURATION_S = _env_float("COOLEDAI_SPIKE_HOLD_DURATION_S", 240.0)  # 4 min (3–5 min band)
 SPIKE_HOLD_MIN_FAN_RPM = _env_float("COOLEDAI_SPIKE_HOLD_MIN_FAN_RPM", 2800.0)
 SPIKE_HOLD_MAX_FRAC_OF_RATED = 0.95
 
-# --- Rate-of-change safety (Phase 6 — replaces static spike hold) ---
-RATE_OF_CHANGE_EMERGENCY_C_PER_S = 0.5   # >0.5°C/s → revert to BMC baseline
-RATE_OF_CHANGE_CAUTION_C_PER_S = 0.2     # >0.2°C/s → freeze current RPM
-RATE_OF_CHANGE_WINDOW_S = 30.0           # Rolling window for dT/dt
-
-# --- Absolute temperature ceiling ---
-THERMAL_CEILING_C = _env_float("COOLEDAI_THERMAL_CEILING_C", 85.0)
-
 # --- Power-slope pre-ramp (proactive fan before temp crosses target) ---
-# Phase 6.1: Raised thresholds — 1.5 W/s fires constantly during normal GPU
-# inference workloads (Llama ~65W fluctuating), blocking ALL reduction candidates.
-# New values: only trigger pre-ramp when power is ramping hard AND margin is small.
-POWER_SLOPE_PRE_RAMP_MODERATE_W_S = 8.0   # W/s — was 1.5; only block reductions under steep ramp
-POWER_SLOPE_PRE_RAMP_STEEP_W_S = 15.0     # W/s — was 4.0; enforce bump only under very steep ramp
-POWER_SLOPE_STEEP_MIN_DELTA = 0.08         # was 0.12; less aggressive bump
-# Margin threshold: only trigger pre-ramp when headroom is small
-POWER_SLOPE_PRE_RAMP_MARGIN_C = 5.0       # Only pre-ramp if within 5°C of target (was 15°C)
+# Phase 6.2: Raised from 1.5/4.0 — normal Llama inference fluctuates 1-3 W/s,
+# old thresholds forced temp_rising=True on every cycle, blocking all reductions.
+POWER_SLOPE_PRE_RAMP_MODERATE_W_S = 8.0    # W/s — only trigger on real power ramp
+POWER_SLOPE_PRE_RAMP_STEEP_W_S = 15.0      # W/s — enforce stronger bump on very steep ramp
+POWER_SLOPE_STEEP_MIN_DELTA = 0.08
+# Margin check: only pre-ramp when within this many °C of target (prevents
+# blocking reductions when there's ample thermal headroom).
+POWER_SLOPE_PRE_RAMP_MARGIN_C = 5.0
 
 # --- Safety net: never “silent” under rising load ---
-# Phase 6.1: Raised from 0.25 W/s — normal inference fluctuation exceeds this.
-SAFETY_NET_POWER_SLOPE_W_S = 5.0           # was 0.25; only net for significant power ramp
-SAFETY_NET_MIN_DELTA = 0.03                # was 0.06; gentler floor
+# Phase 6.2: Raised from 0.25 — even GPU idle fluctuation exceeded the old threshold.
+SAFETY_NET_POWER_SLOPE_W_S = 5.0
+SAFETY_NET_MIN_DELTA = 0.03
 
 
 def sustained_active_compute_signal(power: np.ndarray) -> bool:
@@ -129,44 +119,6 @@ def spike_hold_fan_floor_rpm(capacity_rpm: float, configured_min: Optional[float
     return min(float(base), capacity_rpm * SPIKE_HOLD_MAX_FRAC_OF_RATED)
 
 
-def check_rate_of_change(
-    temp_history: list,
-    window_s: float = RATE_OF_CHANGE_WINDOW_S,
-) -> str:
-    """Check thermal rate-of-change from recent temperature readings.
-
-    Args:
-        temp_history: List of (timestamp, temp_c) tuples, newest last.
-        window_s: Time window in seconds for dT/dt calculation.
-
-    Returns:
-        "emergency" if rising > 0.5°C/s (revert to BMC baseline)
-        "caution" if rising > 0.2°C/s (freeze current RPM)
-        "safe" if stable or cooling
-    """
-    import time as _time
-    if len(temp_history) < 2:
-        return "safe"
-    now = _time.time()
-    cutoff = now - window_s
-    recent = [(ts, t) for ts, t in temp_history if ts >= cutoff]
-    if len(recent) < 2:
-        return "safe"
-    oldest_ts, oldest_t = recent[0]
-    newest_ts, newest_t = recent[-1]
-    dt = newest_ts - oldest_ts
-    if dt < 1.0:
-        return "safe"
-    rate = (newest_t - oldest_t) / dt
-    if rate > RATE_OF_CHANGE_EMERGENCY_C_PER_S:
-        _log.warning("[RATE_SAFETY] Emergency: %.2f°C/s (threshold %.2f)", rate, RATE_OF_CHANGE_EMERGENCY_C_PER_S)
-        return "emergency"
-    if rate > RATE_OF_CHANGE_CAUTION_C_PER_S:
-        _log.info("[RATE_SAFETY] Caution: %.2f°C/s (threshold %.2f)", rate, RATE_OF_CHANGE_CAUTION_C_PER_S)
-        return "caution"
-    return "safe"
-
-
 def merge_policy_floors(
     telemetry_max_cooling_rpm: float,
     *,
@@ -175,7 +127,6 @@ def merge_policy_floors(
     sustained_active: bool,
     spike_hold_min_rpm: float = 0.0,
     calibration_profile: Optional["CalibrationProfile"] = None,
-    mode: str = "shadow",
 ) -> float:
     """Single soft floor in RPM from active compute + optional spike hold.
 
@@ -185,13 +136,6 @@ def merge_policy_floors(
     cap = policy_capacity_rpm(telemetry_max_cooling_rpm, rated_max_fan_rpm)
     floor = 0.0
 
-    # Phase 6: In supervised/active modes, skip policy floor stacking.
-    # Rate-of-change monitoring + absolute ceiling provides safety instead.
-    if mode in ("supervised", "active"):
-        _log.debug("[POLICY_FLOORS] Skipped in %s mode (rate-of-change safety active)", mode)
-        return 0.0
-
-    # Shadow mode: full policy floors (BMC controls fans anyway)
     # Resolve thresholds: profile overrides → module constants
     if calibration_profile is not None:
         active_floor_rpm = calibration_profile.active_compute_fan_floor_rpm
