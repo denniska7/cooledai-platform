@@ -2458,8 +2458,10 @@ async def get_dashboard_summary(
     for row in history:
         hr = _history_row(row)
         ts, _, _, p_rpm, b_rpm = hr[0], hr[1], hr[2], hr[3], hr[4]
-        if ts < month_start or p_rpm is None or b_rpm is None:
+        if ts < month_start or p_rpm is None:
             continue
+        if b_rpm is None:
+            b_rpm = _BASELINE_FAN_RPM if _BASELINE_FAN_RPM > 0 else p_rpm
         delta_w = max(0.0, _fan_power_watts(b_rpm) - _fan_power_watts(p_rpm))
         monthly_wh += delta_w * (5.0 / 3600.0)  # ~5s per sample
 
@@ -2473,8 +2475,10 @@ async def get_dashboard_summary(
     for row in history:
         hr = _history_row(row)
         ts, p_rpm, b_rpm = hr[0], hr[3], hr[4]
-        if p_rpm is None or b_rpm is None:
+        if p_rpm is None:
             continue
+        if b_rpm is None:
+            b_rpm = _BASELINE_FAN_RPM if _BASELINE_FAN_RPM > 0 else p_rpm
         d = max(0.0, _fan_power_watts(b_rpm) - _fan_power_watts(p_rpm))
         if ts >= today_start:
             today_deltas.append(d)
@@ -2496,8 +2500,10 @@ async def get_dashboard_summary(
     for row in history:
         hr = _history_row(row)
         ts, p_rpm, b_rpm = hr[0], hr[3], hr[4]
-        if ts < thirty_days_ago or p_rpm is None or b_rpm is None:
+        if ts < thirty_days_ago or p_rpm is None:
             continue
+        if b_rpm is None:
+            b_rpm = _BASELINE_FAN_RPM if _BASELINE_FAN_RPM > 0 else p_rpm
         thirty_day_wh += max(0.0, _fan_power_watts(b_rpm) - _fan_power_watts(p_rpm)) * (5.0 / 3600.0)
         thirty_day_samples += 1
     days_covered = min(30, (now - thirty_days_ago) / 86400) if thirty_day_samples > 0 else 1
@@ -2756,6 +2762,33 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
         if remaining:
             baseline_id = remaining[0]
             baseline = all_nodes[baseline_id]
+
+    # Phase 6.4: If pilot has no temp data (heartbeat-only), merge from baseline or
+    # first node with temp data so the dashboard doesn't show null for everything.
+    _pilot_temp = pilot.get("avg_gpu_temp_c", pilot.get("max_gpu_temp_c", pilot.get("max_temp_c")))
+    if _pilot_temp is None and pilot_id:
+        # Try to find a node with actual temp data to use as pilot
+        for nid in agent_keys:
+            if nid == baseline_id:
+                continue
+            cand = all_nodes[nid]
+            ct = cand.get("avg_gpu_temp_c", cand.get("max_gpu_temp_c", cand.get("max_temp_c")))
+            if ct is not None:
+                # Merge temp data into pilot dict (keep pilot_id for branding)
+                for k in ("avg_gpu_temp_c", "max_gpu_temp_c", "max_temp_c", "fan_rpm",
+                          "cpu_temp_c", "gpu_power_w", "peak_power_w", "gpu_temps_c",
+                          "raw_fan_wattage", "_received_at"):
+                    if k in cand and (k not in pilot or pilot.get(k) is None):
+                        pilot[k] = cand[k]
+                break
+        # Last resort: copy from baseline if still no temp
+        _pilot_temp = pilot.get("avg_gpu_temp_c", pilot.get("max_gpu_temp_c", pilot.get("max_temp_c")))
+        if _pilot_temp is None and baseline:
+            for k in ("avg_gpu_temp_c", "max_gpu_temp_c", "max_temp_c", "fan_rpm",
+                      "cpu_temp_c", "gpu_power_w", "peak_power_w", "gpu_temps_c",
+                      "raw_fan_wattage"):
+                if k in baseline and (k not in pilot or pilot.get(k) is None):
+                    pilot[k] = baseline[k]
 
     pilot_rpm = float(pilot.get("fan_rpm", 0))
     baseline_rpm = float(baseline.get("fan_rpm", 0)) if baseline else 0.0
