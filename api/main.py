@@ -687,7 +687,7 @@ except Exception:
 _cooling_unit_previous_state: Dict[str, Any] = {}
 
 # Phase 6.2: Deploy version + per-node recommendation tracking for /debug/brain-state
-DEPLOY_VERSION = "6.2"
+DEPLOY_VERSION = "6.3"
 _last_brain_recommendation: Dict[str, dict] = {}
 _last_brain_recommendation_lock = threading.Lock()
 
@@ -1841,6 +1841,22 @@ def _get_pilot_baseline_snapshot(
             baseline_gpu_pwr = float(pw) if pw is not None else None
             ppw = all_nodes[nid].get("peak_power_w")
             baseline_peak_pwr = float(ppw) if ppw is not None else None
+    # Phase 6.3: Fallback — if no pilot matched strict patterns, use first top-level node with temp data
+    if pilot_temp is None:
+        for nid in all_nodes:
+            if "/" in nid:
+                continue
+            data = all_nodes[nid]
+            candidate_temp = data.get("avg_gpu_temp_c", data.get("max_gpu_temp_c", data.get("max_temp_c")))
+            if candidate_temp is not None:
+                pilot_temp = candidate_temp
+                pilot_rpm = data.get("fan_rpm")
+                pilot_cpu = data.get("cpu_temp_c")
+                pw = data.get("gpu_power_w")
+                pilot_gpu_pwr = float(pw) if pw is not None else None
+                ppw = data.get("peak_power_w")
+                pilot_peak_pwr = float(ppw) if ppw is not None else None
+                break
     return pilot_temp, baseline_temp, pilot_rpm, baseline_rpm, pilot_cpu, baseline_cpu, pilot_gpu_pwr, baseline_gpu_pwr, pilot_peak_pwr, baseline_peak_pwr
 
 
@@ -1861,13 +1877,16 @@ def _smooth_raw_points(points: list, window: int = 5, keys: tuple = ("pilot_gpu_
 
 
 def _append_thermal_history(owner_id: str, now_ts: float) -> None:
-    """Append a thermal snapshot when we have both pilot and baseline temps."""
+    """Append a thermal snapshot. Works with pilot-only (no baseline required)."""
     out = _get_pilot_baseline_snapshot(owner_id)
     pilot_temp, baseline_temp, pilot_rpm, baseline_rpm = out[:4]
     pilot_cpu, baseline_cpu, pilot_gpu_pwr, baseline_gpu_pwr = out[4:8]
     pilot_peak_pwr, baseline_peak_pwr = out[8:10]
-    if pilot_temp is None or baseline_temp is None:
-        return
+    if pilot_temp is None:
+        return  # Need at least pilot data
+    # Phase 6.3: baseline_temp can be None — use pilot_temp as surrogate for chart compatibility
+    if baseline_temp is None:
+        baseline_temp = pilot_temp
     history = _thermal_history.setdefault(owner_id, [])
     # Carry forward last non-zero GPU power when 0 (NVML/nvidia-smi often report 0 when idle)
     if history and (pilot_gpu_pwr == 0 or baseline_gpu_pwr == 0):
@@ -2069,7 +2088,12 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
         tenant[agent_id] = consolidated
 
         aid_lower = agent_id.lower()
-        is_pilot = "pilot" in aid_lower or ("cooledai" in aid_lower and "predictive" in aid_lower)
+        # Phase 6.3: If it's not explicitly a control/traditional node, treat as pilot
+        is_pilot = (
+            "pilot" in aid_lower
+            or ("cooledai" in aid_lower and "predictive" in aid_lower)
+            or "control" not in aid_lower
+        )
         if "fan_rpm" in consolidated and is_pilot:
             _accumulate_savings(owner_id, float(consolidated["fan_rpm"]))
 
@@ -2825,6 +2849,12 @@ async def debug_brain_state():
     with _last_brain_recommendation_lock:
         recs = dict(_last_brain_recommendation)
 
+    # Phase 6.3: Show tenant telemetry state for pipeline debugging
+    tenant_nodes = list(_tenant_telemetry.get(FIXED_OWNER_ID, {}).keys())
+    out = _get_pilot_baseline_snapshot(FIXED_OWNER_ID)
+    pilot_found = out[0] is not None
+    baseline_found = out[1] is not None
+
     return {
         "deploy_version": DEPLOY_VERSION,
         "target_temp": getattr(_brain, "target_temp", None),
@@ -2832,6 +2862,10 @@ async def debug_brain_state():
         "data_hours": data_hours,
         "confidence_pct": confidence_pct,
         "last_recommendations": recs,
+        "tenant_nodes": tenant_nodes,
+        "pilot_found": pilot_found,
+        "baseline_found": baseline_found,
+        "tenant_node_count": len(tenant_nodes),
     }
 
 
@@ -3188,6 +3222,65 @@ def _build_nodes_for_agent_control(
     return nodes
 
 
+def _ensure_thermal_history_from_control(owner_id: str, body: AgentOptimizeControlInput, now_ts: float) -> None:
+    """Write agent control snapshot directly to thermal history.
+
+    Phase 6.3: Ensures the brain accumulates data even when /api/v1/telemetry is not called.
+    """
+    tenant = _tenant_telemetry.setdefault(owner_id, {})
+    node_data = tenant.get(body.node_id, {})
+    node_data["max_temp_c"] = body.temp_c
+    node_data["avg_gpu_temp_c"] = body.temp_c
+    node_data["max_gpu_temp_c"] = body.temp_c
+    node_data["fan_rpm"] = int(body.fan_rpm)
+    node_data["gpu_power_w"] = body.gpu_power_w
+    if body.cpu_temp_c is not None:
+        node_data["cpu_temp_c"] = body.cpu_temp_c
+    if body.peak_power_w is not None:
+        node_data["peak_power_w"] = body.peak_power_w
+    node_data["_received_at"] = now_ts
+    tenant[body.node_id] = node_data
+    _append_thermal_history(owner_id, now_ts)
+
+
+@app.post("/api/v1/gateway/telemetry-batch", dependencies=[Depends(_require_api_key)])
+async def receive_gateway_batch(request: Request, owner_id: str = Depends(_resolve_owner)):
+    """Receive batched telemetry from on-prem gateway's CloudForwarder."""
+    payload = await request.json()
+    batch = payload.get("batch", [])
+    gateway_id = payload.get("gateway_id", "unknown")
+    now_ts = time.time()
+    ingested = 0
+    for entry in batch:
+        node_id = entry.get("node_id", gateway_id)
+        snapshot = entry.get("snapshot", {})
+        tenant = _tenant_telemetry.setdefault(owner_id, {})
+        record = dict(snapshot)
+        record["_received_at"] = now_ts
+        record["_owner_id"] = owner_id
+        record["_source"] = "gateway_batch"
+        if "temp_c" in snapshot:
+            record["max_temp_c"] = snapshot["temp_c"]
+            record["avg_gpu_temp_c"] = snapshot["temp_c"]
+            record["max_gpu_temp_c"] = snapshot["temp_c"]
+        if "fan_rpm" in snapshot:
+            record["fan_rpm"] = int(snapshot["fan_rpm"])
+        if "gpu_power_w" in snapshot:
+            record["gpu_power_w"] = snapshot["gpu_power_w"]
+        if "cpu_temp_c" in snapshot:
+            record["cpu_temp_c"] = snapshot["cpu_temp_c"]
+        if "peak_power_w" in snapshot:
+            record["peak_power_w"] = snapshot["peak_power_w"]
+        tenant[node_id] = record
+        ingested += 1
+    _append_thermal_history(owner_id, now_ts)
+    logging.getLogger("api.main").info(
+        "[GATEWAY_BATCH] Received %d entries from gateway=%s, owner=%s",
+        ingested, gateway_id, owner_id,
+    )
+    return {"status": "ok", "ingested": ingested, "gateway_id": gateway_id}
+
+
 @app.post("/api/v1/optimize/control", dependencies=[Depends(_require_api_key)])
 async def agent_optimize_control(
     body: AgentOptimizeControlInput,
@@ -3225,9 +3318,18 @@ async def agent_optimize_control(
                 "Failed to update brain calibration profile: %s", exc
             )
 
+    # Phase 6.3: Write current snapshot to thermal history so brain accumulates data over time
+    _ensure_thermal_history_from_control(owner_id, body, now_ts=time.time())
+
     nodes = _build_nodes_for_agent_control(owner_id, body)
     if len(nodes) < 2:
         # Not enough history; use simple duty from temp
+        logging.getLogger("api.main").warning(
+            "[CONTROL_FALLBACK] node=%s nodes=%d thermal_history_count=%d — "
+            "falling back to simple duty curve (brain not reached)",
+            body.node_id, len(nodes),
+            len(_thermal_history.get(owner_id, [])),
+        )
         delta_temp = body.temp_c - 65.0
         if delta_temp < -15:
             duty = 25
