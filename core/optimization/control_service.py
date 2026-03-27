@@ -317,6 +317,14 @@ class ControlService:
                         k: v for k, v in calibration_profile_dict.items()
                         if k in CalibrationProfile.__dataclass_fields__
                     })
+                    # Floor guards: agent may send stale thresholds from old code
+                    new_cp.active_compute_trigger_w = max(50.0, new_cp.active_compute_trigger_w)
+                    new_cp.cpu_safe_ceiling_c = max(55.0, new_cp.cpu_safe_ceiling_c)
+                    hw = new_cp.gpu_hw_thermal_limit_c
+                    if hw > 0:
+                        new_cp.spike_trigger_temp_c = max(
+                            hw - 8.0, min(hw * 0.92, new_cp.spike_trigger_temp_c)
+                        )
                     self._store.set_calibration_profile(node_id, new_cp)
                     logger.info(
                         "[PREDICTOR] Node %s calibration profile updated "
