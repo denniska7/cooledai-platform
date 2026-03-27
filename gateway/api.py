@@ -220,6 +220,7 @@ def create_app(
     optimization_service: Any = None,
     cloud_forwarder: Any = None,
     keys_file: Optional[str] = None,
+    control_gate: Any = None,
 ) -> FastAPI:
     """Create the gateway FastAPI application.
 
@@ -227,6 +228,7 @@ def create_app(
         optimization_service: LocalOptimizationService instance
         cloud_forwarder: CloudForwarder instance (optional, for telemetry batching)
         keys_file: Path to api_keys.json (defaults to data/api_keys.json)
+        control_gate: ControlGate instance (optional, for mode switching)
     """
     app = FastAPI(
         title="CooledAI Edge Gateway",
@@ -309,6 +311,18 @@ def create_app(
                 result["unclamped_target_rpm"] = result_target_rpm
                 result["unclamped_delta"] = result_delta
 
+        # Thermal ceiling: auto-revert to shadow if GPU exceeds 85°C
+        if control_gate is not None and not _is_control_node(body.node_id):
+            if control_gate.check_thermal_ceiling(body.temp_c):
+                # Reverted — hold current fans
+                result["target_rpm"] = body.fan_rpm
+                result["target_duty"] = int(round((body.fan_rpm / max(body.max_fan_rpm, 1000)) * 100))
+                result["recommended_cooling_delta"] = 0.0
+                result["thermal_ceiling_triggered"] = True
+
+        # Annotate result with current gateway mode
+        result["gateway_mode"] = os.environ.get("CONTROL_MODE", "SHADOW").upper()
+
         # Write telemetry to thermal history so the brain accumulates time-series data
         try:
             store = optimization_service.control_service._store
@@ -361,6 +375,64 @@ def create_app(
             "nodes_active": nodes_active,
             "uptime_seconds": round(time.time() - _start_time, 0),
         }
+
+    # ------------------------------------------------------------------
+    # GET /api/v1/mode — Current gateway control mode
+    # ------------------------------------------------------------------
+
+    @app.get("/api/v1/mode")
+    async def get_gateway_mode(request: Request):
+        _require_key(request)
+        if control_gate is not None:
+            return control_gate.status()
+        return {
+            "mode": os.environ.get("CONTROL_MODE", "SHADOW").upper(),
+            "mode_since": None,
+        }
+
+    # ------------------------------------------------------------------
+    # POST /api/v1/mode — Switch gateway control mode
+    # ------------------------------------------------------------------
+
+    @app.post("/api/v1/mode")
+    async def set_gateway_mode(request: Request):
+        _require_key(request)
+        if control_gate is None:
+            raise HTTPException(status_code=503, detail="ControlGate not initialized")
+        body = await request.json()
+        new_mode_str = body.get("mode", "").upper()
+        try:
+            from gateway.control_gate import CONTROL_MODE as CM
+            new_mode = CM(new_mode_str)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid mode '{new_mode_str}'. Must be SHADOW, SUPERVISED, or PRODUCTION.",
+            )
+
+        # Validate prerequisites for SUPERVISED
+        if new_mode == CM.SUPERVISED:
+            # Check confidence > 80%
+            if optimization_service is not None:
+                profiles = optimization_service.get_all_profiles()
+                max_samples = max(
+                    (getattr(p, "sample_count", 0) for p in profiles.values()),
+                    default=0,
+                )
+                confidence = min(100.0, max_samples / 3.0)
+                if confidence < 80:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Confidence {confidence:.0f}% < 80% — insufficient calibration data for supervised mode.",
+                    )
+
+        ok = control_gate.switch_mode(new_mode, reason="api_request")
+        if not ok:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Mode transition from {control_gate.mode.value} to {new_mode_str} is not allowed.",
+            )
+        return control_gate.status()
 
     # ------------------------------------------------------------------
     # GET /api/v1/debug/calibrators — Per-node calibration state

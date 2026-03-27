@@ -696,6 +696,10 @@ _activity_feed: list = []  # newest first
 _activity_feed_lock = threading.Lock()
 _MAX_ACTIVITY_ENTRIES = 200
 
+# Phase 6.6: Forwarded gateway mode (updated from batch endpoint)
+_forwarded_gateway_mode: Dict[str, Any] = {}  # {"mode": "SHADOW", "ts": ...}
+_forwarded_gateway_mode_lock = threading.Lock()
+
 
 def _append_activity_entry(node_id: str, temp_c: float, fan_rpm: float, result: dict) -> None:
     """Build and append an activity feed entry from a brain recommendation."""
@@ -3058,13 +3062,21 @@ async def get_gateway_mode(
     # the system became operational. Avoids "Since Invalid Date" in frontend.
     mode_since = cal_updated
 
+    # Use forwarded gateway mode if available (from batch endpoint)
+    with _forwarded_gateway_mode_lock:
+        gw_mode = _forwarded_gateway_mode.get("mode")
+        gw_mode_ts = _forwarded_gateway_mode.get("ts")
+
+    display_mode = gw_mode.lower() if gw_mode else os.environ.get("COOLEDAI_MODE", "shadow")
+
     return {
-        "mode": os.environ.get("COOLEDAI_MODE", "shadow"),
+        "mode": display_mode,
         "confidence_pct": confidence_pct,
         "data_hours": round(data_hours, 2),
         "calibration_state": cal_state,
         "target_temp": getattr(_brain, "target_temp", None),
         "mode_since": mode_since,
+        "gateway_mode_forwarded": gw_mode is not None,
     }
 
 
@@ -3474,6 +3486,13 @@ async def receive_gateway_batch(request: Request, owner_id: str = Depends(_resol
         ingested += 1
         # Phase 6.4: Extract brain recommendation from forwarded result
         result = entry.get("result") or entry.get("optimization") or {}
+        # Phase 6.6: Extract forwarded gateway mode
+        gw_mode = result.get("gateway_mode")
+        if gw_mode:
+            with _forwarded_gateway_mode_lock:
+                _forwarded_gateway_mode["mode"] = gw_mode
+                _forwarded_gateway_mode["ts"] = int(now_ts)
+
         if result and result.get("source") not in (None, "control_passthrough"):
             with _last_brain_recommendation_lock:
                 _last_brain_recommendation[node_id] = {
@@ -3483,6 +3502,8 @@ async def receive_gateway_batch(request: Request, owner_id: str = Depends(_resol
                     "source": result.get("source", "unknown"),
                     "ts": int(now_ts),
                     "origin": "gateway_forwarded",
+                    "shadow_clamped": result.get("shadow_clamped", False),
+                    "gateway_mode": gw_mode,
                 }
             # Build activity entry from forwarded result
             temp_c = snapshot.get("temp_c", 0)
