@@ -5,7 +5,7 @@ Used by both the cloud API (api/main.py) and the edge gateway (gateway/api.py)
 so agents can POST telemetry to either endpoint with the same request format.
 """
 
-from typing import Optional
+from typing import List, Optional
 from pydantic import BaseModel
 
 
@@ -29,3 +29,7 @@ class AgentOptimizeControlInput(BaseModel):
     peak_power_w: Optional[float] = None
     # Calibration profile from agent's ThermalCalibrator (dict form)
     calibration_profile: Optional[dict] = None
+    # Phase 4.1: Per-GPU temperature and power arrays for dashboard analytics
+    gpu_temps_c: Optional[List[float]] = None
+    gpu_powers_w: Optional[List[float]] = None
+    gpu_util_pcts: Optional[List[float]] = None

@@ -4317,6 +4317,19 @@ async def ingest_gateway_batch(body: GatewayBatchInput, owner_id: str = Depends(
                         node_data["cpu_temp_c"] = cpu_temp_c
                     if peak_power_w is not None:
                         node_data["peak_power_w"] = peak_power_w
+                    # Per-GPU temps and power from agent (Phase 4.1)
+                    gpu_temps_c = telemetry.get("gpu_temps_c")
+                    if isinstance(gpu_temps_c, list) and gpu_temps_c:
+                        node_data["gpu_temps_c"] = [float(t) for t in gpu_temps_c]
+                        node_data["avg_gpu_temp_c"] = sum(node_data["gpu_temps_c"]) / len(node_data["gpu_temps_c"])
+                        node_data["max_gpu_temp_c"] = max(node_data["gpu_temps_c"])
+                    gpu_powers_w = telemetry.get("gpu_powers_w")
+                    if isinstance(gpu_powers_w, list) and gpu_powers_w:
+                        node_data["gpu_powers_w"] = [float(p) for p in gpu_powers_w]
+                    # GPU utilization from agent
+                    gpu_util_pcts = telemetry.get("gpu_util_pcts")
+                    if isinstance(gpu_util_pcts, list) and gpu_util_pcts:
+                        node_data["gpu_util_pcts"] = [float(u) for u in gpu_util_pcts]
                     # Preserve optimization result for pilot nodes
                     opt_result = entry.optimization or {}
                     if opt_result.get("target_duty") is not None:
