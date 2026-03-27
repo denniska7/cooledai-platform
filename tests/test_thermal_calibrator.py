@@ -157,7 +157,8 @@ class TestSafetyClamps:
 
     def test_spike_trigger_clamped_to_hw_limit_range(self):
         # Very low temp_std → spike_trigger would be very close to mean
-        # Clamp: [hw_limit * 0.50, hw_limit * 0.85]
+        # New formula: min(hw_limit - 8, max(p99 + 5, 75))
+        # Clamp: [hw_limit - 8, hw_limit * 0.92]
         cal = _build_calibrator(window_s=5.0, gpu_limit=83.0)
         # Feed uniform temp near 20°C with very low std
         for i in range(200):
@@ -168,13 +169,13 @@ class TestSafetyClamps:
                 now=float(i),
             )
         p = cal.profile
-        # mean ≈ 20, std ≈ tiny → spike_trigger = mean + 2.5σ ≈ 20.x
-        # But clamp forces it to at least 83 * 0.50 = 41.5
-        assert p.spike_trigger_temp_c >= 83.0 * 0.50 - 0.1
-        assert p.spike_trigger_temp_c <= 83.0 * 0.85 + 0.1
+        # p99 ≈ 20.2 → max(25.2, 75) = 75 → min(75, 75) = 75
+        # Clamp: max(75, min(76.36, 75)) = 75
+        assert p.spike_trigger_temp_c >= 75.0 - 0.1
+        assert p.spike_trigger_temp_c <= 83.0 * 0.92 + 0.1
 
     def test_spike_trigger_clamped_high(self):
-        # Very high temps → spike_trigger above hw_limit * 0.85
+        # Very high temps → spike_trigger clamped to hw_limit * 0.92
         cal = _build_calibrator(window_s=5.0, gpu_limit=83.0)
         for i in range(200):
             cal.update(
@@ -184,7 +185,10 @@ class TestSafetyClamps:
                 now=float(i),
             )
         p = cal.profile
-        assert p.spike_trigger_temp_c <= 83.0 * 0.85 + 0.1
+        # p99 near 80 → max(85, 75) = 85 → min(75, 85) = 75
+        # Clamp: max(75, min(76.36, 75)) = 75
+        assert p.spike_trigger_temp_c >= 75.0 - 0.1
+        assert p.spike_trigger_temp_c <= 83.0 * 0.92 + 0.1
 
     def test_hysteresis_clamped_min_max(self):
         # Very small fan range → hysteresis would be < 20

@@ -464,7 +464,12 @@ class ThermalCalibrator:
         active_floor = fan_idle + fan_range * 0.12
         active_trigger_w = gpu_idle * 1.30
         spike_hold_floor = fan_ceiling * 1.10
-        spike_trigger = temp_mean + temp_std * 2.5
+        # Spike trigger: derive from HW limit with safety margin, not p99.
+        # Old formula (temp_mean + 2.5σ) placed trigger too close to normal ops.
+        spike_trigger = min(
+            hw_limit - 8.0,                    # 8°C safety margin from HW limit
+            max(temp_p99 + 5.0, 75.0),         # At least p99+5°C, floor 75°C
+        )
         hysteresis = fan_range * 0.08
         slew_up = fan_range * 0.15
         slew_down = fan_range * 0.04
@@ -473,7 +478,7 @@ class ThermalCalibrator:
         sustained_window = 12.0
 
         # --- Safety clamps ---
-        spike_trigger = max(hw_limit * 0.50, min(hw_limit * 0.85, spike_trigger))
+        spike_trigger = max(hw_limit - 8.0, min(hw_limit * 0.92, spike_trigger))
         spike_hold_floor = min(spike_hold_floor, rated * 0.95)
         hysteresis = max(20.0, min(60.0, hysteresis))
         slew_up = max(30.0, slew_up)
@@ -649,7 +654,7 @@ class ThermalCalibrator:
         # Re-apply safety clamps after EWMA blend
         hw_limit = self._gpu_hw_limit
         rated = self._fan_rated_max
-        old.spike_trigger_temp_c = max(hw_limit * 0.50, min(hw_limit * 0.85, old.spike_trigger_temp_c))
+        old.spike_trigger_temp_c = max(hw_limit - 8.0, min(hw_limit * 0.92, old.spike_trigger_temp_c))
         old.spike_hold_fan_floor_rpm = min(old.spike_hold_fan_floor_rpm, rated * 0.95)
         old.hysteresis_rpm = max(20.0, min(60.0, old.hysteresis_rpm))
         old.slew_rate_up_rpm_per_cycle = max(30.0, old.slew_rate_up_rpm_per_cycle)

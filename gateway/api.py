@@ -290,6 +290,25 @@ def create_app(
             # Pilot node: full optimization
             result = optimization_service.optimize(owner_id, body)
 
+        # Shadow mode: brain observes but doesn't control fans.
+        # Clamp recommendations to <= current RPM (can only project savings, not increases)
+        _gw_mode = os.environ.get("CONTROL_MODE", "SHADOW").upper()
+        if _gw_mode == "SHADOW" and not _is_control_node(body.node_id):
+            result_target_rpm = result.get("target_rpm")
+            result_delta = result.get("recommended_cooling_delta", 0)
+            if result_target_rpm is not None and result_target_rpm > body.fan_rpm:
+                logger.info(
+                    "[SHADOW_CLAMP] node=%s unclamped_target=%.0f current=%.0f — "
+                    "clamping to current (shadow has no fan authority)",
+                    body.node_id, result_target_rpm, body.fan_rpm,
+                )
+                result["target_rpm"] = body.fan_rpm
+                result["target_duty"] = int(round((body.fan_rpm / max(body.max_fan_rpm, 1000)) * 100))
+                result["recommended_cooling_delta"] = 0.0
+                result["shadow_clamped"] = True
+                result["unclamped_target_rpm"] = result_target_rpm
+                result["unclamped_delta"] = result_delta
+
         # Write telemetry to thermal history so the brain accumulates time-series data
         try:
             store = optimization_service.control_service._store
