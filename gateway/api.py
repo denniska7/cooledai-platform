@@ -313,6 +313,50 @@ def create_app(
                 result["unclamped_target_rpm"] = result_target_rpm
                 result["unclamped_delta"] = result_delta
 
+        # Supervised mode: brain can reduce fans up to 20% below current,
+        # but cannot increase above current BMC RPM. Rate-limited to 5%/cycle.
+        if _gw_mode == "SUPERVISED" and not _is_control_node(body.node_id):
+            result_target_rpm = result.get("target_rpm")
+            if result_target_rpm is not None:
+                unclamped = result_target_rpm
+                max_fan = max(body.max_fan_rpm, 1000)
+
+                # Block increases: supervised mode only allows reductions
+                if result_target_rpm > body.fan_rpm:
+                    result_target_rpm = body.fan_rpm
+
+                # Cap reductions at 20% below current
+                floor_rpm = body.fan_rpm * 0.80
+                if result_target_rpm < floor_rpm:
+                    result_target_rpm = floor_rpm
+
+                # Rate limit: max 5% of max_fan_rpm change per cycle
+                max_change = max_fan * 0.05
+                if abs(result_target_rpm - body.fan_rpm) > max_change:
+                    if result_target_rpm < body.fan_rpm:
+                        result_target_rpm = body.fan_rpm - max_change
+                    else:
+                        result_target_rpm = body.fan_rpm + max_change
+
+                # Absolute floor: never below 30% (2100 RPM on 7000 max)
+                abs_floor = max_fan * 0.30
+                if result_target_rpm < abs_floor:
+                    result_target_rpm = abs_floor
+
+                if result_target_rpm != unclamped:
+                    logger.info(
+                        "[SUPERVISED_CLAMP] node=%s unclamped=%.0f clamped=%.0f "
+                        "current=%.0f floor=%.0f (20%% cap)",
+                        body.node_id, unclamped, result_target_rpm,
+                        body.fan_rpm, floor_rpm,
+                    )
+                result["target_rpm"] = result_target_rpm
+                result["target_duty"] = int(round((result_target_rpm / max_fan) * 100))
+                result["recommended_cooling_delta"] = (result_target_rpm - body.fan_rpm) / max(body.fan_rpm, 1)
+                if unclamped != result_target_rpm:
+                    result["supervised_clamped"] = True
+                    result["unclamped_target_rpm"] = unclamped
+
         # Thermal ceiling: auto-revert to shadow if GPU exceeds 85°C
         if control_gate is not None and not _is_control_node(body.node_id):
             if control_gate.check_thermal_ceiling(body.temp_c):
