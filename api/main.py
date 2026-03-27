@@ -687,7 +687,7 @@ except Exception:
 _cooling_unit_previous_state: Dict[str, Any] = {}
 
 # Phase 6.2: Deploy version + per-node recommendation tracking for /debug/brain-state
-DEPLOY_VERSION = "6.4"
+DEPLOY_VERSION = "6.4c"
 _last_brain_recommendation: Dict[str, dict] = {}
 _last_brain_recommendation_lock = threading.Lock()
 
@@ -3436,7 +3436,7 @@ async def receive_gateway_batch(request: Request, owner_id: str = Depends(_resol
     ingested = 0
     for entry in batch:
         node_id = entry.get("node_id", gateway_id)
-        snapshot = entry.get("snapshot", {})
+        snapshot = entry.get("snapshot") or entry.get("telemetry") or {}
         tenant = _tenant_telemetry.setdefault(owner_id, {})
         record = dict(snapshot)
         record["_received_at"] = now_ts
@@ -3457,7 +3457,7 @@ async def receive_gateway_batch(request: Request, owner_id: str = Depends(_resol
         tenant[node_id] = record
         ingested += 1
         # Phase 6.4: Extract brain recommendation from forwarded result
-        result = entry.get("result", {})
+        result = entry.get("result") or entry.get("optimization") or {}
         if result and result.get("source") not in (None, "control_passthrough"):
             with _last_brain_recommendation_lock:
                 _last_brain_recommendation[node_id] = {
