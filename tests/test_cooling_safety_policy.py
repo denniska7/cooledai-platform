@@ -50,7 +50,7 @@ class TestCoolingSafetyPolicy(unittest.TestCase):
         clear_spike_hold("test-session")
         import time
 
-        record_spike_if_hot("test-session", 50.0, time.time())
+        record_spike_if_hot("test-session", 80.0, time.time())  # Above 75°C threshold
         # Capacity uses rated max (7000 default) even when node telemetry shows ~1800 RPM.
         floor = spike_hold_floor_rpm("test-session", 7000.0, time.time())
         self.assertGreater(floor, 2700.0)

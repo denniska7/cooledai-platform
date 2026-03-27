@@ -21,31 +21,31 @@ interface ModeState {
 const MODE_LABELS: Record<Mode, { title: string; desc: string }> = {
   shadow: {
     title: "Shadow (Observe Only)",
-    desc: "Brain recommends but does not control fans.",
+    desc: "BMC controls fans. CooledAI observes thermal patterns and simulates recommendations.",
   },
   supervised: {
-    title: "Supervised (Conservative)",
-    desc: "Brain controls fans with max 10% reduction from baseline.",
+    title: "Supervised (Guided Optimization)",
+    desc: "CooledAI controls fans with max 20% reduction from BMC baseline. Generates calibration data.",
   },
   active: {
     title: "Active (Full Optimization)",
-    desc: "Brain has full control of fan speeds based on thermal model.",
+    desc: "CooledAI optimizes fan speeds within ASHRAE limits. Rate-of-change monitoring + 85\u00B0C ceiling.",
   },
 };
 
 const CONFIRM_MSG: Record<string, string> = {
   "shadow->supervised":
-    "CooledAI will begin controlling fan speeds conservatively (max 10% reduction). Continue?",
+    "CooledAI will begin controlling fan speeds (max 20% below BMC baseline). Rate-of-change safety active. Continue?",
   "shadow->active":
-    "CooledAI will take full control of fan speeds. An automatic safety fallback reverts to Shadow if GPU > 85\u00B0C. Continue?",
+    "CooledAI will fully optimize fan speeds. Rate-of-change monitoring + auto-fallback at 85\u00B0C. Continue?",
   "supervised->active":
-    "CooledAI will take full control of fan speeds. An automatic safety fallback reverts to Shadow if GPU > 85\u00B0C. Continue?",
+    "CooledAI will fully optimize fan speeds. Rate-of-change monitoring + auto-fallback at 85\u00B0C. Continue?",
   "active->shadow":
-    "CooledAI will stop controlling fans. The BMC will resume full control. Continue?",
+    "CooledAI will stop controlling fans. BMC resumes full control. Continue?",
   "supervised->shadow":
-    "CooledAI will stop controlling fans. The BMC will resume full control. Continue?",
+    "CooledAI will stop controlling fans. BMC resumes full control. Continue?",
   "active->supervised":
-    "CooledAI will limit fan reductions to max 10% below baseline. Continue?",
+    "CooledAI will limit fan reductions to max 20% below BMC baseline. Continue?",
 };
 
 export function ModeToggle({ token }: { token?: string | null }) {

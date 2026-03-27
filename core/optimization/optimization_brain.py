@@ -1434,34 +1434,17 @@ class OptimizationBrain:
         gap.cautionary_cooling_state = ci_result.cautionary_cooling
 
         if ci_result.cautionary_cooling:
-            # Override to safe higher-RPM baseline (mechanical longevity may clamp to slew rate)
-            # BUT respect large thermal margins: when temp is far below target, the optimizer's
-            # reduction is already well-justified — overriding it wastes energy.
-            thermal_margin_for_caution = self.target_temp - current_thermal
-            if thermal_margin_for_caution > 15:
-                # Large margin: skip cautionary override entirely — let the optimizer's
-                # recommendation (likely a reduction) flow through guardrails/longevity as normal.
-                # The 15+ °C thermal buffer IS the safety net; cautionary +15% would only
-                # fight the optimizer and prevent the brain from learning efficient operation.
-                gap.cautionary_cooling_state = False
-                gap.reasoning_log.append(
-                    f"Cautionary Cooling skipped: confidence {ci_result.confidence:.1%} < "
-                    f"{CAUTIONARY_CONFIDENCE_THRESHOLD:.0%} but {thermal_margin_for_caution:.0f}°C margin "
-                    f"provides ample safety — allowing optimizer recommendation ({gap.recommended_cooling_delta:+.1%})."
-                )
-                gap.raw_metrics["cautionary_cooling_reason"] = "skipped_large_margin"
-            else:
-                gap.recommended_cooling_delta = CAUTIONARY_BASELINE_DELTA
-                gap.reasoning_log.append(
-                    f"Cautionary Cooling: Prediction confidence {ci_result.confidence:.1%} < {CAUTIONARY_CONFIDENCE_THRESHOLD:.0%} threshold. "
-                    f"Defaulting to safe higher-RPM baseline (+{CAUTIONARY_BASELINE_DELTA*100:.0f}%) until confident."
-                )
-                gap.recommendations.insert(
-                    0,
-                    f"⚠️ Cautionary Cooling: Low confidence ({ci_result.confidence:.1%}). Using safe baseline (+{CAUTIONARY_BASELINE_DELTA*100:.0f}% RPM).",
-                )
-                gap.raw_metrics["cautionary_cooling_reason"] = "confidence_below_threshold"
-            gap.raw_metrics["cautionary_thermal_margin"] = thermal_margin_for_caution
+            # Phase 6: Cautionary cooling override DISABLED.
+            # The +15% safety margin conflicted with optimization — rate-of-change
+            # monitoring + absolute ceiling (85°C) + mode-aware clamping provide
+            # sufficient safety without overriding the brain's recommendation.
+            gap.cautionary_cooling_state = False
+            gap.reasoning_log.append(
+                f"Cautionary Cooling: confidence {ci_result.confidence:.1%} < "
+                f"{CAUTIONARY_CONFIDENCE_THRESHOLD:.0%} threshold — override DISABLED (Phase 6). "
+                f"Rate-of-change safety active. Allowing optimizer recommendation ({gap.recommended_cooling_delta:+.1%})."
+            )
+            gap.raw_metrics["cautionary_cooling_reason"] = "disabled_phase6"
 
         # Apply guardrails
         gap = apply_guardrails(
