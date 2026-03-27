@@ -58,13 +58,19 @@ SPIKE_HOLD_MIN_FAN_RPM = _env_float("COOLEDAI_SPIKE_HOLD_MIN_FAN_RPM", 2800.0)
 SPIKE_HOLD_MAX_FRAC_OF_RATED = 0.95
 
 # --- Power-slope pre-ramp (proactive fan before temp crosses target) ---
-POWER_SLOPE_PRE_RAMP_MODERATE_W_S = 1.5   # W/s — block reduction-only path; bias toward increase
-POWER_SLOPE_PRE_RAMP_STEEP_W_S = 4.0      # W/s — enforce stronger bump after optimization
-POWER_SLOPE_STEEP_MIN_DELTA = 0.12
+# Phase 6.2: Raised from 1.5/4.0 — normal Llama inference fluctuates 1-3 W/s,
+# old thresholds forced temp_rising=True on every cycle, blocking all reductions.
+POWER_SLOPE_PRE_RAMP_MODERATE_W_S = 8.0    # W/s — only trigger on real power ramp
+POWER_SLOPE_PRE_RAMP_STEEP_W_S = 15.0      # W/s — enforce stronger bump on very steep ramp
+POWER_SLOPE_STEEP_MIN_DELTA = 0.08
+# Margin check: only pre-ramp when within this many °C of target (prevents
+# blocking reductions when there's ample thermal headroom).
+POWER_SLOPE_PRE_RAMP_MARGIN_C = 5.0
 
 # --- Safety net: never “silent” under rising load ---
-SAFETY_NET_POWER_SLOPE_W_S = 0.25
-SAFETY_NET_MIN_DELTA = 0.06
+# Phase 6.2: Raised from 0.25 — even GPU idle fluctuation exceeded the old threshold.
+SAFETY_NET_POWER_SLOPE_W_S = 5.0
+SAFETY_NET_MIN_DELTA = 0.03
 
 
 def sustained_active_compute_signal(power: np.ndarray) -> bool:

@@ -298,7 +298,14 @@ class PowerCostOptimizer:
             )
 
         # Power-slope pre-ramp: rising package power ⇒ treat as warming even if T+10 is still calm.
-        if power_slope_w_per_s >= POWER_SLOPE_PRE_RAMP_MODERATE_W_S:
+        # Phase 6.2: Added margin check — only pre-ramp when close to target temp.
+        # Without this, ANY inference workload (>8 W/s) blocks all fan reductions
+        # even with 25°C of thermal headroom.
+        _opt_margin = target_temp - current_thermal
+        if (
+            power_slope_w_per_s >= POWER_SLOPE_PRE_RAMP_MODERATE_W_S
+            and _opt_margin <= 5.0
+        ):
             temp_rising = True
 
         # Thermal-adequacy guard: refuse to reduce cooling when headroom is thin.
@@ -363,7 +370,7 @@ class PowerCostOptimizer:
         # This lets the optimizer match or beat the agent's local fallback
         # curve instead of being stuck at the "sweet spot" ceiling.
         thermal_margin = target_temp - current_thermal
-        if thermal_margin > 10 and not temp_rising:
+        if thermal_margin > 5 and not temp_rising:
             margin_frac = min(1.0, thermal_margin / 30.0)  # 0..1
             target_frac = max(0.25, SWEET_SPOT_TARGET - margin_frac * 0.45)
             proposed_margin = {
@@ -406,6 +413,14 @@ class PowerCostOptimizer:
             best = min(candidates, key=lambda x: x[1])
 
         delta, power_w, reason = best
+
+        _log.warning(
+            "[OPTIMIZER_DEBUG] temp_rising=%s thermal=%.1f target=%.1f margin=%.1f "
+            "power_slope=%.2f n_candidates=%d best=(%s, %.4f) delta=%.4f",
+            temp_rising, current_thermal, target_temp, target_temp - current_thermal,
+            power_slope_w_per_s, len(candidates), reason, power_w, delta,
+        )
+
         savings = p_current - power_w
 
         # Steep power ramp: enforce a stronger minimum positive delta (proactive cooling).

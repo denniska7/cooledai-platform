@@ -1306,7 +1306,7 @@ class OptimizationBrain:
         # Skip pre-ramp when thermal margin is very large (>15°C below target) — a moderate
         # power ramp with 30°C headroom has minutes of thermal inertia before any risk.
         _pre_ramp_margin = self.target_temp - temp_for_decision
-        if power_slope >= POWER_SLOPE_PRE_RAMP_MODERATE_W_S and _pre_ramp_margin <= 15:
+        if power_slope >= POWER_SLOPE_PRE_RAMP_MODERATE_W_S and _pre_ramp_margin <= 5:
             temp_rising = True
 
         # Power-cost optimizer: solve for lowest zone power (Fan Affinity Laws)
@@ -1348,6 +1348,17 @@ class OptimizationBrain:
             sustained_active_compute=sustained_active,
             current_power_w=current_power,
             spike_bypass=_is_spike_bypass,
+        )
+
+        _reasoning_logger.warning(
+            "[BRAIN_DEBUG] target_temp=%.1f temp_for_decision=%.1f temp_rising=%s "
+            "over_prov=%.3f power_slope=%.2f pre_ramp_margin=%.1f "
+            "pred_t10=%.1f pred_conf=%.2f "
+            "opt_delta=%.4f current_cooling=%.0f max_cooling=%.0f",
+            self.target_temp, temp_for_decision, temp_rising,
+            over_provisioning, power_slope, _pre_ramp_margin,
+            predicted_t10 if pred else -1, pred.confidence if pred else -1,
+            opt_result.recommended_delta, current_cooling, max_cooling,
         )
 
         gap.recommended_cooling_delta = opt_result.recommended_delta

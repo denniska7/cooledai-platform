@@ -686,6 +686,11 @@ except Exception:
 # Anomaly detection state: last (power_draw, delta_t) per cooling unit for trend detection
 _cooling_unit_previous_state: Dict[str, Any] = {}
 
+# Phase 6.2: Deploy version + per-node recommendation tracking for /debug/brain-state
+DEPLOY_VERSION = "6.2"
+_last_brain_recommendation: Dict[str, dict] = {}
+_last_brain_recommendation_lock = threading.Lock()
+
 # Shadow mode: when True, proposed actions are logged to shadow_logs and no writes are sent to hardware
 try:
     from backend.shadow.shadow_logs import (
@@ -2749,6 +2754,7 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
     )
 
     return {
+        "deploy_version": DEPLOY_VERSION,
         "owner_id": owner_id,
         "efficiency_gain_pct": round(efficiency_pct, 1),
         "last_telemetry_at": last_telemetry_at if last_telemetry_at > 0 else None,
@@ -2791,6 +2797,41 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
             "rated_fan_watts": _RATED_FAN_WATTS,
             "num_fans": _NUM_FANS,
         },
+    }
+
+
+@app.get("/api/v1/debug/brain-state", dependencies=[Depends(_require_api_key)])
+async def debug_brain_state():
+    """Phase 6.2 diagnostic endpoint — returns brain configuration and last
+    recommendations per node so operators can verify deployment state."""
+    history = sorted(list(_thermal_history.get(FIXED_OWNER_ID, [])), key=lambda x: x[0])
+    data_hours = 0.0
+    if len(history) >= 2:
+        try:
+            first_ts = float(history[0][0])
+            last_ts = float(history[-1][0])
+            data_hours = round((last_ts - first_ts) / 3600.0, 2)
+        except (TypeError, ValueError, IndexError):
+            pass
+
+    pred = getattr(_brain, "predictor", None)
+    confidence_pct = 0
+    if pred is not None:
+        try:
+            confidence_pct = int(getattr(pred, "confidence", 0) * 100)
+        except Exception:
+            pass
+
+    with _last_brain_recommendation_lock:
+        recs = dict(_last_brain_recommendation)
+
+    return {
+        "deploy_version": DEPLOY_VERSION,
+        "target_temp": getattr(_brain, "target_temp", None),
+        "thermal_history_count": len(history),
+        "data_hours": data_hours,
+        "confidence_pct": confidence_pct,
+        "last_recommendations": recs,
     }
 
 
@@ -3281,6 +3322,17 @@ async def agent_optimize_control(
             failure_payload = {"reasons": [], "note": "failure_posture_unavailable"}
         # Align reported RPM with final duty after failure-posture boost
         target_rpm = (target_duty / 100.0) * max_rpm
+
+        # Track last recommendation per node for /debug/brain-state
+        with _last_brain_recommendation_lock:
+            _last_brain_recommendation[body.node_id] = {
+                "target_duty": target_duty,
+                "target_rpm": round(target_rpm, 0),
+                "delta": round(delta, 4),
+                "source": "optimization_brain",
+                "ts": int(time.time()),
+            }
+
         return {
             "target_duty": target_duty,
             "recommended_cooling_delta": delta,

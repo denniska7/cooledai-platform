@@ -116,23 +116,35 @@ class TestCoolingSafetyPolicy(unittest.TestCase):
         self.assertGreaterEqual(proposed, 2400.0)
         self.assertFalse(r.emergency_mode)
 
-    def test_power_slope_pre_ramps_before_hot_temp(self):
-        """Rising power alone should bias optimizer toward increasing cooling."""
+    def test_power_slope_pre_ramp_respects_thermal_margin(self):
+        """With large thermal margin (27°C), pre-ramp should NOT trigger even with steep power slope.
+
+        Phase 6.2: margin check means pre-ramp only fires within 5°C of target.
+        Temps ~38°C vs target=65°C → margin=27°C → no pre-ramp → optimizer returns
+        a reduction candidate. Guardrails may still lift the final delta due to the
+        active-compute fan floor (1800 RPM < 2500 RPM floor), but the reasoning
+        should NOT mention "temp rising" — proving pre-ramp was correctly blocked.
+        """
         brain = OptimizationBrain(target_temp=65.0)
         gap = brain.analyze(_nodes_power_ramp_cool_temp(14), policy_context={})
+        # Power slope is steep (≈8 W/s) — confirm it was detected
         self.assertGreaterEqual(
             gap.raw_metrics.get("predicted_power_slope_w_per_s", 0.0),
-            POWER_SLOPE_PRE_RAMP_MODERATE_W_S,
+            POWER_SLOPE_PRE_RAMP_MODERATE_W_S - 0.1,  # float tolerance
         )
-        self.assertGreater(
-            gap.recommended_cooling_delta,
-            0.0,
-            "Expected positive cooling delta when power slope is steep and temp still cool",
+        # Pre-ramp did NOT fire: reasoning should NOT contain "temp rising" or "Increasing cooling"
+        reasoning = " ".join(gap.reasoning_log or []).lower()
+        self.assertNotIn(
+            "temp rising",
+            reasoning,
+            "Pre-ramp should NOT trigger with 27°C margin — but reasoning mentions temp rising",
         )
 
     def test_optimizer_safety_net_positive_delta(self):
         opt = PowerCostOptimizer()
-        # Cool temp, not "rising" by temp alone; high power + slope triggers safety net
+        # Cool temp, not "rising" by temp alone; high power + slope triggers safety net.
+        # Phase 6.2: safety net threshold raised to 5.0 W/s → use 6.0 to exceed it.
+        # Minimum delta lowered from 0.06 to 0.03.
         r = opt.optimize_for_min_power(
             current_thermal=40.0,
             target_temp=65.0,
@@ -142,11 +154,11 @@ class TestCoolingSafetyPolicy(unittest.TestCase):
             over_provisioning=0.4,
             temp_rising=False,
             oscillation=False,
-            power_slope_w_per_s=0.5,
+            power_slope_w_per_s=6.0,
             sustained_active_compute=True,
             current_power_w=ACTIVE_COMPUTE_POWER_THRESHOLD_W + 10,
         )
-        self.assertGreaterEqual(r.recommended_delta, 0.06)
+        self.assertGreaterEqual(r.recommended_delta, 0.03)
 
 
 if __name__ == "__main__":
