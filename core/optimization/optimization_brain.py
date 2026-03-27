@@ -564,6 +564,8 @@ class MechanicalLongevityLayer:
             return gap  # Emergency bypasses hysteresis
         if gap.spike_bypass:
             return gap  # Spike bypass: jump to target in one cycle
+        if gap.slew_rate_limited:
+            return gap  # Slew-limited: brain wants larger change, allow gradual steps
 
         # FIX C: Bypass hysteresis when a policy floor is actively raising cooling
         floor_target = gap.raw_metrics.get("policy_soft_floor_rpm_target")
@@ -1366,11 +1368,13 @@ class OptimizationBrain:
             "[BRAIN_DEBUG] target_temp=%.1f temp_for_decision=%.1f temp_rising=%s "
             "over_prov=%.3f power_slope=%.2f pre_ramp_margin=%.1f "
             "pred_t10=%.1f pred_conf=%.2f "
-            "opt_delta=%.4f current_cooling=%.0f max_cooling=%.0f",
+            "opt_delta=%.4f current_cooling=%.0f max_cooling=%.0f "
+            "peak_pwr_3s=%.1f active_trigger=%.1f is_idle=%s is_spike_bypass=%s",
             self.target_temp, temp_for_decision, temp_rising,
             over_provisioning, power_slope, _pre_ramp_margin,
             predicted_t10 if pred else -1, pred.confidence if pred else -1,
             opt_result.recommended_delta, current_cooling, max_cooling,
+            peak_power_3s, active_trigger_w, _current_is_idle, _is_spike_bypass,
         )
 
         gap.recommended_cooling_delta = opt_result.recommended_delta
