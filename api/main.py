@@ -687,7 +687,7 @@ except Exception:
 _cooling_unit_previous_state: Dict[str, Any] = {}
 
 # Phase 6.2: Deploy version + per-node recommendation tracking for /debug/brain-state
-DEPLOY_VERSION = "6.4c"
+DEPLOY_VERSION = "6.5"
 _last_brain_recommendation: Dict[str, dict] = {}
 _last_brain_recommendation_lock = threading.Lock()
 
@@ -3019,7 +3019,12 @@ async def get_savings_projection(
 async def get_gateway_mode(
     owner_id: str = Depends(_require_api_key_or_clerk),
 ):
-    """Current gateway operating mode and brain calibration status."""
+    """Current gateway operating mode and brain calibration status.
+
+    Sources confidence from gateway-forwarded calibration profiles (same as
+    dashboard-summary), NOT from Railway's local _brain predictor which never
+    runs optimization and always shows 0%.
+    """
     history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
     data_hours = 0.0
     if len(history) >= 2:
@@ -3028,20 +3033,30 @@ async def get_gateway_mode(
         except (TypeError, ValueError):
             pass
 
-    pred = getattr(_brain, "predictor", None)
+    # Source confidence from gateway-forwarded calibration profile data
+    # (same logic as dashboard-summary, lines 2573-2582)
+    all_nodes = _tenant_telemetry.get(owner_id, {})
+    agent_keys = [k for k in all_nodes if "/" not in k]
     confidence_pct = 0
-    if pred is not None:
-        try:
-            confidence_pct = int(getattr(pred, "confidence", 0) * 100)
-        except Exception:
-            pass
+    cal_state = "WAITING"
+    cal_updated = None
+    for nid in agent_keys:
+        node_data = all_nodes.get(nid, {})
+        cp = node_data.get("calibration_profile", {})
+        if isinstance(cp, dict) and cp.get("calibration_state") == "CALIBRATED":
+            cal_updated = cp.get("saved_at")
+            sample_count = cp.get("sample_count", 0)
+            confidence_pct = int(min(100.0, sample_count / 3.0))
+            break
 
     if confidence_pct >= 80:
         cal_state = "CALIBRATED"
     elif confidence_pct > 0:
         cal_state = "CALIBRATING"
-    else:
-        cal_state = "WAITING"
+
+    # mode_since: use calibration saved_at as a reasonable proxy for when
+    # the system became operational. Avoids "Since Invalid Date" in frontend.
+    mode_since = cal_updated
 
     return {
         "mode": os.environ.get("COOLEDAI_MODE", "shadow"),
@@ -3049,6 +3064,7 @@ async def get_gateway_mode(
         "data_hours": round(data_hours, 2),
         "calibration_state": cal_state,
         "target_temp": getattr(_brain, "target_temp", None),
+        "mode_since": mode_since,
     }
 
 
