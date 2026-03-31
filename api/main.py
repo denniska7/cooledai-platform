@@ -234,14 +234,14 @@ async def _require_api_key_or_clerk(request: Request) -> str:
     """Accept either a valid API key (X-API-Key header) or Clerk JWT.
 
     Tries API key first (agents, CLI tools). Falls back to Clerk JWT (browser portal).
-    Returns FIXED_OWNER_ID for both paths so all data is scoped to the single tenant.
+    Returns resolved owner_id for multi-tenant routing.
     """
     x_api_key = request.headers.get("x-api-key", "")
     if x_api_key:
         if _is_master(x_api_key):
             return FIXED_OWNER_ID
         if x_api_key in _api_key_registry:
-            return FIXED_OWNER_ID
+            return _api_key_registry[x_api_key].get("owner_id", FIXED_OWNER_ID)
         if _API_KEY and x_api_key == _API_KEY:
             return FIXED_OWNER_ID
     # Fall back to Clerk JWT
@@ -686,7 +686,7 @@ except Exception:
 _cloud_store = CloudRedisStore()
 
 # Phase 7: Deploy version
-DEPLOY_VERSION = "7.0"
+DEPLOY_VERSION = "8.0"
 _MAX_ACTIVITY_ENTRIES = 200
 
 
@@ -1550,6 +1550,22 @@ async def post_optimize(nodes_data: List[NodeInput]):
     return _run_optimization_with_state_machine(nodes)
 
 
+class NodeRegistration(BaseModel):
+    """Body for POST /api/v1/nodes/register — called by gateway on startup."""
+    node_id: str
+    node_type: str = "server"
+    role: str = "pilot"
+    facility: str = ""
+    rack: str = ""
+    vendor: str = ""
+    model: str = ""
+    gpu_count: int = 0
+    gpu_model: str = ""
+    collector_type: str = ""
+    gateway_id: str = ""
+    metadata: dict = {}
+
+
 class MaintenanceModeInput(BaseModel):
     """Optional body for POST /nodes/{id}/maintenance. If omitted, toggles."""
     maintenance_mode: Optional[bool] = None
@@ -1765,6 +1781,18 @@ def _fan_power_watts(rpm: float) -> float:
     return (frac ** 3) * _RATED_FAN_WATTS * _NUM_FANS
 
 
+def _extract_node_fields(data: dict) -> Tuple[Optional[float], Optional[float], Optional[float], Optional[float], Optional[float]]:
+    """Extract temp, rpm, cpu, gpu_power, peak_power from a telemetry snapshot."""
+    temp = data.get("avg_gpu_temp_c", data.get("max_gpu_temp_c", data.get("max_temp_c")))
+    rpm = data.get("fan_rpm")
+    cpu = data.get("cpu_temp_c")
+    pw = data.get("gpu_power_w")
+    gpu_pwr = float(pw) if pw is not None else None
+    ppw = data.get("peak_power_w")
+    peak_pwr = float(ppw) if ppw is not None else None
+    return temp, rpm, cpu, gpu_pwr, peak_pwr
+
+
 def _get_pilot_baseline_snapshot(
     owner_id: str,
 ) -> Tuple[
@@ -1774,41 +1802,46 @@ def _get_pilot_baseline_snapshot(
 ]:
     """Get current pilot/control RAW GPU-average temps, fan RPM, CPU temp, GPU power, peak power for history snapshots."""
     if owner_id == "master":
-        all_nodes = {}
         all_nodes = _cloud_store.get_all_telemetry_all_owners()
     else:
         all_nodes = _cloud_store.get_all_telemetry(owner_id)
-    pilot_temp = None
-    baseline_temp = None
-    pilot_rpm = None
-    baseline_rpm = None
-    pilot_cpu = None
-    baseline_cpu = None
-    pilot_gpu_pwr = None
-    baseline_gpu_pwr = None
-    pilot_peak_pwr = None
-    baseline_peak_pwr = None
-    for nid in all_nodes:
-        if "/" in nid:
-            continue
-        nid_lower = nid.lower()
-        if "cooledai" in nid_lower and "predictive" in nid_lower:
-            pilot_temp = all_nodes[nid].get("avg_gpu_temp_c", all_nodes[nid].get("max_gpu_temp_c", all_nodes[nid].get("max_temp_c")))
-            pilot_rpm = all_nodes[nid].get("fan_rpm")
-            pilot_cpu = all_nodes[nid].get("cpu_temp_c")
-            pw = all_nodes[nid].get("gpu_power_w")
-            pilot_gpu_pwr = float(pw) if pw is not None else None
-            ppw = all_nodes[nid].get("peak_power_w")
-            pilot_peak_pwr = float(ppw) if ppw is not None else None
-        elif "control" in nid_lower and "traditional" in nid_lower:
-            baseline_temp = all_nodes[nid].get("avg_gpu_temp_c", all_nodes[nid].get("max_gpu_temp_c", all_nodes[nid].get("max_temp_c")))
-            baseline_rpm = all_nodes[nid].get("fan_rpm")
-            baseline_cpu = all_nodes[nid].get("cpu_temp_c")
-            pw = all_nodes[nid].get("gpu_power_w")
-            baseline_gpu_pwr = float(pw) if pw is not None else None
-            ppw = all_nodes[nid].get("peak_power_w")
-            baseline_peak_pwr = float(ppw) if ppw is not None else None
-    # Phase 6.3: Fallback — if no pilot matched strict patterns, use first top-level node with temp data
+
+    pilot_id = None
+    baseline_id = None
+
+    # Phase 8: Check node registry for explicit role assignments first
+    try:
+        registered = _cloud_store.get_all_registered_nodes(owner_id) if owner_id != "master" else {}
+        for nid, reg in registered.items():
+            role = reg.get("role", "").lower()
+            if role == "pilot" and pilot_id is None:
+                pilot_id = nid
+            elif role == "baseline" and baseline_id is None:
+                baseline_id = nid
+    except Exception:
+        pass
+
+    # Fall back to name pattern matching (backwards compat)
+    if pilot_id is None or baseline_id is None:
+        for nid in all_nodes:
+            if "/" in nid:
+                continue
+            nid_lower = nid.lower()
+            if pilot_id is None and "cooledai" in nid_lower and "predictive" in nid_lower:
+                pilot_id = nid
+            elif baseline_id is None and ("control" in nid_lower and "traditional" in nid_lower):
+                baseline_id = nid
+
+    # Extract fields from matched nodes
+    pilot_temp, pilot_rpm, pilot_cpu, pilot_gpu_pwr, pilot_peak_pwr = (None,) * 5
+    baseline_temp, baseline_rpm, baseline_cpu, baseline_gpu_pwr, baseline_peak_pwr = (None,) * 5
+
+    if pilot_id and pilot_id in all_nodes:
+        pilot_temp, pilot_rpm, pilot_cpu, pilot_gpu_pwr, pilot_peak_pwr = _extract_node_fields(all_nodes[pilot_id])
+    if baseline_id and baseline_id in all_nodes:
+        baseline_temp, baseline_rpm, baseline_cpu, baseline_gpu_pwr, baseline_peak_pwr = _extract_node_fields(all_nodes[baseline_id])
+
+    # Phase 6.3: Fallback — if no pilot matched, use first top-level node with temp data
     if pilot_temp is None:
         for nid in all_nodes:
             if "/" in nid:
@@ -1816,14 +1849,9 @@ def _get_pilot_baseline_snapshot(
             data = all_nodes[nid]
             candidate_temp = data.get("avg_gpu_temp_c", data.get("max_gpu_temp_c", data.get("max_temp_c")))
             if candidate_temp is not None:
-                pilot_temp = candidate_temp
-                pilot_rpm = data.get("fan_rpm")
-                pilot_cpu = data.get("cpu_temp_c")
-                pw = data.get("gpu_power_w")
-                pilot_gpu_pwr = float(pw) if pw is not None else None
-                ppw = data.get("peak_power_w")
-                pilot_peak_pwr = float(ppw) if ppw is not None else None
+                pilot_temp, pilot_rpm, pilot_cpu, pilot_gpu_pwr, pilot_peak_pwr = _extract_node_fields(data)
                 break
+
     return pilot_temp, baseline_temp, pilot_rpm, baseline_rpm, pilot_cpu, baseline_cpu, pilot_gpu_pwr, baseline_gpu_pwr, pilot_peak_pwr, baseline_peak_pwr
 
 
@@ -3219,54 +3247,92 @@ async def get_telemetry_logs(hours: int = 1):
     }
 
 
+@app.post("/api/v1/nodes/register")
+async def register_node(body: NodeRegistration, owner_id: str = Depends(_resolve_owner)):
+    """Register a node with the cloud API. Called by gateway on startup."""
+    _cloud_store.set_node_registration(owner_id, body.node_id, body.dict())
+    return {"status": "registered", "node_id": body.node_id, "owner_id": owner_id}
+
+
 @app.get("/api/v1/nodes/list")
 async def get_nodes_list(owner_id: str = Depends(_require_api_key_or_clerk)):
     """
-    List the two tracked servers: Pilot (CooledAI predictive) and Control (traditional).
-    Returns hardware details for identification.
+    List tracked nodes with current telemetry. Merges registry with live data.
+    Returns nodes grouped by facility when registrations exist.
     """
-    all_nodes = _cloud_store.get_all_telemetry(owner_id)
-    agent_keys = [k for k in all_nodes if "/" not in k]
-    pilot_node = None
-    baseline_node = None
-    pilot_id = ""
-    baseline_id = ""
+    all_telemetry = _cloud_store.get_all_telemetry(owner_id)
+    registered = _cloud_store.get_all_registered_nodes(owner_id)
+    now = time.time()
 
-    for nid in agent_keys:
-        nid_lower = nid.lower()
-        if "cooledai" in nid_lower and "predictive" in nid_lower:
-            pilot_node = all_nodes[nid]
-            pilot_id = nid
-            break
-    for nid in agent_keys:
-        nid_lower = nid.lower()
-        if "control" in nid_lower and "traditional" in nid_lower:
-            baseline_node = all_nodes[nid]
-            baseline_id = nid
-            break
-
+    # Build unified node set: registered nodes + any telemetry-only nodes
+    seen_ids = set()
     nodes = []
-    for node_data, nid, is_predictive in [
-        (pilot_node, pilot_id, True),
-        (baseline_node, baseline_id, False),
-    ]:
-        if not nid or not node_data:
-            continue
-        received = node_data.get("_received_at")
-        status = "ok" if received and (time.time() - received) < 120 else "stale"
+
+    # Registered nodes first (with telemetry overlay)
+    for nid, reg in registered.items():
+        seen_ids.add(nid)
+        telem = all_telemetry.get(nid, {})
+        received = telem.get("_received_at")
         nodes.append({
             "node_id": nid,
-            "predictive": is_predictive,
-            "status": status,
-            "last_seen_s_ago": round(time.time() - received, 1) if received else None,
-            "temp_c": node_data.get("avg_gpu_temp_c", node_data.get("max_temp_c")),
-            "gpu_temps_c": node_data.get("gpu_temps_c", []),
-            "gpu_power_w": node_data.get("gpu_power_w"),
-            "cpu_temp_c": node_data.get("cpu_temp_c"),
-            "fan_rpm": node_data.get("fan_rpm"),
-            "gpu_count": len(node_data.get("gpu_temps_c", [])),
+            "role": reg.get("role", ""),
+            "predictive": reg.get("role") == "pilot",
+            "facility": reg.get("facility", ""),
+            "rack": reg.get("rack", ""),
+            "vendor": reg.get("vendor", ""),
+            "model": reg.get("model", ""),
+            "gpu_count": reg.get("gpu_count", 0) or len(telem.get("gpu_temps_c", [])),
+            "gpu_model": reg.get("gpu_model", ""),
+            "collector_type": reg.get("collector_type", ""),
+            "gateway_id": reg.get("gateway_id", ""),
+            "online": bool(received and (now - received) < 120),
+            "status": "ok" if received and (now - received) < 120 else "stale" if received else "no_data",
+            "last_seen_s_ago": round(now - received, 1) if received else None,
+            "temp_c": telem.get("avg_gpu_temp_c", telem.get("max_temp_c")),
+            "gpu_temps_c": telem.get("gpu_temps_c", []),
+            "gpu_power_w": telem.get("gpu_power_w"),
+            "cpu_temp_c": telem.get("cpu_temp_c"),
+            "fan_rpm": telem.get("fan_rpm"),
         })
-    return {"nodes": nodes}
+
+    # Fall back to telemetry-discovered nodes (backwards compat)
+    for nid in all_telemetry:
+        if "/" in nid or nid in seen_ids:
+            continue
+        telem = all_telemetry[nid]
+        received = telem.get("_received_at")
+        nid_lower = nid.lower()
+        is_pilot = "cooledai" in nid_lower and "predictive" in nid_lower
+        is_baseline = "control" in nid_lower and "traditional" in nid_lower
+        nodes.append({
+            "node_id": nid,
+            "role": "pilot" if is_pilot else "baseline" if is_baseline else "",
+            "predictive": is_pilot,
+            "facility": "",
+            "rack": "",
+            "vendor": "",
+            "model": "",
+            "gpu_count": len(telem.get("gpu_temps_c", [])),
+            "gpu_model": "",
+            "collector_type": "",
+            "gateway_id": "",
+            "online": bool(received and (now - received) < 120),
+            "status": "ok" if received and (now - received) < 120 else "stale",
+            "last_seen_s_ago": round(now - received, 1) if received else None,
+            "temp_c": telem.get("avg_gpu_temp_c", telem.get("max_temp_c")),
+            "gpu_temps_c": telem.get("gpu_temps_c", []),
+            "gpu_power_w": telem.get("gpu_power_w"),
+            "cpu_temp_c": telem.get("cpu_temp_c"),
+            "fan_rpm": telem.get("fan_rpm"),
+        })
+
+    # Group by facility
+    by_facility = {}
+    for n in nodes:
+        fac = n.get("facility") or "default"
+        by_facility.setdefault(fac, []).append(n)
+
+    return {"nodes": nodes, "by_facility": by_facility, "total": len(nodes)}
 
 
 def _build_nodes_from_thermal_history(owner_id: str, max_points: int = 30) -> List[BaseNode]:
@@ -3726,21 +3792,20 @@ async def get_hourly_facility_metrics(owner_id: str = Depends(_require_api_key_o
     }
 
 
-@app.get("/api/v1/nodes/status", dependencies=[Depends(_require_api_key)])
-async def get_nodes_status_remote():
+@app.get("/api/v1/nodes/status")
+async def get_nodes_status_remote(owner_id: str = Depends(_require_api_key_or_clerk)):
     """
     Remote check: see if Pilot and Control nodes are still sending telemetry.
 
     Call from anywhere (no Clerk required). Use the same X-API-Key as your
-    ST550 agents. Useful when you're off-site and want to confirm both
-    nodes are logging to the cloud.
+    agents. Useful when you're off-site and want to confirm nodes are
+    logging to the cloud.
 
     Example:
       curl -s -H "X-API-Key: YOUR_KEY" \\
         https://proactive-creativity-production.up.railway.app/api/v1/nodes/status
     """
     now = time.time()
-    owner_id = FIXED_OWNER_ID
     all_nodes = _cloud_store.get_all_telemetry(owner_id)
 
     agent_keys = [k for k in all_nodes if "/" not in k]
@@ -3749,18 +3814,35 @@ async def get_nodes_status_remote():
     pilot_received = None
     baseline_received = None
 
-    for nid in agent_keys:
-        nid_lower = nid.lower()
-        if "cooledai" in nid_lower and "predictive" in nid_lower:
-            pilot_node_id = nid
-            pilot_received = all_nodes[nid].get("_received_at")
-            break
-    for nid in agent_keys:
-        nid_lower = nid.lower()
-        if "control" in nid_lower and "traditional" in nid_lower:
-            baseline_node_id = nid
-            baseline_received = all_nodes[nid].get("_received_at")
-            break
+    # Phase 8: Check registry for explicit role assignments first
+    try:
+        registered = _cloud_store.get_all_registered_nodes(owner_id)
+        for nid, reg in registered.items():
+            role = reg.get("role", "").lower()
+            if role == "pilot" and not pilot_node_id:
+                pilot_node_id = nid
+                pilot_received = all_nodes.get(nid, {}).get("_received_at")
+            elif role == "baseline" and not baseline_node_id:
+                baseline_node_id = nid
+                baseline_received = all_nodes.get(nid, {}).get("_received_at")
+    except Exception:
+        pass
+
+    # Fall back to name pattern matching
+    if not pilot_node_id:
+        for nid in agent_keys:
+            nid_lower = nid.lower()
+            if "cooledai" in nid_lower and "predictive" in nid_lower:
+                pilot_node_id = nid
+                pilot_received = all_nodes[nid].get("_received_at")
+                break
+    if not baseline_node_id:
+        for nid in agent_keys:
+            nid_lower = nid.lower()
+            if "control" in nid_lower and "traditional" in nid_lower:
+                baseline_node_id = nid
+                baseline_received = all_nodes[nid].get("_received_at")
+                break
 
     def _node_status(node_id: str, received_at: Optional[float]) -> dict:
         if not node_id or received_at is None:

@@ -14,6 +14,7 @@ Key schema:
   cloud:agent_config:{node_id}          String JSON per-node config
   cloud:maintenance_nodes               Set    Node IDs in maintenance
   cloud:cooling_prev:{unit_id}          String JSON previous cooling state
+  cloud:node_registry:{owner_id}:{node_id}  String JSON node registration (no TTL)
 """
 
 import json
@@ -42,6 +43,7 @@ class CloudRedisStore:
         self._mem_agent_configs: Dict[str, dict] = {}
         self._mem_maintenance: set = set()
         self._mem_cooling_prev: Dict[str, Any] = {}
+        self._mem_node_registry: Dict[str, Dict[str, dict]] = {}  # owner_id -> {node_id -> data}
         self._mem_lock = threading.Lock()
 
         url = redis_url or os.environ.get("REDIS_URL")
@@ -381,6 +383,54 @@ class CloudRedisStore:
                 logger.debug("Redis get_cooling_previous_state failed: %s", e)
         with self._mem_lock:
             return dict(self._mem_cooling_prev)
+
+    # ── Node Registry ──────────────────────────────────────────────────
+
+    def set_node_registration(self, owner_id: str, node_id: str, data: dict) -> None:
+        if self._available:
+            try:
+                key = f"cloud:node_registry:{owner_id}:{node_id}"
+                self._redis.set(key, json.dumps(data, default=str))
+                return
+            except Exception as e:
+                logger.debug("Redis set_node_registration failed: %s", e)
+        with self._mem_lock:
+            self._mem_node_registry.setdefault(owner_id, {})[node_id] = data
+
+    def get_node_registration(self, owner_id: str, node_id: str) -> Optional[dict]:
+        if self._available:
+            try:
+                raw = self._redis.get(f"cloud:node_registry:{owner_id}:{node_id}")
+                return json.loads(raw) if raw else None
+            except Exception as e:
+                logger.debug("Redis get_node_registration failed: %s", e)
+        with self._mem_lock:
+            return self._mem_node_registry.get(owner_id, {}).get(node_id)
+
+    def get_all_registered_nodes(self, owner_id: str) -> Dict[str, dict]:
+        if self._available:
+            try:
+                prefix = f"cloud:node_registry:{owner_id}:"
+                result = {}
+                cursor = 0
+                while True:
+                    cursor, keys = self._redis.scan(cursor, match=f"{prefix}*", count=100)
+                    for key in keys:
+                        node_id = key[len(prefix):]
+                        raw = self._redis.get(key)
+                        if raw:
+                            result[node_id] = json.loads(raw)
+                    if cursor == 0:
+                        break
+                return result
+            except Exception as e:
+                logger.debug("Redis get_all_registered_nodes failed: %s", e)
+        with self._mem_lock:
+            return dict(self._mem_node_registry.get(owner_id, {}))
+
+    def get_nodes_by_facility(self, owner_id: str, facility: str) -> Dict[str, dict]:
+        all_nodes = self.get_all_registered_nodes(owner_id)
+        return {nid: data for nid, data in all_nodes.items() if data.get("facility") == facility}
 
     # ── Health ───────────────────────────────────────────────────────────
 
