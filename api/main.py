@@ -34,6 +34,8 @@ from enum import Enum
 from typing import List, Optional, Dict, Any, Tuple
 import io
 
+from api.redis_store import CloudRedisStore
+
 # Add project root to path for imports (api/main.py -> parent=api, parent.parent=root)
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
@@ -516,13 +518,10 @@ async def _start_digest_worker() -> None:
 
 @app.on_event("shutdown")
 async def _stop_digest_worker() -> None:
-    """Stop background digest worker and persist thermal history."""
+    """Stop background digest worker."""
     _report_stop_event.set()
     if _report_thread is not None and _report_thread.is_alive():
         _report_thread.join(timeout=2.0)
-    # Flush thermal history to disk so it survives restarts
-    _save_thermal_history()
-    logging.getLogger("api.main").info("Thermal history flushed to disk on shutdown.")
 
 
 # --- System State Machine ---
@@ -659,7 +658,7 @@ class SystemStateMachine:
 # Global state
 _last_nodes: List[BaseNode] = []
 # Node IDs in maintenance mode: optimization skips them and sends no commands (human on-site)
-_maintenance_mode_ids: set = set()
+# _maintenance_mode_ids now backed by _cloud_store (Redis)
 _sanity_check_filter = None
 # EWMA ~5-tap MA at O(1); less CPU than deque sum each request (agent 3s path).
 _moving_avg_filter = EwmaTelemetryFilter(alpha=0.33)
@@ -683,22 +682,12 @@ try:
     _influence_map = load_influence_map() or InfluenceMap()
 except Exception:
     _influence_map = InfluenceMap()
-# Anomaly detection state: last (power_draw, delta_t) per cooling unit for trend detection
-_cooling_unit_previous_state: Dict[str, Any] = {}
+# Phase 7: Redis-backed persistent state store (replaces in-memory dicts)
+_cloud_store = CloudRedisStore()
 
-# Phase 6.2: Deploy version + per-node recommendation tracking for /debug/brain-state
-DEPLOY_VERSION = "6.5"
-_last_brain_recommendation: Dict[str, dict] = {}
-_last_brain_recommendation_lock = threading.Lock()
-
-# Phase 6.4: Activity feed — in-memory log of brain recommendations
-_activity_feed: list = []  # newest first
-_activity_feed_lock = threading.Lock()
+# Phase 7: Deploy version
+DEPLOY_VERSION = "7.0"
 _MAX_ACTIVITY_ENTRIES = 200
-
-# Phase 6.6: Forwarded gateway mode (updated from batch endpoint)
-_forwarded_gateway_mode: Dict[str, Any] = {}  # {"mode": "SHADOW", "ts": ...}
-_forwarded_gateway_mode_lock = threading.Lock()
 
 
 def _append_activity_entry(node_id: str, temp_c: float, fan_rpm: float, result: dict) -> None:
@@ -730,10 +719,7 @@ def _append_activity_entry(node_id: str, temp_c: float, fan_rpm: float, result: 
         "delta": round(delta, 4),
         "source": source,
     }
-    with _activity_feed_lock:
-        _activity_feed.insert(0, entry)
-        if len(_activity_feed) > _MAX_ACTIVITY_ENTRIES:
-            _activity_feed.pop()
+    _cloud_store.push_activity(entry)
 
 # Shadow mode: when True, proposed actions are logged to shadow_logs and no writes are sent to hardware
 try:
@@ -924,20 +910,20 @@ async def health_check_v1():
     last_telemetry_age_s = None
     temp_breach = False
 
-    for owner_data in _tenant_telemetry.values():
-        for nid, ndata in owner_data.items():
-            recv = ndata.get("_received_at")
-            if recv:
-                active_nodes += 1
-                age = now - recv
-                if last_telemetry_age_s is None or age < last_telemetry_age_s:
-                    last_telemetry_age_s = age
-                # Production gate: check for critical temp breach in last 60 min
-                if age < 3600:
-                    max_t = ndata.get("max_gpu_temp_c") or ndata.get("max_temp_c") or 0
-                    gpu_t = ndata.get("gpu_temp_c") or 0
-                    if max(max_t, gpu_t) > 85:  # default critical_temp_c
-                        temp_breach = True
+    _all_telem = _cloud_store.get_all_telemetry_all_owners()
+    for nid, ndata in _all_telem.items():
+        recv = ndata.get("_received_at")
+        if recv:
+            active_nodes += 1
+            age = now - recv
+            if last_telemetry_age_s is None or age < last_telemetry_age_s:
+                last_telemetry_age_s = age
+            # Production gate: check for critical temp breach in last 60 min
+            if age < 3600:
+                max_t = ndata.get("max_gpu_temp_c") or ndata.get("max_temp_c") or 0
+                gpu_t = ndata.get("gpu_temp_c") or 0
+                if max(max_t, gpu_t) > 85:  # default critical_temp_c
+                    temp_breach = True
 
     if temp_breach:
         status = "degraded"
@@ -1256,7 +1242,7 @@ async def ingest_csv(file: UploadFile = File(...)):
     normalized BaseNode attributes. Drop any EPYC/HWiNFO log - no code changes.
     Max upload size: 10 MB. Accepted types: .csv, text/csv.
     """
-    global _last_nodes, _maintenance_mode_ids
+    global _last_nodes
     try:
         # Validate file type
         filename = (file.filename or "").lower()
@@ -1272,7 +1258,7 @@ async def ingest_csv(file: UploadFile = File(...)):
         # Fill missing values with synthetic sensor
         _synthetic_sensor.fill_missing_nodes(nodes)
         for n in nodes:
-            n.maintenance_mode = getattr(n, "node_id", "") in _maintenance_mode_ids
+            n.maintenance_mode = _cloud_store.is_maintenance(getattr(n, "node_id", ""))
         _last_nodes = nodes
         return {
             "status": "success",
@@ -1298,7 +1284,7 @@ async def ingest_json(nodes_data: List[NodeInput]):
     Returns:
         Dict with status, nodes_ingested.
     """
-    global _last_nodes, _maintenance_mode_ids
+    global _last_nodes
     nodes = []
     now = datetime.now()
     for i, data in enumerate(nodes_data):
@@ -1311,7 +1297,7 @@ async def ingest_json(nodes_data: List[NodeInput]):
             timestamp=now,
         )
         _synthetic_sensor.fill_missing_node(node)
-        node.maintenance_mode = node.node_id in _maintenance_mode_ids
+        node.maintenance_mode = _cloud_store.is_maintenance(node.node_id)
         nodes.append(node)
     apply_telemetry_filters(nodes, _sanity_check_filter, _moving_avg_filter)
     _derivative_enricher.enrich(nodes)
@@ -1333,24 +1319,24 @@ def _run_optimization_with_state_machine(
     can reduce load on failing units and redistribute to healthy ones (InfluenceMap).
     Nodes in maintenance_mode are skipped by the brain (no commands sent); human on-site stays in control.
     """
-    global _maintenance_mode_ids
+    # maintenance state backed by _cloud_store
     # Apply maintenance flags from API state; skip maintenance nodes for optimization (no commands to them)
     for n in nodes:
-        n.maintenance_mode = getattr(n, "node_id", "") in _maintenance_mode_ids
+        n.maintenance_mode = _cloud_store.is_maintenance(getattr(n, "node_id", ""))
     active_nodes = [n for n in nodes if not getattr(n, "maintenance_mode", False)]
 
     # Anomaly detection first: Failing Component (power up, ΔT down) -> state + findings for brain
     failing_findings: List[Any] = []
-    global _cooling_unit_previous_state
     if _anomaly_available and detect_failing_cooling_units is not None and nodes:
         try:
             prev = {}
-            if _cooling_unit_previous_state:
-                for k, v in _cooling_unit_previous_state.items():
+            _cooling_prev = _cloud_store.get_cooling_previous_state()
+            if _cooling_prev:
+                for k, v in _cooling_prev.items():
                     if isinstance(v, dict) and "power_draw" in v and "delta_t_c" in v:
                         prev[k] = CoolingUnitState(power_draw=v["power_draw"], delta_t_c=v["delta_t_c"], node_id=v.get("node_id", ""))
             findings, new_state = detect_failing_cooling_units(nodes, previous_state=prev or None)
-            _cooling_unit_previous_state = {k: {"power_draw": s.power_draw, "delta_t_c": s.delta_t_c, "node_id": s.node_id} for k, s in new_state.items()}
+            _cloud_store.set_cooling_previous_state({k: {"power_draw": s.power_draw, "delta_t_c": s.delta_t_c, "node_id": s.node_id} for k, s in new_state.items()})
             failing_findings = findings or []
         except Exception as e:
             logging.getLogger("api.main").warning("Anomaly detection failed: %s", e)
@@ -1392,7 +1378,7 @@ def _run_optimization_with_state_machine(
     # Ensure recommended_cooling_delta_by_unit has no entries for maintenance nodes (brain already skipped them)
     if hasattr(gap, "recommended_cooling_delta_by_unit") and gap.recommended_cooling_delta_by_unit:
         for nid in list(gap.recommended_cooling_delta_by_unit.keys()):
-            if nid in _maintenance_mode_ids:
+            if _cloud_store.is_maintenance(nid):
                 del gap.recommended_cooling_delta_by_unit[nid]
 
     # Evaluate GUARD_MODE triggers (unless in MANUAL_OVERRIDE)
@@ -1557,9 +1543,9 @@ async def post_optimize(nodes_data: List[NodeInput]):
         nodes.append(node)
     apply_telemetry_filters(nodes, _sanity_check_filter, _moving_avg_filter)
     _derivative_enricher.enrich(nodes)
-    global _maintenance_mode_ids
+    # maintenance state backed by _cloud_store
     for n in nodes:
-        n.maintenance_mode = n.node_id in _maintenance_mode_ids
+        n.maintenance_mode = _cloud_store.is_maintenance(n.node_id)
     _last_nodes = nodes
     return _run_optimization_with_state_machine(nodes)
 
@@ -1577,26 +1563,26 @@ async def set_node_maintenance(node_id: str, body: Optional[MaintenanceModeInput
     Body: { "maintenance_mode": true } or { "maintenance_mode": false } to set;
     omit body to toggle.
     """
-    global _maintenance_mode_ids
+    # maintenance state backed by _cloud_store
     if body is not None and body.maintenance_mode is not None:
         if body.maintenance_mode:
-            _maintenance_mode_ids.add(node_id)
+            _cloud_store.add_maintenance_node(node_id)
         else:
-            _maintenance_mode_ids.discard(node_id)
+            _cloud_store.remove_maintenance_node(node_id)
     else:
-        if node_id in _maintenance_mode_ids:
-            _maintenance_mode_ids.discard(node_id)
+        if _cloud_store.is_maintenance(node_id):
+            _cloud_store.remove_maintenance_node(node_id)
         else:
-            _maintenance_mode_ids.add(node_id)
+            _cloud_store.add_maintenance_node(node_id)
     # Update any live nodes so next optimization sees the flag
     for n in _last_nodes:
         if getattr(n, "node_id", "") == node_id:
-            n.maintenance_mode = node_id in _maintenance_mode_ids
+            n.maintenance_mode = _cloud_store.is_maintenance(node_id)
             break
     return {
         "node_id": node_id,
-        "maintenance_mode": node_id in _maintenance_mode_ids,
-        "message": "Node in maintenance; AI will send no commands to it." if node_id in _maintenance_mode_ids else "Node active; AI may send commands.",
+        "maintenance_mode": _cloud_store.is_maintenance(node_id),
+        "message": "Node in maintenance; AI will send no commands to it." if _cloud_store.is_maintenance(node_id) else "Node active; AI may send commands.",
     }
 
 
@@ -1756,70 +1742,8 @@ _report_thread: Optional[threading.Thread] = None
 # _tenant_telemetry:   { owner_id: { node_id: {...telemetry...} } }
 # _tenant_accumulators: { owner_id: { power_reclaimed_wh, started_at, last_ts } }
 
-_tenant_telemetry: Dict[str, Dict[str, dict]] = {}
-_tenant_accumulators: Dict[str, dict] = {}
-# Rolling thermal history for 6H/24H aggregated charts: { owner_id: [(ts, pilot_temp, baseline_temp), ...] }
-_thermal_history: Dict[str, list] = {}
-_MAX_THERMAL_HISTORY_POINTS = 60 * 24 * 60 * 12  # 60 days at 5s interval
-
-# ── Thermal history persistence ──────────────────────────────────────
-# Flush in-memory thermal history to JSON every 60 s so CSV exports
-# survive Railway redeploys and container restarts.
-_THERMAL_HISTORY_FILE = project_root / "data" / "thermal_history.json"
-_THERMAL_HISTORY_FLUSH_INTERVAL_S = 60.0
-_thermal_history_last_flush: float = 0.0
-_thermal_history_lock = threading.Lock()
-
-
-def _load_thermal_history() -> None:
-    """Load persisted thermal history from disk on startup."""
-    global _thermal_history
-    try:
-        if _THERMAL_HISTORY_FILE.exists():
-            raw = json.loads(_THERMAL_HISTORY_FILE.read_text())
-            # Convert lists back to tuples for each row
-            restored: Dict[str, list] = {}
-            for owner_id, rows in raw.items():
-                restored[owner_id] = [tuple(r) for r in rows]
-            _thermal_history = restored
-            total_rows = sum(len(v) for v in _thermal_history.values())
-            logging.getLogger("api.main").info(
-                "Thermal history loaded from disk: %d owners, %d total rows",
-                len(_thermal_history), total_rows,
-            )
-    except Exception as exc:
-        logging.getLogger("api.main").warning("Failed to load thermal history: %s", exc)
-
-
-def _save_thermal_history() -> None:
-    """Persist thermal history to disk (called periodically and on shutdown)."""
-    global _thermal_history_last_flush
-    try:
-        _THERMAL_HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        # Convert tuples to lists for JSON serialization
-        serializable = {k: [list(r) for r in v] for k, v in _thermal_history.items()}
-        tmp = _THERMAL_HISTORY_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(serializable))
-        tmp.replace(_THERMAL_HISTORY_FILE)  # atomic rename
-        _thermal_history_last_flush = time.time()
-    except Exception as exc:
-        logging.getLogger("api.main").warning("Failed to save thermal history: %s", exc)
-
-
-def _maybe_flush_thermal_history() -> None:
-    """Flush to disk if enough time has passed since last flush."""
-    global _thermal_history_last_flush
-    now = time.time()
-    if now - _thermal_history_last_flush >= _THERMAL_HISTORY_FLUSH_INTERVAL_S:
-        with _thermal_history_lock:
-            # Double-check after acquiring lock
-            if now - _thermal_history_last_flush >= _THERMAL_HISTORY_FLUSH_INTERVAL_S:
-                _save_thermal_history()
-
-
-# Load persisted history on module import and register atexit flush
-_load_thermal_history()
-atexit.register(_save_thermal_history)
+# Phase 7: _tenant_telemetry, _tenant_accumulators, _thermal_history all backed by _cloud_store
+_MAX_THERMAL_HISTORY_POINTS = 2000  # Redis ring buffer limit
 
 # Fan power estimation — Fan Affinity Law: P ∝ RPM³
 _RATED_FAN_WATTS = float(os.environ.get("COOLEDAI_RATED_FAN_WATTS", "12"))
@@ -1851,10 +1775,9 @@ def _get_pilot_baseline_snapshot(
     """Get current pilot/control RAW GPU-average temps, fan RPM, CPU temp, GPU power, peak power for history snapshots."""
     if owner_id == "master":
         all_nodes = {}
-        for tn in _tenant_telemetry.values():
-            all_nodes.update(tn)
+        all_nodes = _cloud_store.get_all_telemetry_all_owners()
     else:
-        all_nodes = _tenant_telemetry.get(owner_id, {})
+        all_nodes = _cloud_store.get_all_telemetry(owner_id)
     pilot_temp = None
     baseline_temp = None
     pilot_rpm = None
@@ -1934,34 +1857,29 @@ def _append_thermal_history(owner_id: str, now_ts: float) -> None:
     # Phase 6.4: baseline_rpm surrogate so savings chart renders
     if baseline_rpm is None:
         baseline_rpm = _BASELINE_FAN_RPM if _BASELINE_FAN_RPM > 0 else pilot_rpm
-    history = _thermal_history.setdefault(owner_id, [])
     # Carry forward last non-zero GPU power when 0 (NVML/nvidia-smi often report 0 when idle)
-    if history and (pilot_gpu_pwr == 0 or baseline_gpu_pwr == 0):
-        last = _history_row(history[-1])
-        if pilot_gpu_pwr == 0 and last[7] is not None and last[7] > 0:
-            pilot_gpu_pwr = last[7]
-        if baseline_gpu_pwr == 0 and last[8] is not None and last[8] > 0:
-            baseline_gpu_pwr = last[8]
-    history.append(
-        (
-            now_ts,
-            float(pilot_temp),
-            float(baseline_temp),
-            float(pilot_rpm) if pilot_rpm is not None else None,
-            float(baseline_rpm) if baseline_rpm is not None else None,
-            float(pilot_cpu) if pilot_cpu is not None else None,
-            float(baseline_cpu) if baseline_cpu is not None else None,
-            float(pilot_gpu_pwr) if pilot_gpu_pwr is not None else None,
-            float(baseline_gpu_pwr) if baseline_gpu_pwr is not None else None,
-            float(pilot_peak_pwr) if pilot_peak_pwr is not None else None,
-            float(baseline_peak_pwr) if baseline_peak_pwr is not None else None,
-        )
+    if pilot_gpu_pwr == 0 or baseline_gpu_pwr == 0:
+        recent = _cloud_store.get_thermal_history(owner_id)
+        if recent:
+            last = _history_row(recent[-1])
+            if pilot_gpu_pwr == 0 and last[7] is not None and last[7] > 0:
+                pilot_gpu_pwr = last[7]
+            if baseline_gpu_pwr == 0 and last[8] is not None and last[8] > 0:
+                baseline_gpu_pwr = last[8]
+    row = (
+        now_ts,
+        float(pilot_temp),
+        float(baseline_temp),
+        float(pilot_rpm) if pilot_rpm is not None else None,
+        float(baseline_rpm) if baseline_rpm is not None else None,
+        float(pilot_cpu) if pilot_cpu is not None else None,
+        float(baseline_cpu) if baseline_cpu is not None else None,
+        float(pilot_gpu_pwr) if pilot_gpu_pwr is not None else None,
+        float(baseline_gpu_pwr) if baseline_gpu_pwr is not None else None,
+        float(pilot_peak_pwr) if pilot_peak_pwr is not None else None,
+        float(baseline_peak_pwr) if baseline_peak_pwr is not None else None,
     )
-    if len(history) > _MAX_THERMAL_HISTORY_POINTS:
-        history.pop(0)
-
-    # Periodic flush to disk so exports survive restarts
-    _maybe_flush_thermal_history()
+    _cloud_store.append_thermal_history(owner_id, row)
 
 
 def _history_row(row: tuple) -> Tuple[
@@ -1987,29 +1905,30 @@ def _history_row(row: tuple) -> Tuple[
 def _accumulate_savings(owner_id: str, pilot_rpm: float) -> None:
     """Called on each pilot telemetry update to integrate watt-hours saved."""
     now = time.time()
-    acc = _tenant_accumulators.get(owner_id)
+    acc = _cloud_store.get_accumulator(owner_id)
     if acc is None:
-        _tenant_accumulators[owner_id] = {
+        _cloud_store.set_accumulator(owner_id, {
             "power_reclaimed_wh": 0.0,
             "stats_started_at": now,
             "last_accumulation_ts": now,
-        }
+        })
         return
-    dt_hours = (now - acc["last_accumulation_ts"]) / 3600.0
+    dt_hours = (now - acc.get("last_accumulation_ts", now)) / 3600.0
     acc["last_accumulation_ts"] = now
 
     baseline_rpm = _MAX_FAN_RPM
     if _BASELINE_FAN_RPM > 0:
         baseline_rpm = _BASELINE_FAN_RPM
     else:
-        tenant_data = _tenant_telemetry.get(owner_id, {})
+        tenant_data = _cloud_store.get_all_telemetry(owner_id)
         for nid, data in tenant_data.items():
             if "/" not in nid and ("shadow" in nid.lower() or "baseline" in nid.lower()):
                 baseline_rpm = float(data.get("fan_rpm", _MAX_FAN_RPM))
                 break
 
     delta_w = max(0.0, _fan_power_watts(baseline_rpm) - _fan_power_watts(pilot_rpm))
-    acc["power_reclaimed_wh"] += delta_w * dt_hours
+    acc["power_reclaimed_wh"] = acc.get("power_reclaimed_wh", 0.0) + delta_w * dt_hours
+    _cloud_store.set_accumulator(owner_id, acc)
 
 
 @app.post("/api/v1/telemetry")
@@ -2033,7 +1952,7 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
         logging.debug("[CooledAI] Telemetry from %s (owner=%s): %d records", agent_id, owner_id, len(telemetry))
         now_ts = time.time()
 
-        tenant = _tenant_telemetry.setdefault(owner_id, {})
+        tenant = _cloud_store.get_all_telemetry(owner_id)
         consolidated = dict(tenant.get(agent_id, {}))
         consolidated["_received_at"] = now_ts
         consolidated["agent_id"] = agent_id
@@ -2059,7 +1978,7 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
             record["_received_at"] = now_ts
             record["_owner_id"] = owner_id
             record["_client_id"] = owner_id
-            tenant[node_id] = record
+            _cloud_store.set_telemetry_snapshot(owner_id, node_id, record)
 
             fan_rpm_direct = record.get("fan_rpm")
             if fan_rpm_direct is not None:
@@ -2132,7 +2051,7 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
         if gpu_cycle:
             consolidated["avg_gpu_temp_c"] = float(sum(gpu_cycle) / len(gpu_cycle))
 
-        tenant[agent_id] = consolidated
+        _cloud_store.set_telemetry_snapshot(owner_id, agent_id, consolidated)
 
         aid_lower = agent_id.lower()
         # Phase 6.3: If it's not explicitly a control/traditional node, treat as pilot
@@ -2162,7 +2081,7 @@ async def get_thermal_history(
     mode=raw        -> raw points for live/volatility charts
     mode=aggregated -> hourly averages (legacy)
     """
-    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    history = _cloud_store.get_thermal_history(owner_id)
     now = time.time()
     cutoff = now - (hours * 3600)
     points = [row for row in history if _history_row(row)[0] >= cutoff]
@@ -2290,7 +2209,7 @@ async def export_thermal_history_csv(
     else:
         raise HTTPException(400, "Provide start_date & end_date, or days")
 
-    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    history = _cloud_store.get_thermal_history(owner_id)
     points = [row for row in history if start_ts <= row[0] <= end_ts]
 
     if not points:
@@ -2371,7 +2290,7 @@ async def export_thermal_history_csv(
 async def thermal_history_status():
     """Debug endpoint: how many thermal history points are stored (API-key auth)."""
     owner_id = FIXED_OWNER_ID
-    history = _thermal_history.get(owner_id, [])
+    history = _cloud_store.get_thermal_history(owner_id)
     now = time.time()
     recent = [r for r in history if r[0] >= now - 3600]
     return {
@@ -2380,8 +2299,8 @@ async def thermal_history_status():
         "points_last_hour": len(recent),
         "oldest_ts": datetime.fromtimestamp(history[0][0], tz=timezone.utc).isoformat() if history else None,
         "newest_ts": datetime.fromtimestamp(history[-1][0], tz=timezone.utc).isoformat() if history else None,
-        "persistence_file": str(_THERMAL_HISTORY_FILE),
-        "last_flush_s_ago": round(now - _thermal_history_last_flush, 1) if _thermal_history_last_flush > 0 else None,
+        "redis_connected": _cloud_store.available,
+        "storage_mode": "redis" if _cloud_store.available else "ephemeral",
     }
 
 
@@ -2433,8 +2352,8 @@ async def get_dashboard_summary(
 ):
     """Aggregated dashboard data for the redesigned portal — one call replaces multiple."""
     now = time.time()
-    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
-    all_nodes = _tenant_telemetry.get(owner_id, {})
+    history = _cloud_store.get_thermal_history(owner_id)
+    all_nodes = _cloud_store.get_all_telemetry(owner_id)
     baseline_profile = _load_baseline_profile()
 
     # --- Resolve pilot / baseline nodes ---
@@ -2636,7 +2555,7 @@ async def get_savings_chart(
     """Pre-computed wattage chart data for the savings proof panel."""
     now = time.time()
     cutoff = now - (hours * 3600)
-    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    history = _cloud_store.get_thermal_history(owner_id)
 
     points = []
     total_saved_wh = 0.0
@@ -2684,7 +2603,7 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
 
     # If there is no thermal history in the last 6 hours, return a clear
     # message so the frontend doesn't get stuck on "Calculating…".
-    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    history = _cloud_store.get_thermal_history(owner_id)
     recent_cutoff = now - (6 * 3600)
     recent_points = [row for row in history if _history_row(row)[0] >= recent_cutoff]
     if not recent_points:
@@ -2724,7 +2643,7 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
             },
         }
 
-    all_nodes = _tenant_telemetry.get(owner_id, {})
+    all_nodes = _cloud_store.get_all_telemetry(owner_id)
 
     agent_keys = [k for k in all_nodes if "/" not in k]
     pilot: dict = {}
@@ -2838,11 +2757,12 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
         efficiency_pct = (delta_w / baseline_w * 100.0) if (baseline_w or 0) > 0 else 0.0
 
     if owner_id == "master":
-        total_wh = sum(a.get("power_reclaimed_wh", 0.0) for a in _tenant_accumulators.values())
-        earliest = min((a.get("stats_started_at", now) for a in _tenant_accumulators.values()), default=now)
+        all_acc = _cloud_store.get_all_accumulators()
+        total_wh = sum(a.get("power_reclaimed_wh", 0.0) for a in all_acc.values())
+        earliest = min((a.get("stats_started_at", now) for a in all_acc.values()), default=now)
         acc: dict = {"power_reclaimed_wh": total_wh, "stats_started_at": earliest}
     else:
-        acc = _tenant_accumulators.get(owner_id, {})
+        acc = _cloud_store.get_accumulator(owner_id) or {}
 
     power_wh = acc.get("power_reclaimed_wh", 0.0)
     started = acc.get("stats_started_at")
@@ -2911,7 +2831,7 @@ async def get_live_stats(owner_id: str = Depends(_require_api_key_or_clerk)):
 async def debug_brain_state():
     """Phase 6.2 diagnostic endpoint — returns brain configuration and last
     recommendations per node so operators can verify deployment state."""
-    history = sorted(list(_thermal_history.get(FIXED_OWNER_ID, [])), key=lambda x: x[0])
+    history = _cloud_store.get_thermal_history(FIXED_OWNER_ID)
     data_hours = 0.0
     if len(history) >= 2:
         try:
@@ -2929,11 +2849,10 @@ async def debug_brain_state():
         except Exception:
             pass
 
-    with _last_brain_recommendation_lock:
-        recs = dict(_last_brain_recommendation)
+    recs = _cloud_store.get_all_brain_recommendations()
 
     # Phase 6.3: Show tenant telemetry state for pipeline debugging
-    tenant_nodes = list(_tenant_telemetry.get(FIXED_OWNER_ID, {}).keys())
+    tenant_nodes = list(_cloud_store.get_all_telemetry(FIXED_OWNER_ID).keys())
     out = _get_pilot_baseline_snapshot(FIXED_OWNER_ID)
     pilot_found = out[0] is not None
     baseline_found = out[1] is not None
@@ -2949,6 +2868,19 @@ async def debug_brain_state():
         "pilot_found": pilot_found,
         "baseline_found": baseline_found,
         "tenant_node_count": len(tenant_nodes),
+        "redis_connected": _cloud_store.available,
+        "storage_mode": "redis" if _cloud_store.available else "ephemeral",
+    }
+
+
+@app.get("/api/v1/health/redis", dependencies=[Depends(_require_api_key)])
+async def redis_health():
+    """Phase 7: Redis connection health check."""
+    return {
+        "redis_connected": _cloud_store.available,
+        "redis_ping": _cloud_store.ping(),
+        "storage_mode": "redis" if _cloud_store.available else "in-memory-ephemeral",
+        "deploy_version": DEPLOY_VERSION,
     }
 
 
@@ -2958,9 +2890,8 @@ async def get_activity_feed(
     owner_id: str = Depends(_require_api_key_or_clerk),
 ):
     """Recent brain recommendation activity for the portal dashboard."""
-    with _activity_feed_lock:
-        entries = list(_activity_feed[:limit])
-    return {"entries": entries, "total": len(_activity_feed)}
+    entries = _cloud_store.get_activity_feed(limit=limit)
+    return {"entries": entries, "total": _cloud_store.get_activity_feed_total()}
 
 
 @app.get("/api/v1/savings-projection")
@@ -2968,7 +2899,7 @@ async def get_savings_projection(
     owner_id: str = Depends(_require_api_key_or_clerk),
 ):
     """Projected savings from thermal optimization for the savings roadmap."""
-    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    history = _cloud_store.get_thermal_history(owner_id)
     now = time.time()
 
     total_saved_w = 0.0
@@ -3000,12 +2931,12 @@ async def get_savings_projection(
     co2_factor = 0.42  # kg CO2/kWh US grid average
 
     # Count unique nodes
-    tenant_nodes = _tenant_telemetry.get(owner_id, {})
+    tenant_nodes = _cloud_store.get_all_telemetry(owner_id)
     nodes_monitored = len([k for k in tenant_nodes if "/" not in k])
 
     # Check recommendations with savings from activity feed
-    with _activity_feed_lock:
-        recs_with_savings = [e for e in _activity_feed if e.get("saving_w", 0) > 0][:20]
+    recent_feed = _cloud_store.get_activity_feed(limit=200)
+    recs_with_savings = [e for e in recent_feed if e.get("saving_w", 0) > 0][:20]
 
     return {
         "mode": os.environ.get("COOLEDAI_MODE", "shadow"),
@@ -3029,7 +2960,7 @@ async def get_gateway_mode(
     dashboard-summary), NOT from Railway's local _brain predictor which never
     runs optimization and always shows 0%.
     """
-    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    history = _cloud_store.get_thermal_history(owner_id)
     data_hours = 0.0
     if len(history) >= 2:
         try:
@@ -3039,7 +2970,7 @@ async def get_gateway_mode(
 
     # Source confidence from gateway-forwarded calibration profile data
     # (same logic as dashboard-summary, lines 2573-2582)
-    all_nodes = _tenant_telemetry.get(owner_id, {})
+    all_nodes = _cloud_store.get_all_telemetry(owner_id)
     agent_keys = [k for k in all_nodes if "/" not in k]
     confidence_pct = 0
     cal_state = "WAITING"
@@ -3063,9 +2994,9 @@ async def get_gateway_mode(
     mode_since = cal_updated
 
     # Use forwarded gateway mode if available (from batch endpoint)
-    with _forwarded_gateway_mode_lock:
-        gw_mode = _forwarded_gateway_mode.get("mode")
-        gw_mode_ts = _forwarded_gateway_mode.get("ts")
+    _gw_mode_data = _cloud_store.get_gateway_mode()
+    gw_mode = _gw_mode_data.get("mode")
+    gw_mode_ts = _gw_mode_data.get("ts")
 
     display_mode = gw_mode.lower() if gw_mode else os.environ.get("COOLEDAI_MODE", "shadow")
 
@@ -3083,7 +3014,7 @@ async def get_gateway_mode(
 def _build_email_comparison_snapshot(owner_id: str = FIXED_OWNER_ID) -> Dict[str, Any]:
     """Build a simplified predictive-vs-control snapshot for digest emails."""
     now = time.time()
-    all_nodes = _tenant_telemetry.get(owner_id, {})
+    all_nodes = _cloud_store.get_all_telemetry(owner_id)
     agent_keys = [k for k in all_nodes if "/" not in k]
 
     pilot: dict = {}
@@ -3135,7 +3066,7 @@ def _build_email_comparison_snapshot(owner_id: str = FIXED_OWNER_ID) -> Dict[str
     elif baseline_w > 0:
         efficiency_pct = (delta_w / baseline_w) * 100.0
 
-    acc = _tenant_accumulators.get(owner_id, {})
+    acc = _cloud_store.get_accumulator(owner_id) or {}
     power_wh = acc.get("power_reclaimed_wh", 0.0)
     started = acc.get("stats_started_at")
     uptime_h = (now - started) / 3600.0 if started else 0.0
@@ -3249,7 +3180,7 @@ async def get_telemetry_logs(hours: int = 1):
         "https://.../api/v1/telemetry-logs?hours=1"
     """
     owner_id = FIXED_OWNER_ID
-    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    history = _cloud_store.get_thermal_history(owner_id)
     now = time.time()
     cutoff = now - (hours * 3600)
     points = [row for row in history if _history_row(row)[0] >= cutoff]
@@ -3294,7 +3225,7 @@ async def get_nodes_list(owner_id: str = Depends(_require_api_key_or_clerk)):
     List the two tracked servers: Pilot (CooledAI predictive) and Control (traditional).
     Returns hardware details for identification.
     """
-    all_nodes = _tenant_telemetry.get(owner_id, {})
+    all_nodes = _cloud_store.get_all_telemetry(owner_id)
     agent_keys = [k for k in all_nodes if "/" not in k]
     pilot_node = None
     baseline_node = None
@@ -3342,7 +3273,7 @@ def _build_nodes_from_thermal_history(owner_id: str, max_points: int = 30) -> Li
     """Build ServerNodes from thermal history for optimization reasoning.
     Uses last N points so the brain has a time series for thermal lag, etc.
     """
-    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    history = _cloud_store.get_thermal_history(owner_id)
     if not history:
         return []
     points = history[-max_points:]
@@ -3392,7 +3323,7 @@ def _build_nodes_for_agent_control(
     max_points: int = 30,
 ) -> List[BaseNode]:
     """Build nodes from thermal history + agent's latest snapshot."""
-    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    history = _cloud_store.get_thermal_history(owner_id)
     nodes: List[BaseNode] = []
     now_ts = time.time()
     # Use last N-1 from history, then agent's snapshot as most recent
@@ -3438,8 +3369,7 @@ def _ensure_thermal_history_from_control(owner_id: str, body: AgentOptimizeContr
 
     Phase 6.3: Ensures the brain accumulates data even when /api/v1/telemetry is not called.
     """
-    tenant = _tenant_telemetry.setdefault(owner_id, {})
-    node_data = tenant.get(body.node_id, {})
+    node_data = _cloud_store.get_telemetry_snapshot(owner_id, body.node_id) or {}
     node_data["max_temp_c"] = body.temp_c
     node_data["avg_gpu_temp_c"] = body.temp_c
     node_data["max_gpu_temp_c"] = body.temp_c
@@ -3450,7 +3380,7 @@ def _ensure_thermal_history_from_control(owner_id: str, body: AgentOptimizeContr
     if body.peak_power_w is not None:
         node_data["peak_power_w"] = body.peak_power_w
     node_data["_received_at"] = now_ts
-    tenant[body.node_id] = node_data
+    _cloud_store.set_telemetry_snapshot(owner_id, body.node_id, node_data)
     _append_thermal_history(owner_id, now_ts)
 
 
@@ -3465,7 +3395,6 @@ async def receive_gateway_batch(request: Request, owner_id: str = Depends(_resol
     for entry in batch:
         node_id = entry.get("node_id", gateway_id)
         snapshot = entry.get("snapshot") or entry.get("telemetry") or {}
-        tenant = _tenant_telemetry.setdefault(owner_id, {})
         record = dict(snapshot)
         record["_received_at"] = now_ts
         record["_owner_id"] = owner_id
@@ -3482,29 +3411,26 @@ async def receive_gateway_batch(request: Request, owner_id: str = Depends(_resol
             record["cpu_temp_c"] = snapshot["cpu_temp_c"]
         if "peak_power_w" in snapshot:
             record["peak_power_w"] = snapshot["peak_power_w"]
-        tenant[node_id] = record
+        _cloud_store.set_telemetry_snapshot(owner_id, node_id, record)
         ingested += 1
         # Phase 6.4: Extract brain recommendation from forwarded result
         result = entry.get("result") or entry.get("optimization") or {}
         # Phase 6.6: Extract forwarded gateway mode
         gw_mode = result.get("gateway_mode")
         if gw_mode:
-            with _forwarded_gateway_mode_lock:
-                _forwarded_gateway_mode["mode"] = gw_mode
-                _forwarded_gateway_mode["ts"] = int(now_ts)
+            _cloud_store.set_gateway_mode(gw_mode, int(now_ts))
 
         if result and result.get("source") not in (None, "control_passthrough"):
-            with _last_brain_recommendation_lock:
-                _last_brain_recommendation[node_id] = {
-                    "target_duty": result.get("target_duty"),
-                    "target_rpm": result.get("target_rpm"),
-                    "delta": result.get("recommended_cooling_delta"),
-                    "source": result.get("source", "unknown"),
-                    "ts": int(now_ts),
-                    "origin": "gateway_forwarded",
-                    "shadow_clamped": result.get("shadow_clamped", False),
-                    "gateway_mode": gw_mode,
-                }
+            _cloud_store.set_brain_recommendation(node_id, {
+                "target_duty": result.get("target_duty"),
+                "target_rpm": result.get("target_rpm"),
+                "delta": result.get("recommended_cooling_delta"),
+                "source": result.get("source", "unknown"),
+                "ts": int(now_ts),
+                "origin": "gateway_forwarded",
+                "shadow_clamped": result.get("shadow_clamped", False),
+                "gateway_mode": gw_mode,
+            })
             # Build activity entry from forwarded result
             temp_c = snapshot.get("temp_c", 0)
             fan_rpm = snapshot.get("fan_rpm", 0)
@@ -3567,7 +3493,7 @@ async def agent_optimize_control(
             "[CONTROL_FALLBACK] node=%s nodes=%d thermal_history_count=%d — "
             "falling back to simple duty curve (brain not reached)",
             body.node_id, len(nodes),
-            len(_thermal_history.get(owner_id, [])),
+            _cloud_store.get_thermal_history_count(owner_id),
         )
         delta_temp = body.temp_c - 65.0
         if delta_temp < -15:
@@ -3592,7 +3518,7 @@ async def agent_optimize_control(
         _derivative_enricher.enrich(nodes)
         # Spike hold uses shared spike_hold_state; include history peak so excursions
         # only in rolling history still extend the hold (same as prior agent-only path).
-        history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+        history = _cloud_store.get_thermal_history(owner_id)
         peaks: List[float] = [float(body.temp_c)]
         for row in history[-30:]:
             try:
@@ -3671,14 +3597,13 @@ async def agent_optimize_control(
             "recommended_cooling_delta": delta,
             "source": "optimization_brain",
         }
-        with _last_brain_recommendation_lock:
-            _last_brain_recommendation[body.node_id] = {
-                "target_duty": target_duty,
-                "target_rpm": round(target_rpm, 0),
-                "delta": round(delta, 4),
-                "source": "optimization_brain",
-                "ts": int(time.time()),
-            }
+        _cloud_store.set_brain_recommendation(body.node_id, {
+            "target_duty": target_duty,
+            "target_rpm": round(target_rpm, 0),
+            "delta": round(delta, 4),
+            "source": "optimization_brain",
+            "ts": int(time.time()),
+        })
         _append_activity_entry(body.node_id, body.temp_c, body.fan_rpm, _result_for_tracking)
 
         return {
@@ -3759,7 +3684,7 @@ async def get_hourly_facility_metrics(owner_id: str = Depends(_require_api_key_o
     """
     now = time.time()
     cutoff = now - 3600
-    history = sorted(list(_thermal_history.get(owner_id, [])), key=lambda x: x[0])
+    history = _cloud_store.get_thermal_history(owner_id)
     points = [row for row in history if row[0] >= cutoff]
     if not points:
         return {
@@ -3816,7 +3741,7 @@ async def get_nodes_status_remote():
     """
     now = time.time()
     owner_id = FIXED_OWNER_ID
-    all_nodes = _tenant_telemetry.get(owner_id, {})
+    all_nodes = _cloud_store.get_all_telemetry(owner_id)
 
     agent_keys = [k for k in all_nodes if "/" not in k]
     pilot_node_id = ""
@@ -3890,7 +3815,7 @@ async def get_nodes_status_remote():
 
 # --- Agent Config (per-node target_temp, control_enabled, etc.) ---
 
-_agent_configs: Dict[str, dict] = {}
+# _agent_configs now backed by _cloud_store (Redis)
 
 
 class AgentConfigInput(BaseModel):
@@ -3908,7 +3833,7 @@ async def get_agent_config(node_id: str = "default"):
     the portal UI.  Falls back to a safe default when no config has
     been set for the requested node_id.
     """
-    config = _agent_configs.get(node_id, _agent_configs.get("default", {}))
+    config = _cloud_store.get_agent_config(node_id) or _cloud_store.get_agent_config("default") or {}
     return {
         "node_id": node_id,
         "target_temp": config.get("target_temp", 65),
@@ -3923,7 +3848,7 @@ async def set_agent_config(node_id: str, body: AgentConfigInput):
     """Push a new config for a node.  The agent will pick it up on its
     next config poll (within 60 s).  Requires admin key.
     """
-    _agent_configs[node_id] = body.dict()
+    _cloud_store.set_agent_config(node_id, body.dict())
     return {"status": "ok", "node_id": node_id, "config": body.dict()}
 
 
