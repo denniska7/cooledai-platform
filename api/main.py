@@ -2029,7 +2029,7 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
             if raw_wattage is not None:
                 consolidated["raw_fan_wattage"] = float(raw_wattage)
 
-            power_w = record.get("power_draw_w")
+            power_w = record.get("power_draw_w") or record.get("power_w")
             if power_w is not None and "/gpu" in record.get("node_id", ""):
                 consolidated["gpu_power_w"] = consolidated.get("gpu_power_w", 0) + float(power_w)
 
