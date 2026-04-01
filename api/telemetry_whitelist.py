@@ -43,7 +43,10 @@ ALLOWED_TELEMETRY_FIELDS: Set[str] = {
     "exhaust_temp_c",
     # Power
     "power_draw_w",
+    "power_w",                 # per-GPU power from lenovo_live.py agent
     "peak_power_w",
+    "fan_power_w",             # fan power estimate from agent
+    "saving_w",                # per-cycle savings from agent
     # Optimization feedback
     "target_fan_rpm",
     "optimization_mode",
