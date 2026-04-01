@@ -1998,6 +1998,13 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
         except ImportError:
             _validate_telem = None
 
+        # Track latest power per GPU node to avoid compounding across
+        # buffered cycles.  The CloudUploader batches ~60s of records,
+        # so the same GPU appears multiple times.  We keep only the
+        # LAST value per GPU and sum those after the loop.
+        _gpu_power_latest: dict[str, float] = {}   # node_id -> power_w
+        _gpu_peak_latest: dict[str, float] = {}    # node_id -> peak_power_w
+
         for record in telemetry:
             # ── Telemetry whitelist enforcement ──
             if _validate_telem is not None:
@@ -2029,15 +2036,17 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
             if raw_wattage is not None:
                 consolidated["raw_fan_wattage"] = float(raw_wattage)
 
-            power_w = record.get("power_draw_w") or record.get("power_w")
-            if power_w is not None and "/gpu" in record.get("node_id", ""):
-                consolidated["gpu_power_w"] = consolidated.get("gpu_power_w", 0) + float(power_w)
+            # GPU power: use proper None check (avoid `or` which treats 0.0 as falsy)
+            _pw = record.get("power_draw_w")
+            if _pw is None:
+                _pw = record.get("power_w")
+            if _pw is not None and "/gpu" in record.get("node_id", ""):
+                _gpu_power_latest[node_id] = float(_pw)  # last record per GPU wins
 
             # FIX E: Track peak_power_w from GPU records (raw max across GPUs in a poll cycle)
             ppw = record.get("peak_power_w")
             if ppw is not None and "/gpu" in record.get("node_id", ""):
-                cur_peak = consolidated.get("peak_power_w")
-                consolidated["peak_power_w"] = max(float(ppw), float(cur_peak)) if cur_peak is not None else float(ppw)
+                _gpu_peak_latest[node_id] = float(ppw)  # last record per GPU wins
 
             temp_c = record.get("temperature_c")
             if temp_c is not None:
@@ -2059,6 +2068,12 @@ async def receive_telemetry(request: Request, owner_id: str = Depends(_resolve_o
                 consolidated["max_temp_c"] = max(
                     consolidated.get("max_temp_c", 0), temp_c,
                 )
+
+        # Resolve per-GPU power: sum LATEST value per GPU (not all buffered cycles)
+        if _gpu_power_latest:
+            consolidated["gpu_power_w"] = round(sum(_gpu_power_latest.values()), 2)
+        if _gpu_peak_latest:
+            consolidated["peak_power_w"] = round(max(_gpu_peak_latest.values()), 2)
 
         # Fan RPM for charts: chassis tach preferred; else average GPU fan % → scaled RPM
         gf = consolidated.pop("_gpu_fan_pcts_batch", [])
