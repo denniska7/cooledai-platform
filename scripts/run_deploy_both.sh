@@ -1,6 +1,6 @@
 #!/bin/bash
 # Run from your Mac (same network as nodes). Deploys to .100 and .101.
-# Passwords: both nodes use ***REDACTED_SSH_PASS*** (set in the .exp files).
+# Passwords: both nodes use <SSH_PASSWORD> (set in the .exp files).
 set -e
 cd "$(dirname "$0")/.."
 echo "=== Deploying to node .100 (Pilot) ==="

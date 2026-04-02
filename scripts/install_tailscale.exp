@@ -11,8 +11,8 @@
 # Run from your Mac while on the same network as the nodes (192.168.12.x).
 
 set timeout 300
-set pass_100 "***REDACTED_SSH_PASS***"
-set pass_101 "***REDACTED_SSH_PASS***"
+set pass_100 "<SSH_PASSWORD>"
+set pass_101 "<SSH_PASSWORD>"
 set send_delay 10
 
 # Auth key is required for headless servers

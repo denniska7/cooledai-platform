@@ -40,7 +40,7 @@ class TestAPIKeyHierarchy(unittest.TestCase):
         from api.main import _migrate_legacy_keys
 
         legacy = {
-            "***REDACTED_API_KEY***": {
+            "<YOUR_COOLEDAI_API_KEY>": {
                 "owner_id": "admin",
                 "label": "Admin (auto-generated on first startup)",
                 "created_at": "2026-03-17T01:54:33.916812Z",
@@ -54,8 +54,8 @@ class TestAPIKeyHierarchy(unittest.TestCase):
         keys = migrated["keys"]
 
         # The legacy key should be preserved
-        self.assertIn("***REDACTED_API_KEY***", keys)
-        entry = keys["***REDACTED_API_KEY***"]
+        self.assertIn("<YOUR_COOLEDAI_API_KEY>", keys)
+        entry = keys["<YOUR_COOLEDAI_API_KEY>"]
 
         # Should have facilities with wildcard
         self.assertIn("facilities", entry)

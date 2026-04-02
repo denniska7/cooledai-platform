@@ -3,7 +3,7 @@
 # Usage: cd /path/to/coolingai_simulator && expect scripts/deploy_to_100.exp
 
 set timeout 180
-set pass "***REDACTED_SSH_PASS***"
+set pass "<SSH_PASSWORD>"
 set host "cooledaiadmin@192.168.12.100"
 # Delay before sending password so remote is ready (avoids dropped chars)
 set send_delay 10
@@ -46,7 +46,7 @@ send "nohup python3 ~/predictive_engine.py > /tmp/cooledai_predictive_engine.log
 expect -re {\$ |# }
 send "nohup python3 ~/llama_workload_scheduler.py > /tmp/cooledai_llama_workload.log 2>&1 &\r"
 expect -re {\$ |# }
-send "sudo nohup python3 ~/cooledai_agent.py --api-url https://proactive-creativity-production.up.railway.app --api-key ***REDACTED_API_KEY*** --node-id ST550-CooledAI-Predictive --ipmi-variant lenovo >> /tmp/cooledai_agent.log 2>&1 &\r"
+send "sudo nohup python3 ~/cooledai_agent.py --api-url https://proactive-creativity-production.up.railway.app --api-key <YOUR_COOLEDAI_API_KEY> --node-id ST550-CooledAI-Predictive --ipmi-variant lenovo >> /tmp/cooledai_agent.log 2>&1 &\r"
 expect {
     "password for" { sleep $send_delay; send "$pass\r"; exp_continue }
     -re {\$ |# } { }

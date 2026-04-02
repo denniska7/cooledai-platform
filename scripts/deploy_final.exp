@@ -1,11 +1,11 @@
 #!/usr/bin/expect -f
 set timeout 60
-set pass "***REDACTED_SSH_PASS***"
+set pass "<SSH_PASSWORD>"
 spawn ssh -o StrictHostKeyChecking=no cooledaiadmin@100.92.29.44
 expect "password:" { send "$pass\r" }
 expect -re {\$ }
 
-send "echo '***REDACTED_SSH_PASS***' | sudo -S bash << 'ENDSCRIPT'\r"
+send "echo '<SSH_PASSWORD>' | sudo -S bash << 'ENDSCRIPT'\r"
 expect -re {\$ |# |> }
 send "cp /tmp/thermal_calibrator.py /opt/cooledai/core/optimization/thermal_calibrator.py\r"
 expect -re {\$ |# |> }

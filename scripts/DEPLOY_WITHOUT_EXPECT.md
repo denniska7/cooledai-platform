@@ -36,7 +36,7 @@ pkill -f cooledai_agent.py 2>/dev/null || true
 nohup python3 ~/predictive_engine.py > /tmp/cooledai_predictive_engine.log 2>&1 &
 nohup python3 ~/llama_workload_scheduler.py > /tmp/cooledai_llama_workload.log 2>&1 &
 sudo apt-get install -y ipmitool 2>/dev/null
-sudo nohup python3 ~/cooledai_agent.py --api-url https://proactive-creativity-production.up.railway.app --api-key ***REDACTED_API_KEY*** --node-id ST550-CooledAI-Predictive --ipmi-variant lenovo >> /tmp/cooledai_agent.log 2>&1 &
+sudo nohup python3 ~/cooledai_agent.py --api-url https://proactive-creativity-production.up.railway.app --api-key <YOUR_COOLEDAI_API_KEY> --node-id ST550-CooledAI-Predictive --ipmi-variant lenovo >> /tmp/cooledai_agent.log 2>&1 &
 exit
 ```
 
@@ -60,7 +60,7 @@ exit
 
 ## Node .101 (Control – cooledai-control)
 
-**1. Copy files** (password: `***REDACTED_SSH_PASS***` when prompted)
+**1. Copy files** (password: `<SSH_PASSWORD>` when prompted)
 
 ```bash
 cd /Users/denniswork/Desktop/coolingai_simulator
@@ -71,13 +71,13 @@ scp -o StrictHostKeyChecking=no \
   cooledaiadmin@192.168.12.101:~/
 ```
 
-**2. SSH in with a TTY and run** (password: `***REDACTED_SSH_PASS***`; sudo will ask again — use `-t`)
+**2. SSH in with a TTY and run** (password: `<SSH_PASSWORD>`; sudo will ask again — use `-t`)
 
 ```bash
 ssh -t -o StrictHostKeyChecking=no cooledaiadmin@192.168.12.101 'sudo bash ~/start_telemetry.sh --node-id ST550-Control-Traditional; pkill -f llama_workload_scheduler.py 2>/dev/null || true; nohup python3 ~/llama_workload_scheduler.py > /tmp/cooledai_llama_workload.log 2>\&1 \&'
 ```
 
-When prompted for **sudo** password, type `***REDACTED_SSH_PASS***`.
+When prompted for **sudo** password, type `<SSH_PASSWORD>`.
 
 **Alternative:** SSH in and run by hand:
 

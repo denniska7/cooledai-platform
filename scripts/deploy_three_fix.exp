@@ -2,7 +2,7 @@
 # Deploy three-fix (profile rejection + spike_bypass log + idle stepping) to pilot
 # Deletes stale calibration profile and restarts agent
 set timeout 120
-set pass "***REDACTED_SSH_PASS***"
+set pass "<SSH_PASSWORD>"
 set host "cooledaiadmin@100.92.29.44"
 set send_delay 5
 set project_root [file dirname [file dirname [info script]]]

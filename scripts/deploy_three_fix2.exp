@@ -1,6 +1,6 @@
 #!/usr/bin/expect -f
 set timeout 120
-set pass "***REDACTED_SSH_PASS***"
+set pass "<SSH_PASSWORD>"
 set host "cooledaiadmin@100.92.29.44"
 
 # SCP files

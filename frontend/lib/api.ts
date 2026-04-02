@@ -1,16 +1,12 @@
 /**
  * CooledAI API client
  *
- * API URL resolved from NEXT_PUBLIC_API_URL env var with a hardcoded
- * fallback to the Railway production deployment so the demo works even
- * if Vercel env-var propagation is delayed.
- *
- * The master key is used as the default so the dashboard sees all
- * tenants' telemetry (the agents post under the master key too).
+ * API URL and API key are resolved strictly from environment variables.
+ * If NEXT_PUBLIC_COOLEDAI_API_KEY is missing the dashboard will fail
+ * visibly rather than silently falling back to a hardcoded key.
  */
 
 const RAILWAY_API_URL = "https://proactive-creativity-production.up.railway.app";
-const FALLBACK_API_KEY = "***REDACTED_API_KEY***";
 
 const getApiUrl = (): string => {
   const url = process.env.NEXT_PUBLIC_API_URL;
@@ -23,8 +19,11 @@ const getApiUrl = (): string => {
 export const apiUrl = (): string => getApiUrl();
 
 const authHeaders = (): Record<string, string> => {
-  const key = process.env.NEXT_PUBLIC_COOLEDAI_API_KEY || FALLBACK_API_KEY;
-  return { "X-API-Key": key };
+  const key = process.env.NEXT_PUBLIC_COOLEDAI_API_KEY;
+  if (!key) {
+    console.error("[CooledAI] NEXT_PUBLIC_COOLEDAI_API_KEY is not set — API requests will fail");
+  }
+  return { "X-API-Key": key ?? "" };
 };
 
 /**

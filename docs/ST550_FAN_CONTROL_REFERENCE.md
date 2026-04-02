@@ -16,9 +16,9 @@ Follow these steps in order. Skip steps already completed.
 |------|-----------|-------------|
 | Tailscale IP | 100.92.29.44 | 100.123.202.94 |
 | LAN IP | 192.168.12.100 | 192.168.12.101 |
-| SSH | cooledaiadmin / ***REDACTED_SSH_PASS*** | cooledaiadmin / ***REDACTED_SSH_PASS*** |
+| SSH | cooledaiadmin / <SSH_PASSWORD> | cooledaiadmin / <SSH_PASSWORD> |
 | XCC BMC IP | 169.254.95.118 (USB-ethernet) | 169.254.95.118 (USB-ethernet) |
-| XCC Credentials | USERID / ***REDACTED_BMC_PASS*** | USERID / ***REDACTED_BMC_PASS*** |
+| XCC Credentials | USERID / <BMC_PASSWORD> | USERID / <BMC_PASSWORD> |
 | Host USB-ethernet IP | 169.254.95.120 | 169.254.95.120 |
 
 ---
@@ -32,7 +32,7 @@ are silently ignored by the BMC.
 **Check current mode:**
 ```bash
 ssh cooledaiadmin@100.92.29.44
-curl -skL -u USERID:'***REDACTED_BMC_PASS***' \
+curl -skL -u USERID:'<BMC_PASSWORD>' \
   https://169.254.95.118/redfish/v1/Systems/1/Bios/ \
   | python3 -c "import json,sys; d=json.load(sys.stdin); \
     print(d['Attributes']['OperatingModes_ChooseOperatingMode'])"
@@ -43,19 +43,19 @@ If it already says `CustomMode`, skip to Step 2.
 **Change to CustomMode (requires reboot):**
 ```bash
 # Stage the BIOS change (Lenovo uses /Bios/Pending, NOT /Bios/Settings)
-curl -sk -u USERID:'***REDACTED_BMC_PASS***' -X PATCH \
+curl -sk -u USERID:'<BMC_PASSWORD>' -X PATCH \
   -H 'Content-Type: application/json' \
   -d '{"Attributes":{"OperatingModes_ChooseOperatingMode":"CustomMode"}}' \
   'https://169.254.95.118/redfish/v1/Systems/1/Bios/Pending'
 
 # Verify the pending change
-curl -skL -u USERID:'***REDACTED_BMC_PASS***' \
+curl -skL -u USERID:'<BMC_PASSWORD>' \
   https://169.254.95.118/redfish/v1/Systems/1/Bios/Pending \
   | python3 -c "import json,sys; d=json.load(sys.stdin); \
     print('Pending:', d['Attributes']['OperatingModes_ChooseOperatingMode'])"
 
 # Reboot to apply (server takes 5-8 minutes to come back)
-curl -sk -u USERID:'***REDACTED_BMC_PASS***' -X POST \
+curl -sk -u USERID:'<BMC_PASSWORD>' -X POST \
   -H 'Content-Type: application/json' \
   -d '{"ResetType":"GracefulRestart"}' \
   'https://169.254.95.118/redfish/v1/Systems/1/Actions/ComputerSystem.Reset'
@@ -63,7 +63,7 @@ curl -sk -u USERID:'***REDACTED_BMC_PASS***' -X POST \
 
 **After reboot, verify:**
 ```bash
-curl -skL -u USERID:'***REDACTED_BMC_PASS***' \
+curl -skL -u USERID:'<BMC_PASSWORD>' \
   https://169.254.95.118/redfish/v1/Systems/1/Bios/ \
   | python3 -c "import json,sys; d=json.load(sys.stdin); \
     print(d['Attributes']['OperatingModes_ChooseOperatingMode'])"
@@ -82,24 +82,24 @@ cat /etc/cooledai/agent.env
 
 Required variables:
 ```env
-COOLEDAI_API_KEY=***REDACTED_API_KEY***
+COOLEDAI_API_KEY=<YOUR_COOLEDAI_API_KEY>
 COOLEDAI_NODE_ID=ST550-CooledAI-Predictive
 COOLEDAI_API_URL=https://proactive-creativity-production.up.railway.app
 COOLEDAI_GPU_POWER_MGMT=true
 COOLEDAI_GPU_PERF_MODE=false
 XCC_BMC_HOST=169.254.95.118
 XCC_BMC_USER=USERID
-XCC_BMC_PASS=***REDACTED_BMC_PASS***
+XCC_BMC_PASS=<BMC_PASSWORD>
 ```
 
 If any are missing, add them:
 ```bash
-echo '***REDACTED_SSH_PASS***' | sudo -S bash -c 'cat >> /etc/cooledai/agent.env << EOF
+echo '<SSH_PASSWORD>' | sudo -S bash -c 'cat >> /etc/cooledai/agent.env << EOF
 COOLEDAI_GPU_POWER_MGMT=true
 COOLEDAI_GPU_PERF_MODE=false
 XCC_BMC_HOST=169.254.95.118
 XCC_BMC_USER=USERID
-XCC_BMC_PASS=***REDACTED_BMC_PASS***
+XCC_BMC_PASS=<BMC_PASSWORD>
 EOF'
 ```
 
@@ -112,10 +112,10 @@ EOF'
 cd ~/coolingai_simulator && git pull origin main
 
 # Copy to systemd service location
-echo '***REDACTED_SSH_PASS***' | sudo -S cp scripts/cooledai_agent.py /opt/cooledai/cooledai_agent.py
-echo '***REDACTED_SSH_PASS***' | sudo -S cp core/optimization/thermal_calibrator.py /opt/cooledai/core/optimization/thermal_calibrator.py
-echo '***REDACTED_SSH_PASS***' | sudo -S cp core/optimization/gpu_power_governor.py /opt/cooledai/core/optimization/gpu_power_governor.py
-echo '***REDACTED_SSH_PASS***' | sudo -S cp core/hardware/xcc_fan_controller.py /opt/cooledai/core/hardware/xcc_fan_controller.py
+echo '<SSH_PASSWORD>' | sudo -S cp scripts/cooledai_agent.py /opt/cooledai/cooledai_agent.py
+echo '<SSH_PASSWORD>' | sudo -S cp core/optimization/thermal_calibrator.py /opt/cooledai/core/optimization/thermal_calibrator.py
+echo '<SSH_PASSWORD>' | sudo -S cp core/optimization/gpu_power_governor.py /opt/cooledai/core/optimization/gpu_power_governor.py
+echo '<SSH_PASSWORD>' | sudo -S cp core/hardware/xcc_fan_controller.py /opt/cooledai/core/hardware/xcc_fan_controller.py
 ```
 
 ---
@@ -125,7 +125,7 @@ echo '***REDACTED_SSH_PASS***' | sudo -S cp core/hardware/xcc_fan_controller.py 
 A stale profile with bad fan_idle_rpm will prevent optimization. Delete it
 before starting the agent fresh:
 ```bash
-echo '***REDACTED_SSH_PASS***' | sudo -S rm -f /var/lib/cooledai/calibration_profile.json
+echo '<SSH_PASSWORD>' | sudo -S rm -f /var/lib/cooledai/calibration_profile.json
 ```
 
 ---
@@ -137,8 +137,8 @@ Do NOT run manually as cooledaiadmin — that path lacks IPMI and falls back to
 XCC-over-LAN which is less effective.
 
 ```bash
-echo '***REDACTED_SSH_PASS***' | sudo -S systemctl restart cooledai-agent
-echo '***REDACTED_SSH_PASS***' | sudo -S systemctl status cooledai-agent
+echo '<SSH_PASSWORD>' | sudo -S systemctl restart cooledai-agent
+echo '<SSH_PASSWORD>' | sudo -S systemctl status cooledai-agent
 ```
 
 Expected status: `Active: active (running)`
@@ -149,7 +149,7 @@ Expected status: `Active: active (running)`
 
 **Within first 10 seconds — check startup logs:**
 ```bash
-echo '***REDACTED_SSH_PASS***' | sudo -S journalctl -u cooledai-agent --since '30 sec ago' --no-pager | head -20
+echo '<SSH_PASSWORD>' | sudo -S journalctl -u cooledai-agent --since '30 sec ago' --no-pager | head -20
 ```
 
 Look for these 4 lines:
@@ -160,14 +160,14 @@ Look for these 4 lines:
 
 **After 30 seconds — check FAN_DIAG:**
 ```bash
-echo '***REDACTED_SSH_PASS***' | sudo -S journalctl -u cooledai-agent --since '10 sec ago' --no-pager | grep FAN_DIAG
+echo '<SSH_PASSWORD>' | sudo -S journalctl -u cooledai-agent --since '10 sec ago' --no-pager | grep FAN_DIAG
 ```
 
 Look for: `method=ipmi` (local IPMI) or `method=xcc_ipmi_lan` (LAN fallback)
 
 **Check live telemetry on API:**
 ```bash
-curl -s -H "X-API-Key: ***REDACTED_API_KEY***" \
+curl -s -H "X-API-Key: <YOUR_COOLEDAI_API_KEY>" \
   https://proactive-creativity-production.up.railway.app/api/v1/nodes/status \
   | python3 -m json.tool
 ```
@@ -380,7 +380,7 @@ The control node runs telemetry only — no fan control, no optimization.
 Its agent.env should have `COOLEDAI_CONTROL_ENABLED=false`:
 
 ```env
-COOLEDAI_API_KEY=***REDACTED_API_KEY***
+COOLEDAI_API_KEY=<YOUR_COOLEDAI_API_KEY>
 COOLEDAI_NODE_ID=ST550-Control-Traditional
 COOLEDAI_API_URL=https://proactive-creativity-production.up.railway.app
 COOLEDAI_CONTROL_ENABLED=false

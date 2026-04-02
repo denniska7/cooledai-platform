@@ -59,7 +59,7 @@ def _make_controller(working_method: str = "none", ipmi_lan: bool = False) -> XC
     ctrl = XCCFanController.__new__(XCCFanController)
     ctrl._host = "10.0.0.1"
     ctrl._user = "USERID"
-    ctrl._pass = "***REDACTED_BMC_PASS***"
+    ctrl._pass = "<BMC_PASSWORD>"
     ctrl._timeout = 1.0
     ctrl._available = True
     ctrl._manual_active = False

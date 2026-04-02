@@ -38,7 +38,7 @@ All processes were started with `nohup ... &`, so they survive SSH disconnect an
 ## Quick Status Check (from any device)
 
 ```bash
-curl -s -H "X-API-Key: ***REDACTED_API_KEY***" \
+curl -s -H "X-API-Key: <YOUR_COOLEDAI_API_KEY>" \
   https://proactive-creativity-production.up.railway.app/api/v1/nodes/status
 ```
 

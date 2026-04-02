@@ -13,10 +13,17 @@ Threading model:
 import asyncio
 import json
 import logging
+import ssl
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+
+try:
+    import certifi
+    _SSL_CTX = ssl.create_default_context(cafile=certifi.where())
+except ImportError:
+    _SSL_CTX = None  # Fall back to system certs
 
 logger = logging.getLogger("cooledai.gateway.forwarder")
 
@@ -92,7 +99,8 @@ class CloudForwarder:
         try:
             # Use aiohttp for non-blocking HTTP
             import aiohttp
-            async with aiohttp.ClientSession() as session:
+            connector = aiohttp.TCPConnector(ssl=_SSL_CTX) if _SSL_CTX else None
+            async with aiohttp.ClientSession(connector=connector) as session:
                 async with session.post(
                     f"{self.cloud_url}/api/v1/gateway/telemetry-batch",
                     json=payload,
@@ -107,6 +115,7 @@ class CloudForwarder:
                         self._last_success = time.time()
                         self._total_batches_sent += 1
                         self._total_entries_sent += len(batch)
+                        logger.info("CloudForwarder: flushed %d entries (total: %d)", len(batch), self._total_entries_sent)
                         if self._cloud_disconnected:
                             logger.info("CloudForwarder: Cloud connection restored")
                         self._consecutive_failures = 0
@@ -122,7 +131,7 @@ class CloudForwarder:
             logger.warning("CloudForwarder: aiohttp not available, using sync fallback")
             self._flush_sync(payload, batch)
         except Exception as e:
-            logger.debug("CloudForwarder: flush failed: %s", e)
+            logger.warning("CloudForwarder: flush failed: %s", e)
             self._connected = False
             self._total_failures += 1
             self._consecutive_failures += 1

@@ -14,7 +14,7 @@ sudo pkill -f cooledai_agent.py 2>/dev/null || true
 sleep 2
 sudo bash -c 'nohup python3 /home/cooledaiadmin/cooledai_agent.py \
   --api-url https://proactive-creativity-production.up.railway.app \
-  --api-key ***REDACTED_API_KEY*** \
+  --api-key <YOUR_COOLEDAI_API_KEY> \
   --node-id ST550-CooledAI-Predictive \
   --ipmi-variant lenovo \
   >> /tmp/cooledai_agent.log 2>&1 &'

@@ -3,7 +3,7 @@
 # Usage: cd /path/to/coolingai_simulator && expect scripts/deploy_to_101.exp
 
 set timeout 180
-set pass "***REDACTED_SSH_PASS***"
+set pass "<SSH_PASSWORD>"
 set host "cooledaiadmin@192.168.12.101"
 set send_delay 10
 set script_dir [file dirname [info script]]

@@ -19,6 +19,6 @@ proc check_node {host pass name} {
 }
 
 puts "Checking Node .100 (Pilot) and Node .101 (Control)..."
-check_node "cooledaiadmin@192.168.12.100" "***REDACTED_SSH_PASS***" "Node .100 (Pilot)"
-check_node "cooledaiadmin@192.168.12.101" "***REDACTED_SSH_PASS***" "Node .101 (Control)"
+check_node "cooledaiadmin@192.168.12.100" "<SSH_PASSWORD>" "Node .100 (Pilot)"
+check_node "cooledaiadmin@192.168.12.101" "<SSH_PASSWORD>" "Node .101 (Control)"
 puts "\nDone. If you see recent timestamps and POST/Status lines, both nodes are logging."

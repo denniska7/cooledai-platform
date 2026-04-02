@@ -111,7 +111,7 @@ nohup python3 ~/predictive_engine.py > /tmp/cooledai_predictive_engine.log 2>&1 
 ```bash
 sudo nohup python3 ~/cooledai_agent.py \
   --api-url https://proactive-creativity-production.up.railway.app \
-  --api-key ***REDACTED_API_KEY*** \
+  --api-key <YOUR_COOLEDAI_API_KEY> \
   --node-id ST550-CooledAI-Predictive \
   --ipmi-variant lenovo \
   >> /tmp/cooledai_agent.log 2>&1 &
@@ -153,7 +153,7 @@ sudo bash ~/start_telemetry.sh --node-id ST550-CooledAI-Predictive
 export OLLAMA_SPREAD_URLS="11434,11435"
 nohup python3 ~/llama_workload_scheduler.py > /tmp/cooledai_llama_workload.log 2>&1 &
 nohup python3 ~/predictive_engine.py > /tmp/cooledai_predictive_engine.log 2>&1 &
-sudo nohup python3 ~/cooledai_agent.py --api-url https://proactive-creativity-production.up.railway.app --api-key ***REDACTED_API_KEY*** --node-id ST550-CooledAI-Predictive --ipmi-variant lenovo >> /tmp/cooledai_agent.log 2>&1 &
+sudo nohup python3 ~/cooledai_agent.py --api-url https://proactive-creativity-production.up.railway.app --api-key <YOUR_COOLEDAI_API_KEY> --node-id ST550-CooledAI-Predictive --ipmi-variant lenovo >> /tmp/cooledai_agent.log 2>&1 &
 ```
 
 ---

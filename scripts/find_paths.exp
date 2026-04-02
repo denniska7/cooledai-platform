@@ -1,6 +1,6 @@
 #!/usr/bin/expect -f
 set timeout 30
-set pass "***REDACTED_SSH_PASS***"
+set pass "<SSH_PASSWORD>"
 spawn ssh -o StrictHostKeyChecking=no cooledaiadmin@100.92.29.44
 expect "password:" { send "$pass\r" }
 expect -re {\$ }

@@ -262,7 +262,7 @@ class RedfishClient:
 
     base_url: str  # e.g. "https://169.254.95.118"
     username: str = "USERID"
-    password: str = "***REDACTED_BMC_PASS***"
+    password: str = ""  # Required — set via COOLEDAI_REDFISH_PASS env var
     timeout_s: float = 5.0
     _auth_header: str = ""
 
@@ -1332,7 +1332,7 @@ def run_agent(
     gpu_power_management: bool = False,
     redfish_url: str = "",
     redfish_user: str = "USERID",
-    redfish_pass: str = "***REDACTED_BMC_PASS***",
+    redfish_pass: str = "",
 ) -> None:
     global _running, _manual_control_active, _dry_run_flag
     global _GPU_GPG_MOD, _GPU_PL_ENVELOPES, _GPU_PL_STATE
@@ -1866,10 +1866,13 @@ def main() -> None:
     )
     parser.add_argument(
         "--redfish-pass",
-        default=os.environ.get("COOLEDAI_REDFISH_PASS", "***REDACTED_BMC_PASS***"),
-        help="Redfish password.",
+        default=os.environ.get("COOLEDAI_REDFISH_PASS", ""),
+        help="Redfish password (required — set COOLEDAI_REDFISH_PASS env var).",
     )
     args = parser.parse_args()
+
+    if not args.redfish_pass:
+        parser.error("Redfish/BMC password is required. Set COOLEDAI_REDFISH_PASS environment variable.")
 
     logging.basicConfig(
         level=logging.INFO,

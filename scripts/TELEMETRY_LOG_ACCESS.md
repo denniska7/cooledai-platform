@@ -13,7 +13,7 @@
 Or with curl:
 
 ```bash
-curl -s -H "X-API-Key: ***REDACTED_API_KEY***" \
+curl -s -H "X-API-Key: <YOUR_COOLEDAI_API_KEY>" \
   "https://proactive-creativity-production.up.railway.app/api/v1/telemetry-logs?hours=1"
 ```
 
@@ -27,7 +27,7 @@ Returns all telemetry points for both nodes: `cooledai_gpu_temp_c`, `control_gpu
 ### Live snapshot (API key only)
 
 ```bash
-curl -s -H "X-API-Key: ***REDACTED_API_KEY***" \
+curl -s -H "X-API-Key: <YOUR_COOLEDAI_API_KEY>" \
   https://proactive-creativity-production.up.railway.app/api/v1/nodes/status
 ```
 
@@ -110,7 +110,7 @@ Save as `scripts/tail_telemetry.sh` and run from the project root:
 
 ```bash
 #!/bin/bash
-API_KEY="${COOLEDAI_API_KEY:-***REDACTED_API_KEY***}"
+API_KEY="${COOLEDAI_API_KEY:-<YOUR_COOLEDAI_API_KEY>}"
 echo "=== Cloud status (live telemetry) ==="
 curl -s -H "X-API-Key: $API_KEY" \
   https://proactive-creativity-production.up.railway.app/api/v1/nodes/status | python3 -m json.tool

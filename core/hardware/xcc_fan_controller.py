@@ -13,7 +13,7 @@ is the primary write path.  Redfish is still used for monitoring (reads).
 Environment variables:
   XCC_BMC_HOST  — XCC hostname/IP  (e.g. "169.254.95.118")
   XCC_BMC_USER  — Redfish/IPMI username  (default: "USERID")
-  XCC_BMC_PASS  — Redfish/IPMI password  (default: "***REDACTED_BMC_PASS***")
+  XCC_BMC_PASS  — Redfish/IPMI password  (default: "<BMC_PASSWORD>")
 
 Usage::
 
@@ -126,7 +126,7 @@ class XCCFanController:
     ):
         self._host = host or _env("XCC_BMC_HOST")
         self._user = username or _env("XCC_BMC_USER", "USERID")
-        self._pass = password or _env("XCC_BMC_PASS", "***REDACTED_BMC_PASS***")
+        self._pass = password or _env("XCC_BMC_PASS")
         self._timeout = timeout_s
         self._available = False
         self._manual_active = False

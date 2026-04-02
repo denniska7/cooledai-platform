@@ -44,7 +44,7 @@ API_URL = os.environ.get(
 )
 API_KEY = os.environ.get(
     "COOLEDAI_API_KEY",
-    "***REDACTED_API_KEY***",
+    "<YOUR_COOLEDAI_API_KEY>",
 )
 NODE_ID = os.environ.get("COOLEDAI_NODE_ID", "ST550-CooledAI-Predictive")
 # 5s heartbeat to lighten network load (was 10s)
