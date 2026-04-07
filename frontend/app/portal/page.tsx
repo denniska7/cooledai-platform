@@ -40,7 +40,7 @@ export default function PortalPage() {
       </div>
 
       <div className="mb-6">
-        <ModeToggle />
+        <ModeToggle getToken={getToken} />
       </div>
 
       {/* Mode-aware status banner */}

@@ -48,7 +48,13 @@ const CONFIRM_MSG: Record<string, string> = {
     "CooledAI will limit fan reductions to max 20% below BMC baseline. Continue?",
 };
 
-export function ModeToggle({ token }: { token?: string | null }) {
+export function ModeToggle({
+  token,
+  getToken,
+}: {
+  token?: string | null;
+  getToken?: () => Promise<string | null>;
+}) {
   const [state, setState] = useState<ModeState | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -56,10 +62,19 @@ export function ModeToggle({ token }: { token?: string | null }) {
   const [toast, setToast] = useState<{ msg: string; ok: boolean } | null>(null);
   const mountedRef = useRef(true);
 
+  /** Resolve a fresh Clerk JWT (or use the static token prop). */
+  const resolveToken = useCallback(async (): Promise<string | null> => {
+    if (getToken) {
+      try { return await getToken(); } catch { return null; }
+    }
+    return token ?? null;
+  }, [getToken, token]);
+
   const fetchMode = useCallback(async () => {
     try {
+      const t = await resolveToken();
       const res = await apiFetch("/api/v1/gateway/mode", {
-        headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        headers: t ? { Authorization: `Bearer ${t}` } : undefined,
       });
       if (!mountedRef.current) return;
       if (res.ok) {
@@ -72,7 +87,7 @@ export function ModeToggle({ token }: { token?: string | null }) {
     } finally {
       if (mountedRef.current) setLoading(false);
     }
-  }, [token]);
+  }, [resolveToken]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -92,11 +107,12 @@ export function ModeToggle({ token }: { token?: string | null }) {
 
     setSaving(true);
     try {
+      const t = await resolveToken();
       const res = await apiFetch("/api/v1/gateway/mode", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+          ...(t ? { Authorization: `Bearer ${t}` } : {}),
         },
         body: JSON.stringify({ mode: selected }),
       });
