@@ -3043,14 +3043,91 @@ async def get_gateway_mode(
 
     display_mode = gw_mode.lower() if gw_mode else os.environ.get("COOLEDAI_MODE", "shadow")
 
+    # Map gateway modes to frontend names
+    _MODE_MAP_TO_FRONTEND = {"SHADOW": "shadow", "SUPERVISED": "supervised", "PRODUCTION": "active"}
+    frontend_mode = _MODE_MAP_TO_FRONTEND.get(display_mode.upper(), display_mode.lower())
+
+    # Determine which modes are available and whether activation is possible
+    available_modes: list[str] = ["shadow"]
+    activation_blockers: list[str] = []
+    can_activate = False
+
+    if confidence_pct >= 80 and data_hours >= 1:
+        available_modes = ["shadow", "supervised", "active"]
+        can_activate = True
+    elif confidence_pct >= 50:
+        available_modes = ["shadow", "supervised"]
+        if confidence_pct < 80:
+            activation_blockers.append(f"Confidence {confidence_pct}% — need ≥80% for active mode")
+        if data_hours < 1:
+            activation_blockers.append(f"Only {round(data_hours, 1)}h of data — need ≥1h")
+        can_activate = True  # can at least reach supervised
+    else:
+        if confidence_pct < 50:
+            activation_blockers.append(f"Confidence {confidence_pct}% — need ≥50% for supervised mode")
+        if data_hours < 1:
+            activation_blockers.append(f"Only {round(data_hours, 1)}h of data — need ≥1h")
+
     return {
-        "mode": display_mode,
+        "mode": frontend_mode,
+        "available_modes": available_modes,
+        "can_activate": can_activate,
+        "activation_blockers": activation_blockers,
         "confidence_pct": confidence_pct,
         "data_hours": round(data_hours, 2),
+        "fan_rpm_floor_pct": 30,
+        "thermal_ceiling_c": 85,
+        "changed_at": mode_since or datetime.now(timezone.utc).isoformat(),
+        "changed_by": "system",
         "calibration_state": cal_state,
         "target_temp": getattr(_brain, "target_temp", None),
-        "mode_since": mode_since,
         "gateway_mode_forwarded": gw_mode is not None,
+    }
+
+
+# ── Mode switching: POST ─────────────────────────────────────────────
+# Frontend maps:  shadow / supervised / active
+# Gateway maps:   SHADOW / SUPERVISED / PRODUCTION
+
+_FRONTEND_TO_GATEWAY_MODE = {"shadow": "SHADOW", "supervised": "SUPERVISED", "active": "PRODUCTION"}
+_GATEWAY_TO_FRONTEND_MODE = {"SHADOW": "shadow", "SUPERVISED": "supervised", "PRODUCTION": "active"}
+
+
+@app.post("/api/v1/gateway/mode")
+async def set_gateway_mode_endpoint(
+    request: Request,
+    owner_id: str = Depends(_require_api_key_or_clerk),
+):
+    """Set desired gateway operating mode from the portal.
+
+    Stores the desired mode in Redis.  The gateway picks it up on its
+    next telemetry-batch cycle (every 5 s) and applies the transition
+    locally via ControlGate.switch_mode().
+    """
+    body = await request.json()
+    desired_mode = body.get("mode", "").strip().lower()
+
+    if desired_mode not in _FRONTEND_TO_GATEWAY_MODE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid mode '{desired_mode}'. Must be one of: shadow, supervised, active",
+        )
+
+    gateway_mode = _FRONTEND_TO_GATEWAY_MODE[desired_mode]
+
+    # Store in Redis — gateway will pick it up on next batch response
+    _cloud_store.set_desired_mode(owner_id, gateway_mode, requested_by="portal")
+
+    logging.getLogger("api.main").info(
+        "[MODE_SWITCH] Portal requested mode=%s (gateway=%s) for owner=%s",
+        desired_mode, gateway_mode, owner_id,
+    )
+
+    return {
+        "status": "ok",
+        "message": f"Mode change to {desired_mode} requested — gateway will apply within ~10 seconds",
+        "desired_mode": desired_mode,
+        "gateway_mode": gateway_mode,
     }
 
 
@@ -3524,7 +3601,22 @@ async def receive_gateway_batch(request: Request, owner_id: str = Depends(_resol
         "[GATEWAY_BATCH] Received %d entries from gateway=%s, owner=%s",
         ingested, gateway_id, owner_id,
     )
-    return {"status": "ok", "ingested": ingested, "gateway_id": gateway_id}
+
+    # ── Piggyback pending mode directive on batch response ────────────
+    # If the portal requested a mode change, include it here so the
+    # gateway picks it up without needing a separate polling endpoint.
+    response: dict = {"status": "ok", "ingested": ingested, "gateway_id": gateway_id}
+    pending_mode = _cloud_store.get_desired_mode(owner_id)
+    if pending_mode:
+        response["desired_mode"] = pending_mode.get("mode")
+        response["desired_mode_requested_by"] = pending_mode.get("requested_by", "portal")
+        # Clear after delivery so we don't re-send every 5 s
+        _cloud_store.clear_desired_mode(owner_id)
+        logging.getLogger("api.main").info(
+            "[MODE_DIRECTIVE] Delivering desired_mode=%s to gateway=%s",
+            pending_mode.get("mode"), gateway_id,
+        )
+    return response
 
 
 @app.post("/api/v1/optimize/control", dependencies=[Depends(_require_api_key)])

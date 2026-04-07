@@ -300,6 +300,39 @@ class CloudRedisStore:
         with self._mem_lock:
             return dict(self._mem_gateway_mode)
 
+    # ── Desired Mode (portal → gateway command channel) ─────────────────
+
+    def set_desired_mode(self, owner_id: str, mode: str, requested_by: str = "portal") -> None:
+        data = {"mode": mode, "requested_by": requested_by, "ts": time.time()}
+        if self._available:
+            try:
+                self._redis.set(f"cloud:desired_mode:{owner_id}", json.dumps(data, default=str), ex=300)
+                return
+            except Exception as e:
+                logger.debug("Redis set_desired_mode failed: %s", e)
+        with self._mem_lock:
+            self._mem_desired_mode = data  # type: ignore[attr-defined]
+
+    def get_desired_mode(self, owner_id: str) -> Optional[dict]:
+        if self._available:
+            try:
+                raw = self._redis.get(f"cloud:desired_mode:{owner_id}")
+                return json.loads(raw) if raw else None
+            except Exception as e:
+                logger.debug("Redis get_desired_mode failed: %s", e)
+        with self._mem_lock:
+            return getattr(self, "_mem_desired_mode", None)
+
+    def clear_desired_mode(self, owner_id: str) -> None:
+        if self._available:
+            try:
+                self._redis.delete(f"cloud:desired_mode:{owner_id}")
+                return
+            except Exception as e:
+                logger.debug("Redis clear_desired_mode failed: %s", e)
+        with self._mem_lock:
+            self._mem_desired_mode = None  # type: ignore[attr-defined]
+
     # ── Agent Configs ────────────────────────────────────────────────────
 
     def set_agent_config(self, node_id: str, config: dict) -> None:

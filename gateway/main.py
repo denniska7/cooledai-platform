@@ -136,6 +136,7 @@ class Gateway:
                 cloud_url=BACKEND_URL,
                 api_key=BACKEND_API_KEY,
                 batch_interval=5.0,
+                control_gate=self.control_gate,
             )
             _logger.info("Gateway: CloudForwarder initialized (batch every 5s to %s)", BACKEND_URL)
         except Exception as e:

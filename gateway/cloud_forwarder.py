@@ -38,12 +38,14 @@ class CloudForwarder:
         batch_interval: float = 5.0,
         max_buffer_size: int = 10000,
         gateway_id: str = "gateway-default",
+        control_gate: Optional[Any] = None,
     ):
         self.cloud_url = cloud_url.rstrip("/")
         self.api_key = api_key
         self.batch_interval = batch_interval
         self.max_buffer_size = max_buffer_size
         self.gateway_id = gateway_id
+        self._control_gate = control_gate
 
         # Buffer shared between uvicorn thread and asyncio thread
         self._buffer: List[dict] = []
@@ -120,6 +122,12 @@ class CloudForwarder:
                             logger.info("CloudForwarder: Cloud connection restored")
                         self._consecutive_failures = 0
                         self._cloud_disconnected = False
+                        # Process mode directives piggybacked on the response
+                        try:
+                            resp_body = await resp.json()
+                            self._process_mode_directive(resp_body)
+                        except Exception:
+                            pass  # Non-critical — don't break telemetry flow
                     else:
                         logger.warning(
                             "CloudForwarder: batch rejected (status=%d, entries=%d)",
@@ -162,6 +170,11 @@ class CloudForwarder:
                     logger.info("CloudForwarder: Cloud connection restored")
                 self._consecutive_failures = 0
                 self._cloud_disconnected = False
+                # Process mode directives piggybacked on the response
+                try:
+                    self._process_mode_directive(resp.json())
+                except Exception:
+                    pass
             else:
                 self._consecutive_failures += 1
                 self._re_buffer(batch)
@@ -176,6 +189,53 @@ class CloudForwarder:
                     self._consecutive_failures,
                 )
             self._re_buffer(batch)
+
+    def set_control_gate(self, gate: Any) -> None:
+        """Late-bind control gate (avoids circular imports)."""
+        self._control_gate = gate
+
+    def _process_mode_directive(self, resp_body: dict) -> None:
+        """Apply a mode directive from the cloud batch response.
+
+        The cloud API piggybacks a ``desired_mode`` field on the batch
+        response when the portal user requests a mode change.  We map
+        the gateway mode string (SHADOW / SUPERVISED / PRODUCTION) to
+        the ControlGate enum and call switch_mode().
+        """
+        desired = resp_body.get("desired_mode")
+        if not desired or not self._control_gate:
+            return
+
+        # Import here to avoid circular dependency at module level
+        from .control_gate import CONTROL_MODE
+
+        mode_map = {
+            "SHADOW": CONTROL_MODE.SHADOW,
+            "SUPERVISED": CONTROL_MODE.SUPERVISED,
+            "PRODUCTION": CONTROL_MODE.PRODUCTION,
+        }
+        target_mode = mode_map.get(desired.upper())
+        if target_mode is None:
+            logger.warning("CloudForwarder: unknown desired_mode '%s' from cloud", desired)
+            return
+
+        current = self._control_gate.mode
+        if current == target_mode:
+            logger.info("CloudForwarder: already in %s, ignoring directive", desired)
+            return
+
+        requested_by = resp_body.get("desired_mode_requested_by", "portal")
+        ok = self._control_gate.switch_mode(target_mode, reason=f"cloud_directive:{requested_by}")
+        if ok:
+            logger.info(
+                "CloudForwarder: Mode switched %s → %s (requested by %s)",
+                current.value, target_mode.value, requested_by,
+            )
+        else:
+            logger.warning(
+                "CloudForwarder: Mode switch %s → %s REJECTED by ControlGate",
+                current.value, target_mode.value,
+            )
 
     def _re_buffer(self, batch: list) -> None:
         """On failure, put entries back into buffer (up to max size)."""
